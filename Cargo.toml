@@ -1,0 +1,17 @@
+[workspace]
+resolver = "2"
+members = ["crates/tuxtop-core"]
+
+# `src-tauri` is intentionally NOT a workspace member.
+#
+# Tauri pulls in webkit2gtk on Linux, which is not installed on the WSL dev box
+# and never will be — the Windows binary is built on the Windows side. Keeping
+# the shell out of the workspace means `cargo test` here builds only
+# tuxtop-core and passes everywhere. Add it back only if the workspace is ever
+# expected to build a GUI on this machine.
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true

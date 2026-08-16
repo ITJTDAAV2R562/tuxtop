@@ -1,0 +1,20 @@
+/target
+**/target
+
+# Cargo.lock IS committed: this is an application, not a library.
+
+node_modules/
+dist/
+.vite/
+
+src-tauri/target/
+src-tauri/gen/
+
+# Local host list — may contain internal hostnames and addresses.
+hosts.toml
+
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
