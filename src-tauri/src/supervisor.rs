@@ -33,7 +33,9 @@ const BACKOFF: &[u64] = &[1, 2, 5, 10, 20, 30];
 
 #[derive(Default)]
 pub struct Supervisor {
-    tasks: Mutex<HashMap<String, tokio::task::JoinHandle<()>>>,
+    // Tauri's JoinHandle, not tokio's: `tauri::async_runtime::spawn` returns
+    // its own wrapper type and the two are distinct.
+    tasks: Mutex<HashMap<String, tauri::async_runtime::JoinHandle<()>>>,
 }
 
 impl Supervisor {

@@ -347,6 +347,17 @@ dialog::backdrop{background:rgba(6,10,18,.42);backdrop-filter:blur(3px)}
 .field input:focus,.field select:focus{outline:2px solid var(--accent);outline-offset:1px}
 .dlg-actions{display:flex;justify-content:flex-end;gap:8px}
 
+.fault{
+  display:flex;align-items:flex-start;gap:7px;
+  background:color-mix(in srgb,var(--crit) 12%,transparent);
+  border:1px solid color-mix(in srgb,var(--crit) 32%,transparent);
+  border-radius:7px;padding:7px 9px;font-size:11.5px;line-height:1.45;
+}
+.fault b{display:block;color:var(--crit);font-weight:700;letter-spacing:.2px}
+.fault span{color:var(--text-2);font-family:var(--font-mono);font-size:11px;word-break:break-word}
+.card.down .cpurow,.card.down .cores,.card.down .metrics{opacity:.32}
+.stale{color:var(--warn);font-size:10.5px;font-weight:700;letter-spacing:.4px;text-transform:uppercase}
+
 .empty{
   grid-column:1/-1;text-align:center;padding:40px 20px;color:var(--text-3);
   font-size:13px;border:1px dashed var(--stroke-hi);border-radius:var(--r);
@@ -447,7 +458,14 @@ dialog::backdrop{background:rgba(6,10,18,.42);backdrop-filter:blur(3px)}
     net: 0.4, dio: 2, gpuU: 0
   });
 
-  let hosts = [
+  // Under Tauri the host list comes from hosts.toml and every number arrives
+  // from the backend. Opened as a plain file there is no backend, so the
+  // simulator below runs against these instead — that keeps this page usable
+  // as the design mockup it started life as.
+  const TAURI = globalThis.__TAURI__;
+  const LIVE = !!TAURI;
+
+  let hosts = LIVE ? [] : [
     mk('dove',   'Debian 13', 32, 31,  'RTX 3080', 3),
     mk('heron',  'Debian 12',  8, 16,  null,       11),
     mk('wader',  'Debian 11',  4,  8,  null,       6),
@@ -530,6 +548,10 @@ dialog::backdrop{background:rgba(6,10,18,.42);backdrop-filter:blur(3px)}
 
   // ---- render skeleton ----
   function build() {
+    // build() tears down the DOM, so remember which card was open. Without
+    // this, adding a host or a core-count change silently collapses the
+    // detail panel the user was reading.
+    const wasOpen = grid.querySelector('.card.expanded')?.dataset.name;
     grid.innerHTML = '';
     if (!hosts.length) {
       grid.innerHTML = '<div class="empty">No hosts. Add one to start watching.</div>';
@@ -539,16 +561,21 @@ dialog::backdrop{background:rgba(6,10,18,.42);backdrop-filter:blur(3px)}
       const el = document.createElement('article');
       el.className = 'card';
       el.dataset.id = h.id;
+      el.dataset.name = h.name;
       el.innerHTML = `
         <div class="chead">
           <span class="dot"></span>
           <h2 class="hname">${h.name}</h2>
-          <span class="chip">${h.distro}</span>
-          <span class="chip">${h.cores}c</span>
+          <span class="chip" data-tag>${h.distro || '&mdash;'}</span>
+          <span class="chip" data-cores>${h.cores || '?'}c</span>
           <span class="tb-grow"></span>
           <button class="kill" title="Remove ${h.name}" aria-label="Remove ${h.name}">
             <svg width="11" height="11" viewBox="0 0 10 10"><path d="M0 0l10 10M10 0L0 10" stroke="currentColor" stroke-width="1.4"/></svg>
           </button>
+        </div>
+        <div class="fault" data-fault hidden>
+          <b data-fault-title></b>
+          <span data-fault-detail></span>
         </div>
         <div class="cpurow">
           <div class="readout">
@@ -593,11 +620,10 @@ dialog::backdrop{background:rgba(6,10,18,.42);backdrop-filter:blur(3px)}
         full.appendChild(f);
       }
 
-      el.querySelector('.kill').addEventListener('click', e => {
-        e.stopPropagation();
-        hosts = hosts.filter(x => x.id !== h.id);
-        build(); tally();
-      });
+      // Removal is handled by a delegated listener on the grid, registered
+      // once per mode. Live mode must round-trip through the backend so the
+      // sampler task is actually stopped; removing from the array here would
+      // make the card vanish and then reappear on the next sample.
       el.querySelector('.card-toggle').addEventListener('click', () => {
         const open = el.classList.contains('expanded');
         grid.querySelectorAll('.card.expanded').forEach(c => {
@@ -614,6 +640,15 @@ dialog::backdrop{background:rgba(6,10,18,.42);backdrop-filter:blur(3px)}
       });
       grid.appendChild(el);
     });
+
+    if (wasOpen) {
+      const el = grid.querySelector(`.card[data-name="${CSS.escape(wasOpen)}"]`);
+      if (el) {
+        el.classList.add('expanded');
+        el.querySelector('.card-toggle').setAttribute('aria-expanded', 'true');
+        el.querySelector('.tlabel').textContent = 'Collapse';
+      }
+    }
   }
 
   // ---- paint values ----
@@ -625,8 +660,27 @@ dialog::backdrop{background:rgba(6,10,18,.42);backdrop-filter:blur(3px)}
       if (!el) return;
       const cpu = h.hist.cpu[h.hist.cpu.length - 1] || 0;
 
+      // A fault says what went wrong instead of blanking the card. The last
+      // known numbers stay on screen, dimmed, because "it was at 90% when it
+      // died" is usually the most useful thing on the card.
+      const fbox = el.querySelector('[data-fault]');
+      if (h.fault) {
+        el.classList.add('down');
+        fbox.hidden = false;
+        el.querySelector('[data-fault-title]').textContent = faultTitle(h.fault);
+        el.querySelector('[data-fault-detail]').textContent = faultDetail(h.fault);
+        el.querySelector('.dot').className = 'dot warnstate';
+      } else {
+        el.classList.remove('down');
+        fbox.hidden = true;
+      }
+
+      if (h.load) el.querySelector('[data-tag]').textContent =
+        'load ' + h.load[0].toFixed(2);
+      el.querySelector('[data-cores]').textContent = (h.cores || '?') + 'c';
+
       el.querySelector('[data-cpu]').innerHTML = Math.round(cpu) + '<span>%</span>';
-      el.querySelector('.dot').className = 'dot' + (cpu > 85 ? ' warnstate' : '');
+      if (!h.fault) el.querySelector('.dot').className = 'dot' + (cpu > 85 ? ' warnstate' : '');
       el.querySelector('[data-ram]').textContent = gb(h.ram) + ' / ' + h.ramGB + ' GB';
       el.querySelector('[data-dio]').textContent = Math.round(h.dio) + ' MB/s';
       el.querySelector('[data-net]').textContent = h.net.toFixed(1) + ' MB/s';
@@ -663,25 +717,32 @@ dialog::backdrop{background:rgba(6,10,18,.42);backdrop-filter:blur(3px)}
 
   function tally() {
     $('#nhosts').textContent = hosts.length;
-    $('#ncores').textContent = hosts.reduce((a, h) => a + h.cores, 0);
-    $('#nup').textContent = hosts.length;
+    $('#ncores').textContent = hosts.reduce((a, h) => a + (h.cores || 0), 0);
+    $('#nup').textContent = hosts.filter(h => !h.fault).length;
   }
 
-  // ---- clock ----
+  // Fault text. Each variant names a different fix, which is the entire
+  // reason HostFault is not collapsed into a single "offline" state.
+  function faultTitle(f) {
+    return {
+      auth_failed: 'Authentication failed',
+      unreachable: 'Host unreachable',
+      sampler_failed: 'Sampler failed',
+      stalled: 'Connection stalled',
+    }[f.kind] || 'Disconnected';
+  }
+
+  function faultDetail(f) {
+    if (f.kind === 'stalled') return `no data for ${f.detail?.since_secs ?? '?'}s`;
+    if (f.kind === 'auth_failed') return `${f.detail || ''} - check \`ssh-add -l\` and that \`ssh ${f.host}\` works`;
+    if (f.kind === 'unreachable') return `${f.detail || ''} - check the address, network or VPN`;
+    return f.detail || 'no detail reported';
+  }
+
+  // ---- clock / data source -------------------------------------------
   let rate = 1000, timer = null;
   const tick = () => { hosts.forEach(step); paint(); };
   const start = () => { clearInterval(timer); timer = setInterval(tick, rate); };
-
-  $('#rateFast').addEventListener('click', () => {
-    rate = 1000; $('#rateFast').setAttribute('aria-pressed', 'true');
-    $('#rateSlow').setAttribute('aria-pressed', 'false');
-    $('#cadNote').classList.remove('show'); start();
-  });
-  $('#rateSlow').addEventListener('click', () => {
-    rate = 60000; $('#rateSlow').setAttribute('aria-pressed', 'true');
-    $('#rateFast').setAttribute('aria-pressed', 'false');
-    $('#cadNote').classList.add('show'); start();
-  });
 
   $('#themeBtn').addEventListener('click', () => {
     const r = document.documentElement;
@@ -693,20 +754,131 @@ dialog::backdrop{background:rgba(6,10,18,.42);backdrop-filter:blur(3px)}
 
   const dlg = $('#addDlg');
   $('#addBtn').addEventListener('click', () => dlg.showModal());
-  $('#addForm').addEventListener('submit', e => {
-    if (e.submitter && e.submitter.value !== 'add') return;
-    const f = new FormData(e.target);
-    const n = (f.get('name') || '').toString().trim();
-    if (!n) return;
-    hosts.push(mk(n, 'Linux', +f.get('cores'), 16, null, 2 + Math.random() * 8));
-    build(); tally(); paint();
-  });
-
   addEventListener('resize', () => paint());
 
-  build(); tally();
-  for (let i = 0; i < HIST; i++) hosts.forEach(step);
-  paint();
-  start();
+  // ---------------------------------------------------------------- LIVE
+  async function startLive() {
+    const { invoke } = TAURI.core;
+    const { listen } = TAURI.event;
+
+    // The cadence toggle was a mockup device for showing why the fast plane
+    // exists. Against a real backend it has nothing to switch, so it goes.
+    $('#rateFast').closest('.seg').remove();
+    $('#cadNote').remove();
+
+    const ensure = (name, nCores) => {
+      let h = hosts.find(x => x.name === name);
+      if (!h) { h = mk(name, '', nCores || 0, 0, null, 0); hosts.push(h); build(); }
+      else if (nCores && h.cores !== nCores) { h.cores = nCores; build(); }
+      return h;
+    };
+
+    await listen('tuxtop://sample', ({ payload: s }) => {
+      const h = ensure(s.host, s.cores.length);
+      h.fault = null;
+      h.core = s.cores;
+      h.ramGB = s.mem_total_kb / 1048576;
+      h.ram = s.mem_used_kb / 1048576;
+      h.net = (s.net_rx_bps + s.net_tx_bps) / 1e6;
+      h.dio = (s.disk_read_bps + s.disk_write_bps) / 1e6;
+      h.load = s.load;
+      if (s.gpu) { h.gpu = s.gpu.name; h.gpuU = s.gpu.util_pct; }
+      push(h.hist.cpu, s.cpu);
+      push(h.hist.ram, h.ramGB ? h.ram / h.ramGB * 100 : 0);
+      push(h.hist.dio, h.dio);
+      push(h.hist.net, h.net);
+      push(h.hist.gpu, h.gpuU || 0);
+      paint(); tally();
+    });
+
+    await listen('tuxtop://fault', ({ payload: f }) => {
+      if (!f || !f.host) return;
+      const h = ensure(f.host, 0);
+      h.fault = f;
+      paint(); tally();
+    });
+
+    await listen('tuxtop://hosts-changed', ({ payload: list }) => {
+      hosts = hosts.filter(h => list.some(c => c.name === h.name));
+      build(); paint(); tally();
+    });
+
+    // Seed cards from hosts.toml so they exist before the first sample
+    // lands — otherwise the window is empty for a second on every launch.
+    try {
+      for (const cfg of await invoke('list_hosts')) ensure(cfg.name, 0);
+    } catch (e) {
+      showEmpty(`Could not read hosts.toml: ${e}`);
+      return;
+    }
+
+    build(); paint(); tally();
+    if (!hosts.length) showEmpty('No hosts yet. Add one to start watching.');
+
+    $('#addForm').addEventListener('submit', async e => {
+      if (e.submitter && e.submitter.value !== 'add') return;
+      const f = new FormData(e.target);
+      try {
+        await invoke('add_host', { cfg: {
+          name: (f.get('name') || '').toString().trim(),
+          addr: (f.get('addr') || '').toString().trim(),
+          user: '', port: 22, beszel_url: null,
+        }});
+      } catch (err) { showEmpty(String(err)); }
+    });
+
+    grid.addEventListener('click', async e => {
+      const btn = e.target.closest('.kill');
+      if (!btn) return;
+      e.stopPropagation();
+      const name = btn.closest('.card').dataset.name;
+      try { await invoke('remove_host', { name }); }
+      catch (err) { showEmpty(String(err)); }
+    });
+  }
+
+  function showEmpty(msg) {
+    if (!grid.querySelector('.card')) grid.innerHTML = `<div class="empty">${msg}</div>`;
+    else console.warn(msg);
+  }
+
+  // ---------------------------------------------------------- SIMULATION
+  function startSim() {
+    $('#rateFast').addEventListener('click', () => {
+      rate = 1000; $('#rateFast').setAttribute('aria-pressed', 'true');
+      $('#rateSlow').setAttribute('aria-pressed', 'false');
+      $('#cadNote').classList.remove('show'); start();
+    });
+    $('#rateSlow').addEventListener('click', () => {
+      rate = 60000; $('#rateSlow').setAttribute('aria-pressed', 'true');
+      $('#rateFast').setAttribute('aria-pressed', 'false');
+      $('#cadNote').classList.add('show'); start();
+    });
+
+    $('#addForm').addEventListener('submit', e => {
+      if (e.submitter && e.submitter.value !== 'add') return;
+      const f = new FormData(e.target);
+      const n = (f.get('name') || '').toString().trim();
+      if (!n) return;
+      hosts.push(mk(n, 'Linux', +f.get('cores'), 16, null, 2 + Math.random() * 8));
+      build(); tally(); paint();
+    });
+
+    grid.addEventListener('click', e => {
+      const btn = e.target.closest('.kill');
+      if (!btn) return;
+      e.stopPropagation();
+      const name = btn.closest('.card').dataset.name;
+      hosts = hosts.filter(h => h.name !== name);
+      build(); tally(); paint();
+    });
+
+    build(); tally();
+    for (let i = 0; i < HIST; i++) hosts.forEach(step);
+    paint();
+    start();
+  }
+
+  if (LIVE) startLive(); else startSim();
 })();
 </script>
