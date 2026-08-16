@@ -1,0 +1,16 @@
+# Normalise line endings.
+#
+# Without this, a Windows checkout with the default core.autocrlf=true
+# converts every file to CRLF and `git status` reports the entire tree as
+# modified — diffs become useless and every commit risks a whole-file
+# whitespace change. Force LF in the working tree on all platforms; Rust,
+# shell scripts and the ssh command strings all expect it.
+* text=auto eol=lf
+
+# Never touch binaries.
+*.png binary
+*.ico binary
+*.exe binary
+
+# Shell scripts run on Linux hosts; CRLF would break the shebang.
+*.sh text eol=lf
