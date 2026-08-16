@@ -95,6 +95,21 @@ cd tuxtop
 cargo run --bin tuxtop-watch -- <your-host>
 ```
 
+**No Rust on Windows?** Cross-compile the `.exe` from WSL or any Linux box
+instead — the CLI has no GUI dependencies, so this works cleanly and saves a
+rustup + MSVC Build Tools install:
+
+```sh
+sudo apt install mingw-w64            # one time
+rustup target add x86_64-pc-windows-gnu   # one time
+
+./scripts/build-windows.sh /mnt/c/Users/you/tuxtop/
+```
+
+Then in PowerShell: `.\tuxtop-watch.exe <your-host>`. Use **Windows Terminal**
+rather than the legacy console host, or the colours and block characters will
+not render.
+
 `<your-host>` is anything `ssh` accepts — an alias from your `~/.ssh/config`,
 a hostname, or `user@host`. If `ssh <your-host>` works in your terminal, this
 works.
