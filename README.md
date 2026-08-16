@@ -95,8 +95,14 @@ cd tuxtop
 cargo run --bin tuxtop-watch -- <your-host>
 ```
 
-**No Rust on Windows?** Cross-compile the `.exe` from WSL or any Linux box
-instead — the CLI has no GUI dependencies, so this works cleanly and saves a
+**No Rust on Windows? Just download it.** `.exe` files are gitignored, so a
+clone gives you source only — the binary ships as a release asset instead:
+
+**[Latest release](https://github.com/UZ1sFED3yS/tuxtop/releases/latest)** →
+`tuxtop-watch-x86_64-windows.exe`. Rename to `tuxtop-watch.exe` and run it; no
+clone, no toolchain, nothing to install.
+
+Or cross-compile it yourself from WSL or any Linux box — the CLI has no GUI dependencies, so this works cleanly and saves a
 rustup + MSVC Build Tools install:
 
 ```sh
