@@ -18,29 +18,32 @@ The `/proc` parsing and rate maths, with no GUI dependency.
 - [x] `/proc/diskstats` whole disks only, no partition double-count
 - [x] Frame delimiting so a partial `/proc/stat` never parses
 - [x] `RateTracker` dividing by real elapsed time
-- [x] 33 tests pass, including real 32-core fixtures cross-checked against `top`
+- [x] 38 tests pass, including real 32-core fixtures cross-checked against `top`
 
 ---
 
-## Phase 1 — SSH transport — **next**
+## Phase 1 — SSH transport — **done**
 
 One persistent connection per host, streaming frames.
 
-- Implement `ssh.rs` with `russh`: connect, auth via the OS SSH agent, open one
-  channel, run `sampler_command`, feed bytes to `split_frames`.
-- Resolve hosts through `~/.ssh/config` (aliases, `ProxyJump`, `IdentityFile`).
-- Reconnect with backoff; surface the real reason as a `HostFault` rather than
-  a generic "offline".
+- [x] `transport.rs` spawns the system `ssh` (ADR-007, superseding `russh`),
+      one long-lived process per host, streaming framed `/proc` output
+- [x] `~/.ssh/config` aliases, `ProxyJump` and agent auth all work, because it
+      is the same client the user's terminal uses
+- [x] ssh's stderr classified into typed `HostFault`s — auth vs unreachable vs
+      sampler failure — never a generic "offline"
+- [x] `tuxtop-watch` CLI renders a live core grid in the terminal
+- [x] **Verified against dove:** 8 busy cores of 32 read as 25.0–25.2% against
+      a true 25.0%, detected in one sample and recovered in one sample. The
+      same load took the Beszel agent 26 s to notice and 13 s to forget.
+      See [evidence](evidence/beszel-cadence.md#follow-up-the-same-test-against-tuxtops-own-sampler).
 
-**Done when:** a CLI example prints live per-core percentages for dove once a
-second, and those numbers track `htop` on the same box in real time.
-
-**Watch for:** never spawn a process per sample. One connection, one channel,
-long-lived. A handshake per second would dominate the interval.
+**Still open:** reconnect with backoff. A dropped connection currently ends the
+stream with a fault rather than retrying.
 
 ---
 
-## Phase 2 — Tauri shell with a real Mica backdrop — **planned**
+## Phase 2 — Tauri shell with a real Mica backdrop — **next**
 
 - Tauri 2 project wired to `tuxtop-core`.
 - `window-vibrancy` for genuine Win11 Mica/Acrylic.

@@ -1,0 +1,272 @@
+//! `tuxtop-watch` — the fast plane, in a terminal.
+//!
+//! Proves the sampler end to end before any GUI exists, and stays useful
+//! afterwards as the way to check whether a problem is in the data or in the
+//! window.
+//!
+//! ```text
+//! cargo run --bin tuxtop-watch -- dove
+//! cargo run --bin tuxtop-watch -- sam@dove.example --interval 1
+//! ```
+
+use std::env;
+use std::process::ExitCode;
+
+use tokio::sync::mpsc;
+use tuxtop_core::model::{HostConfig, HostFault};
+use tuxtop_core::transport::SshSampler;
+
+const USAGE: &str = "\
+tuxtop-watch — live per-core CPU from a remote Linux host over SSH
+
+USAGE:
+    tuxtop-watch <host> [--interval SECS] [--plain]
+
+    <host>        ssh target: an alias from ~/.ssh/config, hostname, or user@host
+    --interval    seconds between samples (default 1)
+    --plain       no ANSI colour or cursor movement; one line per sample
+
+Nothing is installed on the target. Auth uses your existing ssh agent
+and ~/.ssh/config, exactly as `ssh <host>` would.
+";
+
+struct Args {
+    host: String,
+    interval: u32,
+    plain: bool,
+}
+
+fn parse_args() -> Result<Args, String> {
+    let mut host = None;
+    let mut interval = 1u32;
+    let mut plain = false;
+    let mut it = env::args().skip(1);
+
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "-h" | "--help" => return Err(String::new()),
+            "--plain" => plain = true,
+            "--interval" => {
+                let v = it.next().ok_or("--interval needs a value")?;
+                interval = v.parse().map_err(|_| format!("bad interval: {v}"))?;
+                if interval == 0 {
+                    return Err("interval must be at least 1 second".into());
+                }
+            }
+            other if other.starts_with('-') => return Err(format!("unknown flag: {other}")),
+            other => host = Some(other.to_string()),
+        }
+    }
+
+    Ok(Args {
+        host: host.ok_or("no host given")?,
+        interval,
+        plain,
+    })
+}
+
+#[tokio::main]
+async fn main() -> ExitCode {
+    let args = match parse_args() {
+        Ok(a) => a,
+        Err(msg) => {
+            if msg.is_empty() {
+                print!("{USAGE}");
+                return ExitCode::SUCCESS;
+            }
+            eprintln!("error: {msg}\n\n{USAGE}");
+            return ExitCode::from(2);
+        }
+    };
+
+    // Split user@host so ~/.ssh/config still resolves a bare alias.
+    let (user, addr) = match args.host.split_once('@') {
+        Some((u, a)) => (u.to_string(), a.to_string()),
+        None => (String::new(), args.host.clone()),
+    };
+
+    let cfg = HostConfig {
+        name: addr.clone(),
+        addr,
+        user,
+        port: 22,
+        beszel_url: None,
+    };
+
+    let (tx, mut rx) = mpsc::channel(16);
+    let sampler = match SshSampler::start(cfg.clone(), args.interval, tx) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("could not launch ssh: {e}");
+            eprintln!("is the OpenSSH client installed and on PATH?");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    eprintln!("connecting to {} ...", cfg.addr);
+
+    let mut first = true;
+    let mut rendered_lines = 0usize;
+
+    while let Some(item) = rx.recv().await {
+        match item {
+            Ok(s) => {
+                if first {
+                    eprintln!(
+                        "connected — {} cores. first sample is a baseline; \
+                         rates start on the second.\n",
+                        s.cores.len()
+                    );
+                    first = false;
+                }
+                if args.plain {
+                    println!(
+                        "cpu {:5.1}%  mem {:5.1}%  net rx {:>9} tx {:>9}  load {:.2}",
+                        s.cpu,
+                        pct(s.mem_used_kb, s.mem_total_kb),
+                        bytes(s.net_rx_bps),
+                        bytes(s.net_tx_bps),
+                        s.load[0]
+                    );
+                } else {
+                    if rendered_lines > 0 {
+                        // Redraw in place.
+                        print!("\x1b[{rendered_lines}A");
+                    }
+                    rendered_lines = render(&s);
+                }
+            }
+            Err(f) => {
+                if !args.plain && rendered_lines > 0 {
+                    println!();
+                }
+                eprintln!("\n{}", describe(&f));
+                sampler.stop().await;
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+
+    sampler.stop().await;
+    ExitCode::SUCCESS
+}
+
+/// Draw the core grid. Returns how many lines were printed, so the next
+/// frame can move the cursor back up over exactly this much.
+fn render(s: &tuxtop_core::model::Sample) -> usize {
+    let mut lines = 0;
+
+    println!(
+        "\x1b[1m{:<16}\x1b[0m cpu \x1b[1m{:5.1}%\x1b[0m   mem {:5.1}% ({} / {})   \
+         load {:.2} {:.2} {:.2}\x1b[K",
+        s.host,
+        s.cpu,
+        pct(s.mem_used_kb, s.mem_total_kb),
+        gib(s.mem_used_kb),
+        gib(s.mem_total_kb),
+        s.load[0],
+        s.load[1],
+        s.load[2],
+    );
+    lines += 1;
+
+    println!(
+        "{:<16} net rx {:>9}/s  tx {:>9}/s   disk r {:>9}/s  w {:>9}/s\x1b[K",
+        "",
+        bytes(s.net_rx_bps),
+        bytes(s.net_tx_bps),
+        bytes(s.disk_read_bps),
+        bytes(s.disk_write_bps),
+    );
+    lines += 1;
+
+    println!("\x1b[K");
+    lines += 1;
+
+    // Eight cores per row keeps it readable on a 32-core box.
+    for chunk in s.cores.chunks(8) {
+        let mut row = String::from("  ");
+        for (i, v) in chunk.iter().enumerate() {
+            row.push_str(&format!("{}{:3.0}% {} ", colour(*v), v, bar(*v)));
+            if i < chunk.len() - 1 {
+                row.push_str("\x1b[0m ");
+            }
+        }
+        row.push_str("\x1b[0m\x1b[K");
+        println!("{row}");
+        lines += 1;
+    }
+
+    lines
+}
+
+/// Same three bands the GUI uses: accent below 75, amber to 89, red above.
+fn colour(v: f32) -> &'static str {
+    if v >= 90.0 {
+        "\x1b[31m"
+    } else if v >= 75.0 {
+        "\x1b[33m"
+    } else if v >= 1.0 {
+        "\x1b[36m"
+    } else {
+        "\x1b[90m"
+    }
+}
+
+/// A five-cell bar using block elements, so load reads without parsing digits.
+fn bar(v: f32) -> String {
+    const CELLS: usize = 5;
+    let filled = ((v / 100.0) * CELLS as f32).round() as usize;
+    let mut s = String::new();
+    for i in 0..CELLS {
+        s.push(if i < filled { '█' } else { '·' });
+    }
+    s
+}
+
+fn pct(used: u64, total: u64) -> f32 {
+    if total == 0 {
+        return 0.0;
+    }
+    used as f32 / total as f32 * 100.0
+}
+
+fn gib(kb: u64) -> String {
+    format!("{:.1}G", kb as f64 / 1024.0 / 1024.0)
+}
+
+fn bytes(b: u64) -> String {
+    const U: [&str; 4] = ["B", "K", "M", "G"];
+    let mut v = b as f64;
+    let mut i = 0;
+    while v >= 1024.0 && i < U.len() - 1 {
+        v /= 1024.0;
+        i += 1;
+    }
+    if i == 0 {
+        format!("{} {}", v as u64, U[i])
+    } else {
+        format!("{v:.1} {}", U[i])
+    }
+}
+
+/// Say what went wrong and what to do about it.
+fn describe(f: &HostFault) -> String {
+    match f {
+        HostFault::AuthFailed(m) => format!(
+            "authentication failed: {m}\n\
+             check that your key is loaded: `ssh-add -l`, and that `ssh <host>` works."
+        ),
+        HostFault::Unreachable(m) => format!(
+            "host unreachable: {m}\n\
+             check the address and that you are on the right network or VPN."
+        ),
+        HostFault::SamplerFailed(m) => format!(
+            "sampler failed: {m}\n\
+             the host answered but /proc could not be read as expected."
+        ),
+        HostFault::Stalled { since_secs } => {
+            format!("no data for {since_secs}s — the connection stalled.")
+        }
+    }
+}

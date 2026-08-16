@@ -6,9 +6,10 @@ Live per-core CPU, memory, disk, network and GPU for several hosts at once, in
 a real Win11 Mica window — not a browser tab, not a terminal, not a web
 dashboard you install as a PWA and pretend is an app.
 
-> **Status: early.** The sampling core is written and tested (33 tests, checked
-> against a real 32-core host). The SSH transport and the window are next. See
-> [docs/ROADMAP.md](docs/ROADMAP.md).
+> **Status: early — there is a working CLI, but no GUI yet.**
+> `tuxtop-watch` streams live per-core CPU from a remote host over SSH and runs
+> today on Windows, Linux and macOS. The Tauri window is Phase 2 and does not
+> build yet. See [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ---
 
@@ -81,30 +82,57 @@ docs/                 architecture, decisions, roadmap, evidence.
 
 ---
 
-## Building
+## Running it today
 
-### The core — anywhere, including WSL
+### `tuxtop-watch` — the live view, in a terminal
 
-```sh
-cargo test
-```
-
-33 tests, no GUI toolchain required. This is deliberate: the maths must be
-testable on the machine where the code is written, even though that machine
-cannot build the Windows binary. See
-[ADR-006](docs/DECISIONS.md#adr-006--tuxtop-core-is-a-separate-crate-outside-the-tauri-workspace).
-
-### The app — on Windows
-
-Requires Rust, Node, and the WebView2 runtime (present by default on Win11).
+Works on **Windows**, Linux and macOS. Needs only [Rust] and an `ssh` client
+(Windows 10+ and Windows 11 ship OpenSSH; check with `ssh -V`).
 
 ```powershell
-npm install
-npm run tauri dev
+git clone https://github.com/UZ1sFED3yS/tuxtop
+cd tuxtop
+cargo run --bin tuxtop-watch -- <your-host>
 ```
 
-**This cannot be built from WSL.** Tauri needs the Windows toolchain to produce
-a Windows binary, and pulls in webkit2gtk if built on Linux.
+`<your-host>` is anything `ssh` accepts — an alias from your `~/.ssh/config`,
+a hostname, or `user@host`. If `ssh <your-host>` works in your terminal, this
+works.
+
+```
+dove             cpu   25.2%   mem  17.3% (5.4G / 31.3G)   load 0.64 0.31 0.18
+                 net rx     3.3 K/s  tx    57.8 K/s   disk r       0 B/s  w   1.2 M/s
+
+   97% █████   94% █████   91% █████   88% ████·   12% █····    3% ·····    1% ·····    0% ·····
+    0% ·····    2% ·····    0% ·····    1% ·····    0% ·····    0% ·····    1% ·····    0% ·····
+```
+
+Options: `--interval SECS` (default 1), `--plain` (no colour or cursor
+movement, one line per sample — good for piping to a file).
+
+Nothing is installed on the target. No root, no open port, no agent.
+
+[Rust]: https://rustup.rs
+
+### The design mockup
+
+`src/index.html` is self-contained — **double-click it**, or open it in any
+browser. It runs on simulated data and is the same page as the hosted
+[mockup](#design).
+
+### `cargo test`
+
+38 tests, no GUI toolchain required, runs anywhere including WSL. Deliberate:
+the maths must be testable on the machine where the code is written, even
+though that machine cannot build the Windows binary.
+[ADR-006](docs/DECISIONS.md#adr-006--tuxtop-core-is-a-separate-crate-outside-the-tauri-workspace).
+
+### The GUI — not yet
+
+`src-tauri/` is scaffolding that has never been compiled. There is no
+`package.json` and no icon set, so **`npm run tauri dev` will not work**.
+Phase 2 of the [roadmap](docs/ROADMAP.md) wires it up, on Windows, where it
+has to be built — Tauri pulls in webkit2gtk if built on Linux.
 
 ---
 

@@ -269,3 +269,56 @@ independent ground truth catches that class of error.
 This deviates from the scaffold sketched when the stack was chosen, which put
 `proc.rs` under `src-tauri/src/`. The deviation buys a testable core on the
 machine where development happens.
+
+---
+
+## ADR-007 — Shell out to the system `ssh`, don't link an SSH library
+
+**Date:** 2026-08-16 · **Status:** accepted · **Supersedes** the `russh`
+dependency sketched in ADR-003
+
+### Context
+
+ADR-003 assumed the fast plane would use `russh`, a pure-Rust SSH
+implementation. When Phase 1 came to be written, the alternative — spawning the
+system `ssh` binary and reading its stdout — turned out to be strictly better
+for this use case.
+
+### Decision
+
+`transport.rs` spawns `ssh` via `tokio::process::Command`, one long-lived
+process per host, and reads framed `/proc` output from its stdout.
+
+### Rationale
+
+- **Every SSH feature works for free and identically to the user's terminal.**
+  `~/.ssh/config` aliases, `ProxyJump`, `Match` blocks, agent forwarding,
+  `known_hosts`, hardware keys, FIDO tokens, certificate auth. Reimplementing
+  even half of that correctly is a project of its own.
+- **The auth story becomes "whatever already works".** The rule of thumb in the
+  README — *if `ssh <host>` works in your terminal, this works* — is only true
+  because it is literally the same client.
+- **OpenSSH ships on Windows 10+**, so there is no extra install on the one
+  platform that matters most here.
+- **No crypto for us to get wrong**, and no vulnerability surface we are
+  responsible for patching.
+- **Trivially debuggable.** Add `-v` to the args and you get the exact
+  diagnostic output every sysadmin already knows how to read.
+
+### Consequences
+
+- One child process per host. Acceptable: it is one process, not one per
+  sample, and it costs a few hundred KB.
+- ssh's failure modes arrive as text on stderr, so they must be classified into
+  `HostFault` by pattern-matching messages. This is done in
+  `classify_ssh_error`, covered by tests, and is the one genuinely fragile part
+  — OpenSSH could reword a message. The fallback is `SamplerFailed` carrying
+  the raw text, so a reworded message degrades to a less specific but still
+  *honest* error, never a wrong one.
+- `russh` is dropped from `src-tauri/Cargo.toml`.
+
+### Revisit when
+
+An `ssh` binary cannot be assumed — e.g. shipping to a locked-down environment
+without OpenSSH. Then `russh` returns, and `transport.rs` grows a second
+implementation behind the same interface.

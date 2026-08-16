@@ -140,3 +140,35 @@ done
 
 rm -f /tmp/hubkey   # do not leave the hub's private key lying in /tmp
 ```
+
+
+---
+
+## Follow-up: the same test against Tuxtop's own sampler
+
+Run 2026-08-16 after Phase 1 landed, on the same host with the same load
+(8 busy loops on 32 cores = exactly 25.0% aggregate), via
+`cargo run --bin tuxtop-watch -- dove --plain`.
+
+| sample | reported cpu |
+| ------ | ------------ |
+| 1 | `0.0%` — baseline; a rate needs two points |
+| 2 | **`25.2%`** — load already fully visible |
+| 3–8 | `25.0%` – `25.2%` |
+| 9 | `18.0%` — load ending mid-sample |
+| 10 | **`0.2%`** — fully recovered |
+
+### Side by side
+
+| | detects load | recovers after load stops | steady reading |
+| --- | --- | --- | --- |
+| Beszel agent | ~26 s | ~13 s | cached, byte-identical across polls |
+| Tuxtop sampler | **1 sample (~1 s)** | **1 sample** | 25.0–25.2% vs 25.0% true |
+
+Ground truth is exact here: 8 of 32 cores fully busy is 25.0%. The sampler
+reads 25.0–25.2%, and the residual is real background activity on the host,
+not error.
+
+This is the empirical case for ADR-002. The fast plane is not a marginal
+improvement on the agent's cadence — it is the difference between a live
+reading and a cached one.
