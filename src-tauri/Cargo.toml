@@ -1,3 +1,8 @@
+# Its own workspace root. Cargo refuses to build a package that sits inside a
+# workspace directory without being a member, and ADR-006 keeps this out of the
+# root workspace so `cargo test` there never tries to build the GUI.
+[workspace]
+
 [package]
 name = "tuxtop"
 version = "0.1.0"
