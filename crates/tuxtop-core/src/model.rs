@@ -13,7 +13,11 @@ pub struct HostConfig {
     /// Anything OpenSSH would accept: an alias from `~/.ssh/config`, a
     /// hostname, or an IP.
     pub addr: String,
-    #[serde(default = "default_user")]
+    /// Login name. Empty means "let ssh decide" — the alias in
+    /// `~/.ssh/config`, then ssh's own default. That is almost always right,
+    /// and hardcoding a default here would override a `User` the config
+    /// already specifies.
+    #[serde(default)]
     pub user: String,
     #[serde(default = "default_port")]
     pub port: u16,
@@ -22,10 +26,6 @@ pub struct HostConfig {
     /// still works, there is just no history behind it.
     #[serde(default)]
     pub beszel_url: Option<String>,
-}
-
-fn default_user() -> String {
-    "root".into()
 }
 
 fn default_port() -> u16 {
@@ -101,7 +101,9 @@ mod tests {
 addr = "dove.example.ts.net"
 "#;
         let h: HostConfig = toml::from_str(toml).expect("parses");
-        assert_eq!(h.user, "root");
+        // Empty, not "root": an omitted user defers to ~/.ssh/config rather
+        // than overriding whatever `User` that file already sets.
+        assert_eq!(h.user, "");
         assert_eq!(h.port, 22);
         assert_eq!(h.beszel_url, None);
     }
