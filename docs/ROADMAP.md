@@ -106,11 +106,21 @@ work here.
 
 ---
 
-## Phase 5 — The process list — **planned**
+## Phase 5 — The process list — **built, read-only**
 
 The Task Manager half, and the thing nothing off-the-shelf does from Windows.
 
-- Sortable table: PID, command, CPU%, memory, user.
+Full spec: **[specs/process-list.md](specs/process-list.md)**.
+
+- [x] Fleet-wide list: every host, sorted by CPU then memory, host as a column.
+- [x] CPU as a percentage of the whole box, stated on screen.
+- [x] Remote ranking - 655 bytes measured against a real 479-process host,
+      against 85 KB for shipping `/proc/*/stat` raw.
+- [x] Own SSH channel at its own cadence, started only while the view is open.
+- [x] Kernel threads flagged and hidden behind a toggle.
+- [ ] **Per-host drill-down** with full command lines.
+- [ ] **Kill and renice** - see the spec on why the framing is mistakes, not
+      privilege.
 - Per-process CPU from `/proc/[pid]/stat` `utime + stime` deltas over
   `sysconf(_SC_CLK_TCK)`. **Do not parse `top`** — its output shifts across
   distros, versions and locales, and a decimal comma will silently break it.
