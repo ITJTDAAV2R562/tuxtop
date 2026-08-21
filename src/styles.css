@@ -31,6 +31,14 @@
   --tile-halo:rgba(255,255,255,.85);
   --on-accent:#FFFFFF;
 
+  /* metal + reveal */
+  --bevel-top:rgba(255,255,255,.95);
+  --bevel-bottom:rgba(14,22,38,.08);
+  --reveal-face:rgba(11,111,196,.20);
+  --reveal-edge:rgba(11,111,196,.60);
+  --gloss:rgba(255,255,255,.55);
+  --grain:.030;
+
   --shadow:0 24px 70px rgba(12,22,44,.22), 0 2px 10px rgba(12,22,44,.10);
   --font-ui:"Segoe UI Variable Display","Segoe UI Variable Text","Segoe UI",system-ui,-apple-system,sans-serif;
   --font-mono:"Cascadia Mono","Cascadia Code",Consolas,ui-monospace,"SF Mono",monospace;
@@ -67,6 +75,14 @@
     --viz-net:#4ED88A;
     --viz-gpu:#F084CE;
     --tile-halo:rgba(0,0,0,.62);
+
+    /* metal + reveal */
+    --bevel-top:rgba(255,255,255,.14);
+    --bevel-bottom:rgba(0,0,0,.50);
+    --reveal-face:rgba(88,189,247,.17);
+    --reveal-edge:rgba(150,218,255,.78);
+    --gloss:rgba(255,255,255,.22);
+    --grain:.055;
     --on-accent:#07131E;
 
     --shadow:0 28px 80px rgba(0,0,0,.62), 0 2px 10px rgba(0,0,0,.40);
@@ -103,6 +119,14 @@
   --viz-gpu:#F084CE;
   --tile-halo:rgba(0,0,0,.62);
   --on-accent:#07131E;
+
+  /* metal + reveal */
+  --bevel-top:rgba(255,255,255,.14);
+  --bevel-bottom:rgba(0,0,0,.50);
+  --reveal-face:rgba(88,189,247,.17);
+  --reveal-edge:rgba(150,218,255,.78);
+  --gloss:rgba(255,255,255,.22);
+  --grain:.055;
 
   --shadow:0 28px 80px rgba(0,0,0,.62), 0 2px 10px rgba(0,0,0,.40);
 }
@@ -524,3 +548,107 @@ dialog::backdrop{background:rgba(6,10,18,.42);backdrop-filter:blur(3px)}
 body[data-bands="off"] .legend span:not(:last-child){display:none}
 /* Reserve the sub-value column only when a metric supplies one. */
 .fbar-sub:empty{min-width:0}
+
+/* ============================================================
+   METAL + REVEAL
+   Self-contained. Everything below is presentation only - revert
+   this block and the app is unchanged functionally.
+   ============================================================ */
+
+/* Brushed grain. An SVG turbulence data URI, so no asset to ship and
+   nothing for the CSP to block (img-src allows data:). Kept faint - it
+   should read as surface texture, never as noise over the numbers. */
+.card, .hostblock, .app, .fbar:nth-child(odd){
+  --grain-img:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)' opacity='1'/%3E%3C/svg%3E");
+}
+
+/* --- machined panel ------------------------------------------------- */
+/* Layered ON TOP of --surface, never replacing it. Substituting a metal
+   gradient for the background washed the dark theme out to light grey and
+   took the hostnames with it - the surface tokens are tuned for contrast
+   and the sheen has to sit above them, not instead of them. */
+.card, .hostblock{
+  position:relative;
+  background-color:var(--surface);
+  background-image:linear-gradient(168deg,
+    color-mix(in srgb,var(--bevel-top) 60%,transparent) 0%,
+    transparent 24%,
+    transparent 72%,
+    color-mix(in srgb,var(--bevel-bottom) 55%,transparent) 100%);
+  box-shadow:
+    inset 0 1px 0 var(--bevel-top),
+    inset 0 -1px 0 var(--bevel-bottom),
+    0 1px 2px rgba(0,0,0,.06);
+}
+/* Grain sits under the content but over the panel gradient. Soft-light
+   rather than overlay: overlay lifts midtones hard enough to visibly
+   lighten the panel. */
+.card::before, .hostblock::before{
+  content:"";position:absolute;inset:0;z-index:0;border-radius:inherit;
+  background-image:var(--grain-img);background-size:140px 140px;
+  opacity:var(--grain);pointer-events:none;mix-blend-mode:soft-light;
+}
+/* Content above both the grain and the reveal glow. */
+.card > *, .hostblock > *{position:relative;z-index:2}
+
+/* --- reveal: the cursor lights the surface --------------------------- */
+.card::after, .hostblock::after{
+  content:"";position:absolute;inset:0;z-index:1;border-radius:inherit;
+  pointer-events:none;opacity:0;transition:opacity .28s ease;
+  background:radial-gradient(circle 220px at var(--mx,50%) var(--my,50%),
+    var(--reveal-face) 0%, transparent 68%);
+}
+.card:hover::after, .hostblock:hover::after{opacity:1}
+
+/* Reveal edge - the sheen tracing the rim, which reads better on glass
+   than washing the face and keeps the numbers clean. */
+.reveal-edge{
+  position:absolute;inset:0;z-index:3;border-radius:inherit;
+  pointer-events:none;padding:1px;opacity:0;transition:opacity .28s ease;
+  background:radial-gradient(circle 200px at var(--mx,50%) var(--my,50%),
+    var(--reveal-edge) 0%, transparent 62%);
+  -webkit-mask:linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite:xor;
+  mask:linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask-composite:exclude;
+}
+.card:hover .reveal-edge, .hostblock:hover .reveal-edge{opacity:1}
+
+/* --- gloss on the load tiles ---------------------------------------- */
+/* A specular band across the top of each fill, so a filled tile reads as
+   a lit surface rather than a flat block of colour. */
+.core::after{
+  background-image:
+    linear-gradient(to bottom, var(--gloss) 0%, transparent 42%),
+    linear-gradient(to top,
+      color-mix(in srgb,var(--band) 90%,transparent) 0%,
+      color-mix(in srgb,var(--band) 44%,transparent) 58%,
+      color-mix(in srgb,var(--band) 14%,transparent) 100%);
+}
+.fbar-fill{
+  background-image:
+    linear-gradient(to bottom, var(--gloss) 0%, transparent 46%),
+    linear-gradient(to right,
+      color-mix(in srgb,var(--band) 88%,transparent) 0%,
+      color-mix(in srgb,var(--band) 52%,transparent) 70%,
+      color-mix(in srgb,var(--band) 26%,transparent) 100%);
+}
+
+/* --- chrome on the primary control ---------------------------------- */
+.btn.primary{
+  background-image:linear-gradient(to bottom,
+    color-mix(in srgb,var(--gloss) 55%,transparent) 0%,
+    transparent 48%);
+  box-shadow:inset 0 1px 0 color-mix(in srgb,var(--gloss) 70%,transparent),
+             0 1px 3px rgba(0,0,0,.18);
+}
+
+/* The window itself gets the same machining. */
+.app{
+  background-image:linear-gradient(170deg,
+    color-mix(in srgb,var(--bevel-top) 40%,transparent) 0%, transparent 22%);
+}
+
+@media (prefers-reduced-motion:reduce){
+  .card::after,.hostblock::after,.reveal-edge{transition:none}
+}

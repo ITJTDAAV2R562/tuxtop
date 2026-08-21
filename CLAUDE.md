@@ -90,7 +90,17 @@ One Tokio task per host. A host that hangs must degrade only its own card.
 `hsl()` in component rules. Hardcoded colours do not survive the theme switch
 and typically break in only one direction, which makes them easy to miss.
 
-**Every colour must be defined in all three theme states.** Bare `:root` carries
+**Every colour must be defined in all three theme states — and there is a checker.**
+
+```sh
+python3 scripts/check-theme-tokens.py
+```
+
+Run it after touching tokens. This bug has landed twice (`--viz-*`, then the
+metal/reveal set): tokens go into the `@media` block and miss
+`:root[data-theme="dark"]`, so an explicit dark toggle silently falls back to
+light colours. It fails in one direction only, which is why eyeballing misses it.
+ Bare `:root` carries
 the complete light palette; `@media (prefers-color-scheme: dark)` guarded as
 `:root:not([data-theme="light"])` redefines the tokens; `:root[data-theme="dark"]`
 redefines them again. A token defined in only one of the three renders one

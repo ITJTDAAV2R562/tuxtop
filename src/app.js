@@ -350,7 +350,8 @@
         <span class="hb-cpu" data-hb-cpu></span>
         <span class="hb-cores">${meta}</span>
       </header>
-      <div class="hb-body"></div>`;
+      <div class="hb-body"></div>
+      <span class="reveal-edge" aria-hidden="true"></span>`;
     return sec;
   }
 
@@ -559,6 +560,9 @@
         commitOrder(dragging, h.name, after);
       });
 
+      el.appendChild(Object.assign(document.createElement('span'),
+        { className: 'reveal-edge', ariaHidden: 'true' }));
+
       grid.appendChild(el);
     });
 
@@ -731,6 +735,16 @@
     $('#f-name').select();
   });
   addEventListener('resize', () => paint());
+
+  // Reveal highlight. Windows' own Fluent surfaces light up under the
+  // cursor; matching that makes the app read as more native, not less.
+  grid.addEventListener('pointermove', e => {
+    const panel = e.target.closest('.card, .hostblock');
+    if (!panel) return;
+    const r = panel.getBoundingClientRect();
+    panel.style.setProperty('--mx', (e.clientX - r.left) + 'px');
+    panel.style.setProperty('--my', (e.clientY - r.top) + 'px');
+  }, { passive: true });
 
   // ---------------------------------------------------------------- LIVE
   async function startLive() {
