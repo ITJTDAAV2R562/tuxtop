@@ -13,6 +13,7 @@
 //! See `docs/ARCHITECTURE.md` for why there are two planes, and
 //! `docs/DECISIONS.md` for the measurement that forced the split.
 
+pub mod history;
 pub mod hostlist;
 pub mod model;
 pub mod proc;
