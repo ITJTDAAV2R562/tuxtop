@@ -101,7 +101,7 @@ mod tests {
         TrafficStats {
             bytes_total: bytes,
             frames_total: frames,
-            last_frame_bytes: if frames > 0 { bytes / frames } else { 0 },
+            last_frame_bytes: bytes.checked_div(frames).unwrap_or(0),
         }
     }
 
