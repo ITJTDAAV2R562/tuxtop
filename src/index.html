@@ -44,8 +44,12 @@
     <span class="tb-grow"></span>
     <div class="seg" role="group" aria-label="View">
       <button id="viewHosts" aria-pressed="true">Hosts</button>
-      <button id="viewAll" aria-pressed="false">All cores</button>
+      <button id="viewAll" aria-pressed="false">Fleet</button>
     </div>
+    <label class="sortwrap" id="metricWrap" hidden>
+      <span>Metric</span>
+      <select id="metricSel" aria-label="Fleet metric"></select>
+    </label>
     <label class="sortwrap">
       <span>Sort</span>
       <select id="sortSel" aria-label="Card order">

@@ -39,7 +39,7 @@
   // View preferences, remembered between launches.
   const PREFS = 'tuxtop.prefs';
   const prefs = Object.assign(
-    { view: 'hosts', sort: 'manual' },
+    { view: 'hosts', sort: 'manual', metric: 'cores' },
     JSON.parse(localStorage.getItem(PREFS) || '{}')
   );
   const savePrefs = () => localStorage.setItem(PREFS, JSON.stringify(prefs));
@@ -125,7 +125,9 @@
   function ordered() {
     const list = hosts.slice();
     if (prefs.sort === 'load') {
-      return list.sort((a, b) => last(b.hist.cpu) - last(a.hist.cpu));
+      // In the fleet view "busiest" means the metric on screen, not always CPU.
+      const m = prefs.view === 'all' ? metric() : METRICS.cpu;
+      return list.sort((a, b) => (m.scalar(b) || 0) - (m.scalar(a) || 0));
     }
     if (prefs.sort === 'name') {
       return list.sort((a, b) => a.name.localeCompare(b.name));
@@ -134,6 +136,87 @@
   }
 
   const last = a => (a.length ? a[a.length - 1] : 0);
+
+  function bps(v) {
+    const U = ['B', 'KB', 'MB', 'GB'];
+    let n = v || 0, i = 0;
+    while (n >= 1024 && i < U.length - 1) { n /= 1024; i++; }
+    return `${i ? n.toFixed(1) : Math.round(n)} ${U[i]}/s`;
+  }
+
+  // ---- metric registry ----------------------------------------------------
+  //
+  // The fleet is a matrix of hosts x metrics. A host card is a row of it; the
+  // fleet view is a column. Every metric declares its shape and its scale, so
+  // adding one is a table entry rather than a new renderer.
+  //
+  //   shape 'vector' - one value per core/disk/nic; drawn as a tile grid
+  //   shape 'scalar' - one value per host; drawn as a comparable bar
+  //
+  //   scale 'absolute' - already a percentage, so 0..100 is meaningful and
+  //                      shared across hosts without transformation
+  //   scale 'log'      - a rate. A linear axis lets one busy host flatten
+  //                      everyone else into invisible slivers, while
+  //                      normalising per host hides that dove moves 10x the
+  //                      traffic heron does. Log keeps magnitude and
+  //                      visibility at once.
+  const METRICS = {
+    cores: {
+      label: 'CPU cores', shape: 'vector', scale: 'absolute', max: 100,
+      vector: h => h.core || [],
+      scalar: h => last(h.hist.cpu),
+      fmt: v => Math.round(v) + '%',
+    },
+    cpu: {
+      label: 'CPU', shape: 'scalar', scale: 'absolute', max: 100,
+      scalar: h => last(h.hist.cpu),
+      fmt: v => Math.round(v) + '%',
+    },
+    mem: {
+      label: 'Memory', shape: 'scalar', scale: 'absolute', max: 100,
+      scalar: h => (h.ramGB ? h.ram / h.ramGB * 100 : 0),
+      fmt: v => Math.round(v) + '%',
+      sub: h => `${gb(h.ram)} / ${gb(h.ramGB)} GB`,
+    },
+    disk: {
+      label: 'Disk I/O', shape: 'scalar', scale: 'log', floor: 1e6, decades: 4,
+      scalar: h => h.dio || 0, fmt: bps,
+    },
+    net: {
+      label: 'Network', shape: 'scalar', scale: 'log', floor: 1e6, decades: 4,
+      scalar: h => h.net || 0, fmt: bps,
+    },
+    load: {
+      label: 'Load avg', shape: 'scalar', scale: 'log', floor: 1, decades: 3,
+      scalar: h => (h.load ? h.load[0] : 0), fmt: v => v.toFixed(2),
+    },
+    gpu: {
+      label: 'GPU', shape: 'scalar', scale: 'absolute', max: 100,
+      scalar: h => h.gpuU || 0, fmt: v => Math.round(v) + '%',
+    },
+  };
+
+  /// Map a value to 0..1 for the given metric, using a fleet-wide peak so
+  /// bars are comparable between hosts.
+  ///
+  /// Log metrics span a fixed window of decades below the fleet peak rather
+  /// than starting at zero. Anchoring the scale at 1 byte crushed everything
+  /// above a megabyte into the top third - a 600x difference rendered as 69%
+  /// against 100%. Four decades gives the range real visual separation, and
+  /// anything quieter than that reads as the negligible traffic it is.
+  function logWindow(m, peak) {
+    const top = Math.max(peak || 0, m.floor || 1);
+    return { top, bottom: top / Math.pow(10, m.decades || 4) };
+  }
+
+  function normalise(m, v, peak) {
+    if (m.scale === 'absolute') return Math.min(1, (v || 0) / (m.max || 100));
+    const { top, bottom } = logWindow(m, peak);
+    if (!v || v <= bottom) return 0;
+    return Math.min(1, Math.log10(v / bottom) / Math.log10(top / bottom));
+  }
+
+  const metric = () => METRICS[prefs.metric] || METRICS.cores;
 
   // Suspends repaints while a drag is in flight.
   let dragging = null;
@@ -175,42 +258,49 @@
   // themselves to the total core count so the whole fleet fits the window
   // rather than scrolling — with 52 cores across four boxes, the point is
   // seeing them all at once.
-  function buildAllCores() {
+  // ---- fleet view: one metric, every host --------------------------------
+  function buildFleet() {
     grid.innerHTML = '';
     grid.classList.add('all-mode');
+    const m = metric();
+    grid.dataset.shape = m.shape;
+    grid.dataset.scale = m.scale;
+    grid.style.setProperty('--dec', m.decades || 4);
 
-    const total = hosts.reduce((a, h) => a + (h.cores || 0), 0);
+    // The load bands mean nothing on a rate metric - there is no "too hot"
+    // for bytes per second - so the legend that explains them is hidden
+    // rather than left on screen asserting a scale that is not in use.
+    document.body.dataset.bands = m.scale === 'absolute' ? 'on' : 'off';
+
+    if (!hosts.length) {
+      grid.innerHTML = '<div class="empty">No hosts yet. Add one to start watching.</div>';
+      return;
+    }
+    return m.shape === 'vector' ? buildVector(m) : buildScalar(m);
+  }
+
+  /// Vector metrics: a tile per core, per host.
+  function buildVector(m) {
+    const total = hosts.reduce((a, h) => a + (m.vector(h).length || h.cores || 0), 0);
     if (!total) {
       grid.innerHTML = '<div class="empty">No cores reporting yet.</div>';
       return;
     }
 
-    // ONE tile size for the whole fleet. Sizing per host made wader's 4 cores
-    // ten times the area of dove's 32, which reads as importance rather than
-    // count. Every block is the same width, so auto-fill derives the same
-    // column count for all of them and a core looks identical everywhere.
+    // ONE tile size for the whole fleet. Sizing per host made a 4-core box's
+    // tiles ten times the area of a 32-core box's, which reads as importance
+    // rather than count.
     const avail = Math.max(240, grid.clientWidth - 34);
-    const wanted = Math.max(4, Math.ceil(total / 4));   // aim for roughly 4 rows
+    const wanted = Math.max(4, Math.ceil(total / 4));
     const px = Math.max(20, Math.min(52, Math.floor(avail / wanted)));
-
     grid.style.setProperty('--tile', px + 'px');
     grid.style.setProperty('--tile-h', Math.max(18, Math.round(px * 0.82)) + 'px');
 
     ordered().forEach(h => {
-      const n = h.cores || 0;
-      const sec = document.createElement('section');
-      sec.className = 'hostblock';
-      sec.dataset.name = h.name;
-      sec.innerHTML = `
-        <header class="hb-head">
-          <span class="dot"></span>
-          <h2 class="hname">${esc(h.name)}</h2>
-          <span class="hb-cpu" data-hb-cpu></span>
-          <span class="hb-cores">${n || '?'} cores</span>
-        </header>
-        <div class="cores all"></div>`;
-
-      const wrap = sec.querySelector('.cores.all');
+      const n = m.vector(h).length || h.cores || 0;
+      const sec = hostBlock(h, `${n || '?'} cores`);
+      const wrap = sec.querySelector('.hb-body');
+      wrap.className = 'hb-body cores all';
       for (let i = 0; i < n; i++) {
         const t = document.createElement('div');
         t.className = 'core';
@@ -222,29 +312,116 @@
     });
   }
 
-  function paintAllCores() {
+  /// Scalar metrics: one comparable bar per host.
+  function buildScalar(m) {
+    const wrap = document.createElement('div');
+    wrap.className = 'fleetbars';
+    ordered().forEach(h => {
+      const row = document.createElement('div');
+      row.className = 'fbar';
+      row.dataset.name = h.name;
+      row.innerHTML = `
+        <span class="dot"></span>
+        <span class="fbar-name">${esc(h.name)}</span>
+        <span class="fbar-track"><span class="fbar-fill"></span></span>
+        <span class="fbar-val" data-val></span>
+        <span class="fbar-sub" data-sub></span>`;
+      wrap.appendChild(row);
+    });
+    grid.appendChild(wrap);
+
+    // The axis needs saying out loud, with its actual range: a log bar is not
+    // a linear one, and a reader who assumes linear misjudges every
+    // comparison on screen.
+    const note = document.createElement('p');
+    note.className = 'scale-note';
+    note.dataset.note = '1';
+    grid.appendChild(note);
+  }
+
+  function hostBlock(h, meta) {
+    const sec = document.createElement('section');
+    sec.className = 'hostblock';
+    sec.dataset.name = h.name;
+    sec.innerHTML = `
+      <header class="hb-head">
+        <span class="dot"></span>
+        <h2 class="hname">${esc(h.name)}</h2>
+        <span class="hb-cpu" data-hb-cpu></span>
+        <span class="hb-cores">${meta}</span>
+      </header>
+      <div class="hb-body"></div>`;
+    return sec;
+  }
+
+  function paintFleet() {
+    const m = metric();
+    if (grid.dataset.shape !== m.shape) { build(); return; }
+    return m.shape === 'vector' ? paintVector(m) : paintScalar(m);
+  }
+
+  function paintVector(m) {
     hosts.forEach(h => {
       const sec = grid.querySelector(`.hostblock[data-name="${CSS.escape(h.name)}"]`);
       if (!sec) return;
+      const vals = m.vector(h);
       const tiles = sec.querySelectorAll('.core');
-      if (tiles.length !== (h.cores || 0)) { build(); return; }
+      if (tiles.length !== (vals.length || h.cores || 0)) { build(); return; }
 
       for (let i = 0; i < tiles.length; i++) {
-        const v = h.core[i] || 0;
-        tiles[i].style.setProperty('--l', (v / 100).toFixed(3));
+        const v = vals[i] || 0;
+        tiles[i].style.setProperty('--l', normalise(m, v, 100).toFixed(3));
         tiles[i].dataset.band = band(v);
         const pc = tiles[i].firstElementChild;
         if (pc) pc.textContent = Math.round(v);
       }
-
-      sec.querySelector('[data-hb-cpu]').textContent = Math.round(last(h.hist.cpu)) + '%';
-      sec.querySelector('.dot').className =
-        'dot' + (h.fault ? ' warnstate' : (LIVE && !h.seen ? ' pending' : ''));
+      sec.querySelector('[data-hb-cpu]').textContent = m.fmt(m.scalar(h));
+      sec.querySelector('.dot').className = dotClass(h);
     });
   }
 
+  function paintScalar(m) {
+    // Peak across the fleet, so every bar shares one axis.
+    const peak = hosts.reduce((a, h) => Math.max(a, m.scalar(h) || 0), 0);
+
+    hosts.forEach(h => {
+      const row = grid.querySelector(`.fbar[data-name="${CSS.escape(h.name)}"]`);
+      if (!row) return;
+      const v = m.scalar(h) || 0;
+      const n = normalise(m, v, peak);
+
+      const fill = row.querySelector('.fbar-fill');
+      fill.style.width = (n * 100).toFixed(1) + '%';
+      // Percentage metrics carry the load bands; a rate has no "too hot".
+      fill.dataset.band = m.scale === 'absolute' ? band(v) : 'cool';
+
+      row.querySelector('[data-val]').textContent = h.fault ? '\u2014' : m.fmt(v);
+      row.querySelector('[data-sub]').textContent = (!h.fault && m.sub) ? m.sub(h) : '';
+      row.querySelector('.dot').className = dotClass(h);
+      row.classList.toggle('down', !!h.fault);
+    });
+
+    const note = grid.querySelector('[data-note]');
+    if (note) {
+      if (m.scale === 'log') {
+        const { top, bottom } = logWindow(m, peak);
+        const d = m.decades || 4;
+        note.textContent =
+          `Logarithmic axis, ${d} decades: ${m.fmt(bottom)} to ${m.fmt(top)}. ` +
+          `Each ${(100 / d).toFixed(0)}% of bar length is a 10x change. ` +
+          `Quieter than ${m.fmt(bottom)} reads as empty.`;
+      } else {
+        note.textContent = 'Linear axis, 0\u2013100%. Directly comparable across hosts.';
+      }
+    }
+  }
+
+  const dotClass = h =>
+    'dot' + (h.fault ? ' warnstate' : (LIVE && !h.seen ? ' pending' : ''));
+
   function build() {
-    if (prefs.view === 'all') return buildAllCores();
+    if (prefs.view === 'all') return buildFleet();
+    document.body.dataset.bands = 'on';
     grid.classList.remove('all-mode');
     grid.style.removeProperty('--tile');
 
@@ -398,7 +575,7 @@
   // ---- paint values ----
   function paint() {
     if (frozen) return;   // a rebuild mid-drag would drop the dragged card
-    if (prefs.view === 'all') return paintAllCores();
+    if (prefs.view === 'all') return paintFleet();
     const A = css('--accent'), MEM = css('--viz-mem'),
           DSK = css('--viz-disk'), NET = css('--viz-net'), GPU = css('--viz-gpu');
     hosts.forEach(h => {
@@ -433,8 +610,8 @@
         el.querySelector('.dot').className = 'dot' + cls;
       }
       el.querySelector('[data-ram]').textContent = `${gb(h.ram)} / ${gb(h.ramGB)} GB`;
-      el.querySelector('[data-dio]').textContent = Math.round(h.dio) + ' MB/s';
-      el.querySelector('[data-net]').textContent = h.net.toFixed(1) + ' MB/s';
+      el.querySelector('[data-dio]').textContent = bps(h.dio);
+      el.querySelector('[data-net]').textContent = bps(h.net);
       if (h.gpu) el.querySelector('[data-gpu]').textContent = Math.round(h.gpuU) + '%';
 
       const minis = el.querySelectorAll('.cores.mini .core');
@@ -456,8 +633,8 @@
         draw(el.querySelector('[data-c="dio"]'), h.hist.dio, DSK, 0);
         draw(el.querySelector('[data-c="net"]'), h.hist.net, NET, 0);
         el.querySelector('[data-d-ram]').textContent = gb(h.ram) + ' GB';
-        el.querySelector('[data-d-dio]').textContent = Math.round(h.dio) + ' MB/s';
-        el.querySelector('[data-d-net]').textContent = h.net.toFixed(1) + ' MB/s';
+        el.querySelector('[data-d-dio]').textContent = bps(h.dio);
+        el.querySelector('[data-d-net]').textContent = bps(h.net);
         if (h.gpu) {
           draw(el.querySelector('[data-c="gpu"]'), h.hist.gpu, GPU, 100);
           el.querySelector('[data-d-gpu]').textContent = Math.round(h.gpuU) + '%';
@@ -504,12 +681,28 @@
   });
 
   // ---- view + sort controls ----------------------------------------------
+  // Populate the metric picker from the registry, so a new metric needs no
+  // markup change.
+  const msel = $('#metricSel');
+  for (const [id, m] of Object.entries(METRICS)) {
+    const o = document.createElement('option');
+    o.value = id; o.textContent = m.label;
+    msel.appendChild(o);
+  }
+  msel.value = prefs.metric;
+
   function setView(v) {
     prefs.view = v; savePrefs();
     $('#viewHosts').setAttribute('aria-pressed', String(v === 'hosts'));
     $('#viewAll').setAttribute('aria-pressed', String(v === 'all'));
+    $('#metricWrap').hidden = v !== 'all';
     build(); paint();
   }
+
+  msel.addEventListener('change', e => {
+    prefs.metric = e.target.value; savePrefs();
+    build(); paint();
+  });
   $('#viewHosts').addEventListener('click', () => setView('hosts'));
   $('#viewAll').addEventListener('click', () => setView('all'));
 
@@ -522,6 +715,7 @@
   // Restore the remembered view before the first render.
   $('#viewHosts').setAttribute('aria-pressed', String(prefs.view === 'hosts'));
   $('#viewAll').setAttribute('aria-pressed', String(prefs.view === 'all'));
+  $('#metricWrap').hidden = prefs.view !== 'all';
 
   // Tile sizing in all-cores mode depends on window width.
   addEventListener('resize', () => { if (prefs.view === 'all') build(); });
@@ -570,8 +764,8 @@
       h.core = s.cores;
       h.ramGB = s.mem_total_kb / 1048576;
       h.ram = s.mem_used_kb / 1048576;
-      h.net = (s.net_rx_bps + s.net_tx_bps) / 1e6;
-      h.dio = (s.disk_read_bps + s.disk_write_bps) / 1e6;
+      h.net = s.net_rx_bps + s.net_tx_bps;      // bytes/sec
+      h.dio = s.disk_read_bps + s.disk_write_bps; // bytes/sec
       h.load = s.load;
       if (s.gpu) { h.gpu = s.gpu.name; h.gpuU = s.gpu.util_pct; }
       push(h.hist.cpu, s.cpu);

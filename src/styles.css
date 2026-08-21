@@ -460,3 +460,67 @@ dialog::backdrop{background:rgba(6,10,18,.42);backdrop-filter:blur(3px)}
 }
 .card:hover .grip{opacity:.75}
 .chead:active .grip{opacity:1;color:var(--accent)}
+
+/* ============ fleet view: scalar metrics ============ */
+.fleetbars{display:flex;flex-direction:column;gap:2px}
+.fbar{
+  display:grid;
+  grid-template-columns:auto minmax(90px,150px) 1fr auto auto;
+  align-items:center;gap:10px;
+  padding:8px 12px;border-radius:8px;
+}
+.fbar:nth-child(odd){background:var(--surface-sunk)}
+.fbar.down{opacity:.55}
+.fbar-name{
+  font-family:var(--font-mono);font-size:13px;font-weight:600;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+.fbar-track{
+  position:relative;height:16px;border-radius:4px;overflow:hidden;
+  background:linear-gradient(to top,var(--surface-sunk),color-mix(in srgb,var(--surface-sunk) 35%,transparent));
+  border:1px solid var(--stroke);
+}
+/* Decade markers. A log axis without them asks the reader to take the
+   scale on faith; --dec is set per metric from its decade count. */
+.grid[data-scale="log"] .fbar-track::before{
+  content:"";position:absolute;inset:0;z-index:1;pointer-events:none;
+  background:repeating-linear-gradient(to right,
+    transparent 0,
+    transparent calc(100% / var(--dec,4) - 1px),
+    var(--stroke-hi) calc(100% / var(--dec,4) - 1px),
+    var(--stroke-hi) calc(100% / var(--dec,4)));
+}
+/* Same encoding as a core tile: gradient body, crisp leading edge. */
+.fbar-fill{
+  display:block;height:100%;--band:var(--accent);
+  background:linear-gradient(to right,
+    color-mix(in srgb,var(--band) 88%,transparent) 0%,
+    color-mix(in srgb,var(--band) 52%,transparent) 70%,
+    color-mix(in srgb,var(--band) 26%,transparent) 100%);
+  border-right:2px solid var(--band);
+  transition:width .5s cubic-bezier(.3,.9,.4,1);
+}
+.fbar-fill[data-band="warn"]{--band:var(--warn)}
+.fbar-fill[data-band="crit"]{--band:var(--crit)}
+.fbar-val{
+  font-family:var(--font-mono);font-size:13px;font-weight:600;
+  font-variant-numeric:tabular-nums;min-width:82px;text-align:right;
+}
+.fbar-sub{
+  font-family:var(--font-mono);font-size:11px;color:var(--text-3);
+  min-width:118px;text-align:right;
+}
+.scale-note{
+  margin:12px 2px 0;font-size:11px;color:var(--text-3);line-height:1.5;
+}
+.grid.all-mode[data-shape="scalar"]{padding:14px}
+
+@media (max-width:640px){
+  .fbar{grid-template-columns:auto 1fr auto}
+  .fbar-track,.fbar-sub{display:none}
+}
+
+/* Band legend only applies where the bands are in use. */
+body[data-bands="off"] .legend span:not(:last-child){display:none}
+/* Reserve the sub-value column only when a metric supplies one. */
+.fbar-sub:empty{min-width:0}
