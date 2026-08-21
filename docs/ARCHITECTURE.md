@@ -170,3 +170,51 @@ both are indistinguishable from working software until you check.
 ordinary browser against a fake backend. Use it before hunting a UI bug by
 reading code — the "adding a second host removes the first" bug survived
 several rounds of inspection and was found in one pass there.
+
+## Two views, one matrix
+
+The fleet is a matrix of **hosts x metrics**. The two views are the two ways to
+slice it:
+
+- **Host view** - a row: one card per box, every metric for that box.
+- **Fleet view** - a column: one metric, every box.
+
+`src/app.js` holds a `METRICS` registry so this is a table rather than a pile
+of renderers. Each entry declares two things.
+
+**Shape** - how the metric is drawn.
+
+| shape | meaning | rendering |
+| --- | --- | --- |
+| `vector` | one value per core / disk / NIC | tile grid per host |
+| `scalar` | one value per host | one comparable bar per host |
+
+**Scale** - how values are made comparable *between hosts*.
+
+| scale | used for | why |
+| --- | --- | --- |
+| `absolute` | CPU, memory, GPU | already a percentage; 0-100 is shared and needs no transform |
+| `log` | disk I/O, network, load | a rate, spanning orders of magnitude across a fleet |
+
+### Why log for rates
+
+A linear axis lets one busy host flatten everyone else into invisible slivers.
+Normalising each host against its own peak fixes visibility but destroys the
+comparison - it hides that one box moves a thousand times the traffic of
+another. Log keeps both.
+
+The scale spans a **window of decades below the fleet peak**, not from zero.
+The first attempt anchored at 1 byte and crushed everything above a megabyte
+into the top third: a 600x spread rendered as 69% against 100%. Four decades
+below the peak spreads the same range across 22% to 100%.
+
+A log bar looks exactly like a linear one, so the view states its real bounds
+in words and draws decade gridlines on the track. Without that, every
+comparison on screen is quietly misread.
+
+### Adding a metric
+
+Add an entry to `METRICS` with `label`, `shape`, `scale`, an accessor
+(`scalar` and/or `vector`), and `fmt`. The picker is built from the registry,
+so no markup changes. Everything Beszel already collects - temperatures,
+per-filesystem usage, container stats - fits this shape.

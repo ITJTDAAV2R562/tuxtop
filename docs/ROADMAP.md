@@ -114,6 +114,8 @@ numerals — see [ADR-005](DECISIONS.md#adr-005--load-is-encoded-three-ways-at-o
 ## Ideas — not committed
 
 - **Per-core sparklines** instead of single-value tiles at large card sizes.
+- **More metrics** now that the registry exists: temperatures, per-filesystem
+  usage, per-NIC and per-disk vectors. Each is a table entry, not a renderer.
 - **Card size scaled to core count** — a 32-core box and a 4-core box currently
   get identical footprints. Open question from the mockup review.
 - **Detail as a separate window** rather than inline accordion, so two hosts
