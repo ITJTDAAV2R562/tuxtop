@@ -309,6 +309,16 @@
   }
 
   /// Vector metrics: a tile per core, per host.
+  ///
+  /// Blocks are sized to their core count and packed with flex-wrap, so small
+  /// hosts share a row instead of each claiming a full-width strip. Measured
+  /// on an 18-host fleet, full-width blocks left single-core hosts occupying
+  /// 3% of their row and pushed the grid past the viewport; packing collapses
+  /// that to a few rows.
+  ///
+  /// Tile size stays global. A core must look the same on every host, or
+  /// block area reads as importance rather than count - and block *width*
+  /// still tracks core count, which is the part worth keeping.
   function buildVector(m) {
     const total = hosts.reduce((a, h) => a + (m.vector(h).length || h.cores || 0), 0);
     if (!total) {
@@ -316,18 +326,40 @@
       return;
     }
 
-    // ONE tile size for the whole fleet. Sizing per host made a 4-core box's
-    // tiles ten times the area of a 32-core box's, which reads as importance
-    // rather than count.
-    const avail = Math.max(240, grid.clientWidth - 34);
+    const GAP = 3;        // between tiles, matches .cores.all
+    const CHROME = 28;    // block padding + borders
+    const MIN_W = 172;    // enough for hostname, load and the core count
+
+    const avail = Math.max(240, grid.clientWidth - 28);
     const wanted = Math.max(4, Math.ceil(total / 4));
     const px = Math.max(20, Math.min(52, Math.floor(avail / wanted)));
+    // Most tiles that fit across the widest possible block.
+    const maxCols = Math.max(1, Math.floor((avail - CHROME + GAP) / (px + GAP)));
+
     grid.style.setProperty('--tile', px + 'px');
     grid.style.setProperty('--tile-h', Math.max(18, Math.round(px * 0.82)) + 'px');
 
     ordered().forEach(h => {
       const n = m.vector(h).length || h.cores || 0;
-      const sec = hostBlock(h, `${n || '?'} cores`);
+      const cols = Math.max(1, Math.min(n || 1, maxCols));
+      const sec = hostBlock(h, n ? `${n} ${n === 1 ? 'core' : 'cores'}` : '? cores');
+
+      // Fixed tracks, not 1fr: stretching tiles to fill a block wider than
+      // its cores need would break the one-size rule the whole view rests on.
+      sec.style.setProperty('--cols', cols);
+      const natural = cols * px + (cols - 1) * GAP + CHROME;
+      if (n >= maxCols) {
+        sec.style.flex = '1 1 100%';          // wraps internally to more rows
+      } else {
+        // Grow to share out a row's leftover width, but not without limit: a
+        // block alone on the final row would otherwise stretch across the
+        // whole window, putting two tiles in a full-width panel.
+        const base = Math.max(MIN_W, natural);
+        sec.style.flexBasis = base + 'px';
+        sec.style.flexGrow = '1';
+        sec.style.maxWidth = Math.round(base * 1.7) + 'px';
+      }
+
       const wrap = sec.querySelector('.hb-body');
       wrap.className = 'hb-body cores all';
       for (let i = 0; i < n; i++) {

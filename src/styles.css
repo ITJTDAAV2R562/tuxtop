@@ -421,7 +421,11 @@ dialog::backdrop{background:rgba(6,10,18,.42);backdrop-filter:blur(3px)}
 }
 
 /* ============ all-cores view ============ */
-.grid.all-mode{grid-template-columns:1fr;gap:10px}
+/* Vector metrics pack; scalar metrics stay a single column of bars. */
+.grid.all-mode{display:flex;flex-wrap:wrap;gap:10px;align-items:stretch;align-content:start}
+.grid.all-mode[data-shape="scalar"]{display:grid;grid-template-columns:1fr}
+.grid.all-mode .hostblock{display:flex;flex-direction:column;max-width:100%;flex-shrink:0}
+.grid.all-mode .hb-body{flex:1}
 .hostblock{
   background:var(--surface);
   border:1px solid var(--stroke);
@@ -443,8 +447,10 @@ dialog::backdrop{background:rgba(6,10,18,.42);backdrop-filter:blur(3px)}
 /* Every block is the same width, so auto-fill yields the same column count
    in each - which is what keeps a core the same size on every host. */
 .cores.all{
-  display:grid;grid-auto-flow:row;height:auto;gap:3px;
-  grid-template-columns:repeat(auto-fill,minmax(var(--tile,34px),1fr));
+  display:grid;grid-auto-flow:row;height:auto;gap:3px;align-content:start;
+  /* Fixed tracks so a tile is the same size in every block, whatever width
+     the block ended up with. auto-fill + 1fr would stretch them. */
+  grid-template-columns:repeat(var(--cols,8),var(--tile,34px));
 }
 .cores.all .core{
   height:var(--tile-h,30px);border-radius:3px;
