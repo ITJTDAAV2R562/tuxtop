@@ -451,3 +451,12 @@ dialog::backdrop{background:rgba(6,10,18,.42);backdrop-filter:blur(3px)}
   border:1px solid var(--stroke-hi);background:var(--surface-hi);
 }
 .sortwrap select:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+
+/* Drag affordance. A cursor change alone is not discoverable - nothing on
+   screen said the cards could be reordered. */
+.grip{
+  display:flex;align-items:center;color:var(--text-3);
+  opacity:0;transition:opacity .15s;margin-right:-2px;
+}
+.card:hover .grip{opacity:.75}
+.chead:active .grip{opacity:1;color:var(--accent)}

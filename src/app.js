@@ -264,6 +264,13 @@
       el.dataset.name = h.name;
       el.innerHTML = `
         <div class="chead">
+          <span class="grip" aria-hidden="true" title="Drag to reorder">
+            <svg width="9" height="13" viewBox="0 0 9 13"><g fill="currentColor">
+              <circle cx="1.6" cy="1.6" r="1.3"/><circle cx="7.4" cy="1.6" r="1.3"/>
+              <circle cx="1.6" cy="6.5" r="1.3"/><circle cx="7.4" cy="6.5" r="1.3"/>
+              <circle cx="1.6" cy="11.4" r="1.3"/><circle cx="7.4" cy="11.4" r="1.3"/>
+            </g></svg>
+          </span>
           <span class="dot"></span>
           <h2 class="hname">${h.name}</h2>
           <span class="chip" data-tag>${h.distro || '&mdash;'}</span>

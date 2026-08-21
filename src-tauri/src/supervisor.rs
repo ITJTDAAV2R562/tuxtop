@@ -87,6 +87,7 @@ async fn watch(app: AppHandle, cfg: HostConfig, interval_secs: u32) {
         };
 
         let mut got_data = false;
+        let mut reported = false;
 
         while let Some(item) = rx.recv().await {
             match item {
@@ -100,6 +101,7 @@ async fn watch(app: AppHandle, cfg: HostConfig, interval_secs: u32) {
                 }
                 Err(fault) => {
                     emit_fault(&app, &cfg.name, fault);
+                    reported = true;
                     break;
                 }
             }
@@ -107,9 +109,12 @@ async fn watch(app: AppHandle, cfg: HostConfig, interval_secs: u32) {
 
         sampler.stop().await;
 
-        // If the stream ended without ever producing data and without a fault,
-        // say so rather than reconnecting silently forever.
-        if !got_data {
+        // Only fall back to the generic message when nothing specific was
+        // reported. Emitting it unconditionally overwrote the accurate fault
+        // that had just been sent - an unreachable host showed "Sampler
+        // failed" instead of "Host unreachable: connection timed out", which
+        // points at the wrong thing entirely.
+        if !got_data && !reported {
             emit_fault(
                 &app,
                 &cfg.name,
