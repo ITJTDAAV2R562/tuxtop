@@ -103,8 +103,11 @@ fn set_settings(
     f.settings = Settings {
         interval_secs: settings.interval_secs.clamp(1, 3600),
         history_cap_mb: settings.history_cap_mb.clamp(16, 8192),
+        always_on_top: settings.always_on_top,
     };
     hosts::save_file(&app, &f)?;
+
+    apply_always_on_top(&app, f.settings.always_on_top);
 
     for h in &f.hosts {
         if effective_interval(h, &before) != effective_interval(h, &f.settings) {
@@ -233,6 +236,12 @@ fn main() {
                 apply_backdrop(&window);
             }
 
+            // Restore the pinned state before the window is shown, so it does
+            // not visibly jump to the front a moment after appearing.
+            if let Ok(s) = hosts::load_settings(&handle) {
+                apply_always_on_top(&handle, s.always_on_top);
+            }
+
             // Start a sampler for every configured host.
             //
             // A broken hosts.toml is reported to the frontend rather than
@@ -256,6 +265,20 @@ fn main() {
         })
         .run(tauri::generate_context!())
         .expect("error while running tuxtop");
+}
+
+/// Pin or unpin the window.
+///
+/// Failure is logged rather than propagated: a window manager that refuses
+/// the request should not fail the settings save, and the stored preference
+/// stays truthful about what was asked for.
+fn apply_always_on_top(app: &AppHandle, on: bool) {
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    if let Err(e) = window.set_always_on_top(on) {
+        eprintln!("could not set always-on-top: {e}");
+    }
 }
 
 /// Apply the Win11 Mica backdrop.

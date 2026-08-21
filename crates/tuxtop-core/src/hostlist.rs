@@ -157,6 +157,13 @@ pub struct Settings {
     /// it earns its place around 100 hosts.
     #[serde(default = "default_history_mb")]
     pub history_cap_mb: u32,
+    /// Keep the window above others.
+    ///
+    /// Task Manager has the same option, for the same reason: monitoring is
+    /// something you do while doing something else, and a monitor you have to
+    /// alt-tab to is half useless.
+    #[serde(default)]
+    pub always_on_top: bool,
 }
 
 fn default_interval() -> u32 {
@@ -172,6 +179,7 @@ impl Default for Settings {
         Self {
             interval_secs: default_interval(),
             history_cap_mb: default_history_mb(),
+            always_on_top: false,
         }
     }
 }
@@ -415,6 +423,7 @@ mod settings_tests {
         assert_eq!(f.hosts.len(), 1);
         assert_eq!(f.settings.interval_secs, 1);
         assert_eq!(f.settings.history_cap_mb, 256);
+        assert!(!f.settings.always_on_top, "off unless asked for");
     }
 
     #[test]
@@ -423,6 +432,7 @@ mod settings_tests {
             settings: Settings {
                 interval_secs: 5,
                 history_cap_mb: 512,
+                always_on_top: true,
             },
             hosts: vec![host("dove", None), host("heron", Some(30))],
         };
@@ -431,6 +441,10 @@ mod settings_tests {
 
         assert_eq!(back.settings.interval_secs, 5, "wrote:\n{text}");
         assert_eq!(back.settings.history_cap_mb, 512);
+        assert!(
+            back.settings.always_on_top,
+            "the toggle must survive a restart"
+        );
         assert_eq!(
             back.hosts.len(),
             2,
@@ -459,6 +473,7 @@ mod settings_tests {
         let s = Settings {
             interval_secs: 10,
             history_cap_mb: 256,
+            always_on_top: false,
         };
         assert_eq!(effective_interval(&host("dove", None), &s), 10);
     }
@@ -468,6 +483,7 @@ mod settings_tests {
         let s = Settings {
             interval_secs: 10,
             history_cap_mb: 256,
+            always_on_top: false,
         };
         assert_eq!(effective_interval(&host("dove", Some(1)), &s), 1);
     }
@@ -478,6 +494,7 @@ mod settings_tests {
         let s = Settings {
             interval_secs: 1,
             history_cap_mb: 256,
+            always_on_top: false,
         };
         assert_eq!(effective_interval(&host("dove", Some(0)), &s), 1);
         assert_eq!(effective_interval(&host("dove", Some(999_999)), &s), 3600);

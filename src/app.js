@@ -1469,6 +1469,7 @@
         const s = await TAURI.core.invoke('get_settings');
         $('#s-interval').value = String(s.interval_secs);
         $('#s-cap').value = String(s.history_cap_mb);
+        $('#s-ontop').checked = !!s.always_on_top;
       } catch (e) { showError(String(e)); }
     }
     perHostRows();
@@ -1480,6 +1481,16 @@
   });
 
   setDlg.addEventListener('close', () => clearInterval(meterTimer));
+  $('#s-ontop').addEventListener('change', async e => {
+    if (!LIVE) return;
+    try {
+      const s = await TAURI.core.invoke('get_settings');
+      await TAURI.core.invoke('set_settings', {
+        settings: { ...s, always_on_top: e.target.checked },
+      });
+    } catch (err) { showError(String(err)); }
+  });
+
   $('#s-interval').addEventListener('change', refreshMeter);
   $('#s-cap').addEventListener('change', refreshMeter);
 
@@ -1490,6 +1501,7 @@
       await TAURI.core.invoke('set_settings', { settings: {
         interval_secs: +$('#s-interval').value,
         history_cap_mb: +$('#s-cap').value,
+        always_on_top: $('#s-ontop').checked,
       }});
     } catch (err) { showError(String(err)); }
   });
