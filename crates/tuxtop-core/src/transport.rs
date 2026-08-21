@@ -231,6 +231,82 @@ async fn pump(
     let _ = tx.send(Err(fault)).await;
 }
 
+/// A running process sampler: its own connection, its own cadence.
+///
+/// Separate from [`SshSampler`] because the ranking needs two snapshots a
+/// second apart, and doing that inside the metric loop would stall 1 Hz
+/// sampling for the whole window. Started only while the process view is
+/// open, so a view nobody is looking at costs nothing.
+pub struct ProcSampler {
+    child: Child,
+}
+
+impl ProcSampler {
+    pub fn start(
+        host: HostConfig,
+        top_n: usize,
+        window_ms: u32,
+        interval_secs: u32,
+        tx: mpsc::Sender<Vec<crate::procs::ProcInfo>>,
+    ) -> std::io::Result<Self> {
+        let cmd = crate::procs::process_loop_command(top_n, window_ms, interval_secs);
+        let args = ssh_args(&host, &cmd);
+
+        let mut child = Command::new("ssh")
+            .args(&args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .spawn()?;
+
+        let stdout = child.stdout.take().expect("stdout was piped");
+        tokio::spawn(proc_pump(host, stdout, tx));
+
+        Ok(Self { child })
+    }
+
+    pub async fn stop(mut self) {
+        let _ = self.child.kill().await;
+    }
+}
+
+async fn proc_pump(
+    host: HostConfig,
+    stdout: tokio::process::ChildStdout,
+    tx: mpsc::Sender<Vec<crate::procs::ProcInfo>>,
+) {
+    let mut reader = BufReader::new(stdout);
+    let mut buf = String::new();
+    let mut chunk = vec![0u8; 16 * 1024];
+
+    loop {
+        let n = match reader.read(&mut chunk).await {
+            Ok(0) | Err(_) => break,
+            Ok(n) => n,
+        };
+        buf.push_str(&String::from_utf8_lossy(&chunk[..n]));
+
+        let (frames, rest) = sampler::split_frames(&buf);
+        let parsed: Vec<_> = frames
+            .into_iter()
+            .map(|f| crate::procs::parse_processes(&host.name, f))
+            .collect();
+        buf = rest.to_string();
+
+        for p in parsed {
+            // An empty frame means the denominator was missing, which is
+            // reported as nothing rather than as an idle machine.
+            if p.is_empty() {
+                continue;
+            }
+            if tx.send(p).await.is_err() {
+                return;
+            }
+        }
+    }
+}
+
 /// Turn ssh's stderr into a typed fault.
 ///
 /// Distinguishing auth failure from unreachable is the difference between a

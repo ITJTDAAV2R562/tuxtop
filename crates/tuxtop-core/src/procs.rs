@@ -123,7 +123,34 @@ pub fn parse_processes(host: &str, text: &str) -> Vec<ProcInfo> {
         });
     }
 
+    // CPU descending, memory as the tiebreak.
+    //
+    // The union of two rankings means many rows share 0% CPU on a quiet
+    // fleet; ordering those by size puts the substantial processes above the
+    // trivial ones instead of leaving them in whatever order the shell
+    // happened to emit.
+    out.sort_by(|a, b| {
+        b.cpu_pct
+            .partial_cmp(&a.cpu_pct)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(b.rss_kb.cmp(&a.rss_kb))
+    });
+
     out
+}
+
+/// Wrap the one-shot ranking in a loop, for a long-lived channel.
+///
+/// Processes run on their own connection at their own cadence: the ranking
+/// needs two snapshots separated by a real interval, and doing that inside
+/// the metric loop would stall 1 Hz sampling for the whole window.
+pub fn process_loop_command(top_n: usize, window_ms: u32, interval_secs: u32) -> String {
+    format!(
+        "while :; do {}; echo '{}'; sleep {}; done",
+        process_command(top_n, window_ms),
+        crate::sampler::FRAME_DELIMITER,
+        interval_secs.max(1),
+    )
 }
 
 /// Kernel threads are conventionally named for their subsystem, and are the
@@ -245,5 +272,37 @@ TXP|68|32|0|root|migration/8
             "must not write files"
         );
         assert!(cmd.contains("head -20"), "only the winners cross the wire");
+    }
+}
+
+#[cfg(test)]
+mod sort_tests {
+    use super::*;
+
+    #[test]
+    fn sorted_by_cpu_then_memory() {
+        let text = "\
+TXPT|1000|1000|4096
+TXP|1|0|500|root|small-idle
+TXP|2|100|100|root|busy
+TXP|3|0|9000|root|big-idle
+TXP|4|50|100|root|middling
+";
+        let p = parse_processes("h", text);
+        let order: Vec<&str> = p.iter().map(|x| x.comm.as_str()).collect();
+        assert_eq!(order, ["busy", "middling", "big-idle", "small-idle"]);
+    }
+
+    #[test]
+    fn the_loop_command_delimits_frames_and_sleeps() {
+        let c = process_loop_command(20, 1000, 5);
+        assert!(c.contains(crate::sampler::FRAME_DELIMITER));
+        assert!(c.contains("sleep 5"));
+        assert!(!c.contains("[["), "still POSIX sh");
+    }
+
+    #[test]
+    fn a_zero_interval_is_clamped_not_obeyed() {
+        assert!(process_loop_command(20, 1000, 0).contains("sleep 1"));
     }
 }

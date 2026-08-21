@@ -11,13 +11,24 @@ use std::time::Duration;
 
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::mpsc;
-use tuxtop_core::{HostConfig, HostFault, SshSampler, TrafficCounter, TrafficStats};
+use tuxtop_core::procs::ProcInfo;
+use tuxtop_core::{HostConfig, HostFault, ProcSampler, SshSampler, TrafficCounter, TrafficStats};
 
 /// Event names the frontend subscribes to.
 pub const EVENT_SAMPLE: &str = "tuxtop://sample";
 pub const EVENT_FAULT: &str = "tuxtop://fault";
 pub const EVENT_HOSTS: &str = "tuxtop://hosts-changed";
 pub const EVENT_SETTINGS: &str = "tuxtop://settings-changed";
+pub const EVENT_PROCS: &str = "tuxtop://processes";
+
+/// How many processes each host ranks and returns.
+const PROC_TOP_N: usize = 20;
+/// The window the CPU delta is measured over.
+const PROC_WINDOW_MS: u32 = 1000;
+/// Seconds between process samples. Slower than metrics on purpose: a process
+/// list is read, not watched, and each sample costs a second of remote wall
+/// clock inside its own window.
+const PROC_INTERVAL_SECS: u32 = 5;
 
 /// Payload for [`EVENT_FAULT`]. The host name is included because the frontend
 /// routes by it and a bare fault could not be attributed to a card.
@@ -42,6 +53,10 @@ pub struct Supervisor {
     traffic: Mutex<HashMap<String, Arc<TrafficCounter>>>,
     // The interval each host is currently sampling at, for the meter.
     intervals: Mutex<HashMap<String, u32>>,
+    // Process samplers, present only while the view is open.
+    procs: Mutex<HashMap<String, tauri::async_runtime::JoinHandle<()>>>,
+    // Latest ranking per host, merged into one fleet list on read.
+    latest: Mutex<HashMap<String, Vec<ProcInfo>>>,
 }
 
 impl Supervisor {
@@ -101,6 +116,87 @@ impl Supervisor {
     pub fn forget(&self, name: &str) {
         self.traffic.lock().unwrap().remove(name);
         self.intervals.lock().unwrap().remove(name);
+        self.stop_procs_for(name);
+        self.latest.lock().unwrap().remove(name);
+    }
+
+    /// Begin process sampling on every host.
+    pub fn start_procs(&self, app: AppHandle, hosts: Vec<HostConfig>) {
+        for cfg in hosts {
+            self.stop_procs_for(&cfg.name);
+            let name = cfg.name.clone();
+            let handle = tauri::async_runtime::spawn(watch_procs(app.clone(), cfg));
+            self.procs.lock().unwrap().insert(name, handle);
+        }
+    }
+
+    /// Stop sampling everywhere. A view nobody is looking at costs nothing.
+    pub fn stop_procs(&self) {
+        let mut map = self.procs.lock().unwrap();
+        for (_, h) in map.drain() {
+            h.abort();
+        }
+    }
+
+    fn stop_procs_for(&self, name: &str) {
+        if let Some(h) = self.procs.lock().unwrap().remove(name) {
+            h.abort();
+        }
+    }
+
+    pub fn record_procs(&self, host: &str, list: Vec<ProcInfo>) {
+        self.latest.lock().unwrap().insert(host.to_string(), list);
+    }
+
+    /// Every host's latest ranking, merged and re-sorted as one fleet list.
+    ///
+    /// Sorting happens here rather than per host: the whole point is that the
+    /// busiest process in the fleet floats to the top regardless of which
+    /// machine it is on.
+    pub fn fleet_procs(&self) -> Vec<ProcInfo> {
+        let mut all: Vec<ProcInfo> = self
+            .latest
+            .lock()
+            .unwrap()
+            .values()
+            .flat_map(|v| v.iter().cloned())
+            .collect();
+        all.sort_by(|a, b| {
+            b.cpu_pct
+                .partial_cmp(&a.cpu_pct)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(b.rss_kb.cmp(&a.rss_kb))
+        });
+        all
+    }
+}
+
+/// One host's process sampler, restarted with backoff if the channel drops.
+async fn watch_procs(app: AppHandle, cfg: HostConfig) {
+    loop {
+        let (tx, mut rx) = mpsc::channel(4);
+        let sampler = match ProcSampler::start(
+            cfg.clone(),
+            PROC_TOP_N,
+            PROC_WINDOW_MS,
+            PROC_INTERVAL_SECS,
+            tx,
+        ) {
+            Ok(s) => s,
+            Err(_) => {
+                tokio::time::sleep(Duration::from_secs(10)).await;
+                continue;
+            }
+        };
+
+        while let Some(list) = rx.recv().await {
+            app.state::<Supervisor>().record_procs(&cfg.name, list);
+            // The view pulls; this only says something changed.
+            let _ = app.emit(EVENT_PROCS, &cfg.name);
+        }
+
+        sampler.stop().await;
+        tokio::time::sleep(Duration::from_secs(5)).await;
     }
 }
 

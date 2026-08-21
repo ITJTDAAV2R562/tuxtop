@@ -205,6 +205,32 @@ fn history_usage(store: tauri::State<'_, HistoryStore>) -> HistoryUsage {
     store.usage()
 }
 
+/// Start or stop fleet-wide process sampling.
+///
+/// Driven by the view being open. Sampling costs a second of remote wall
+/// clock per host per cycle, so a process view nobody is looking at should
+/// cost nothing at all.
+#[tauri::command]
+fn set_processes_enabled(
+    app: AppHandle,
+    sup: tauri::State<'_, Supervisor>,
+    enabled: bool,
+) -> Result<(), String> {
+    if enabled {
+        let hosts = hosts::load(&app)?;
+        sup.start_procs(app.clone(), hosts);
+    } else {
+        sup.stop_procs();
+    }
+    Ok(())
+}
+
+/// Every host's processes, merged and sorted as one fleet list.
+#[tauri::command]
+fn process_list(sup: tauri::State<'_, Supervisor>) -> Vec<tuxtop_core::procs::ProcInfo> {
+    sup.fleet_procs()
+}
+
 /// Which hosts currently have a live sampler task.
 #[tauri::command]
 fn active_hosts(sup: tauri::State<'_, Supervisor>) -> Vec<String> {
@@ -224,6 +250,8 @@ fn main() {
             set_settings,
             set_host_interval,
             traffic_stats,
+            set_processes_enabled,
+            process_list,
             query_history,
             query_history_many,
             history_usage,
