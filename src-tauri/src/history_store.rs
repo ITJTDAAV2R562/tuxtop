@@ -22,9 +22,9 @@ impl HistoryStore {
 
     /// Record one sample against the wall clock.
     ///
-    /// Stores `cpu`, `mem`, `disk`, `net`, `load`, `temp`, `gpu`, `gpumem` and
-    /// `core.N` — the same keys the frontend metric registry uses, so a chart
-    /// asks for exactly what it already displays.
+    /// Stores `cpu`, `mem`, `disk`, `net`, `load`, `temp`, `swap`, `fs`,
+    /// `gpu`, `gpumem` and `core.N` — the same keys the frontend metric
+    /// registry uses, so a chart asks for exactly what it already displays.
     pub fn record(&self, s: &Sample) {
         let t = now_secs();
         let mut h = self.inner.lock().unwrap();
@@ -36,6 +36,17 @@ impl HistoryStore {
         h.push(&s.host, "disk", t, (s.disk_read_bps + s.disk_write_bps) as f32);
         h.push(&s.host, "net", t, (s.net_rx_bps + s.net_tx_bps) as f32);
         h.push(&s.host, "load", t, s.load[0]);
+
+        if s.swap_total_kb > 0 {
+            h.push(&s.host, "swap", t,
+                s.swap_used_kb as f32 / s.swap_total_kb as f32 * 100.0);
+        }
+
+        // The fullest mount, never an average: a roomy /home must not hide a
+        // full /. Absent on most frames, since df runs on a slow cadence.
+        if let Some(f) = tuxtop_core::facts::fullest(&s.filesystems) {
+            h.push(&s.host, "fs", t, f.used_pct());
+        }
 
         // Absent sensors record nothing rather than zero. A zero would be
         // indistinguishable from a genuinely cold CPU or an idle card.

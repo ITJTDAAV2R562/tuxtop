@@ -855,3 +855,8 @@ body[data-bands="off"] .legend span:not(:last-child){display:none}
   display:block;font-style:normal;font-size:11px;color:var(--text-3);margin-top:1px;
 }
 .checkfield input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+.chip-up{font-family:var(--font-mono);text-transform:none;letter-spacing:0}
+/* Disk capacity carries the load bands: a full disk is a red condition. */
+.m .v[data-band="warn"]{color:var(--warn)}
+.m .v[data-band="crit"]{color:var(--crit)}

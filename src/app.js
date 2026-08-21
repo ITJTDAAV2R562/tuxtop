@@ -201,6 +201,24 @@
       fmt: v => Math.round(v) + '\u00b0C',
       has: h => h.temp !== null && h.temp !== undefined,
     },
+    fs: {
+      label: 'Disk usage', shape: 'scalar', scale: 'absolute', max: 100,
+      scalar: h => fsPct(h),
+      fmt: v => Math.round(v) + '%',
+      sub: h => {
+        const f = fullestFs(h);
+        return f ? `${f.mount}  ${gb(f.used_kb / 1048576)}/${gb(f.total_kb / 1048576)}G` : '';
+      },
+      has: h => fsPct(h) !== null,
+    },
+    swap: {
+      label: 'Swap', shape: 'scalar', scale: 'absolute', max: 100,
+      scalar: h => (h.swapTotal ? h.swapUsed / h.swapTotal * 100 : null),
+      fmt: v => Math.round(v) + '%',
+      sub: h => (h.swapTotal ? `${gb(h.swapUsed / 1048576)}/${gb(h.swapTotal / 1048576)}G` : ''),
+      // A host with no swap configured is normal, not a host with 0% swap.
+      has: h => h.swapTotal > 0,
+    },
     disk: {
       label: 'Disk I/O', shape: 'scalar', scale: 'log', floor: 1e6, decades: 4,
       scalar: h => h.dio || 0, fmt: bps,
@@ -555,6 +573,7 @@
           <span class="dot"></span>
           <h2 class="hname">${h.name}</h2>
           <span class="chip" data-tag>${h.distro || '&mdash;'}</span>
+          <span class="chip chip-up" data-uptime hidden></span>
           <span class="chip" data-cores>${h.cores || '?'}c</span>
           <span class="tb-grow"></span>
           <button class="kill" title="Remove ${h.name}" aria-label="Remove ${h.name}">
@@ -575,8 +594,9 @@
         <div class="cores mini"></div>
         <div class="metrics">
           <div class="m"><span class="k">RAM</span><span class="v" data-ram></span></div>
-          <div class="m"><span class="k">Disk</span><span class="v" data-dio></span></div>
+          <div class="m"><span class="k">I/O</span><span class="v" data-dio></span></div>
           <div class="m"><span class="k">Net</span><span class="v" data-net></span></div>
+          <div class="m" data-fs-chip hidden><span class="k">Disk</span><span class="v" data-fs></span></div>
           <div class="m" data-temp-chip><span class="k">Temp</span><span class="v" data-temp></span></div>
           <div class="m" data-gpu-chip hidden><span class="k" data-gpu-k>GPU</span><span class="v" data-gpu></span></div>
           ${h.gpu ? '<div class="m"><span class="k">GPU</span><span class="v" data-gpu></span></div>' : ''}
@@ -721,6 +741,18 @@
 
       if (h.load) el.querySelector('[data-tag]').textContent =
         'load ' + h.load[0].toFixed(2);
+
+      const up = el.querySelector('[data-uptime]');
+      if (up) {
+        up.hidden = h.uptime == null;
+        if (h.uptime != null) up.textContent = 'up ' + humanUptime(h.uptime);
+      }
+      // What this machine actually is, on the card that names it.
+      if (h.facts) {
+        const f = h.facts;
+        el.querySelector('.hname').title =
+          [f.cpu_model, f.os, f.kernel].filter(Boolean).join('\n');
+      }
       el.querySelector('[data-cores]').textContent = (h.cores || '?') + 'c';
 
       el.querySelector('[data-cpu]').innerHTML = Math.round(cpu) + '<span>%</span>';
@@ -752,6 +784,21 @@
           el.querySelector('[data-gpu-k]').textContent = shortGpu(h.gpu);
           el.querySelector('[data-gpu]').textContent =
             `${Math.round(h.gpuU)}% ${gb(h.gpuUsed / 1024)}/${gb(h.gpuTotal / 1024)}G`;
+        }
+      }
+
+      // Disk capacity, hidden until a df frame has arrived - which takes a
+      // few seconds, and a 0% would be a lie in the meantime.
+      const fchip = el.querySelector('[data-fs-chip]');
+      if (fchip) {
+        const p = fsPct(h);
+        fchip.hidden = p === null;
+        if (p !== null) {
+          const f = fullestFs(h);
+          const v = fchip.querySelector('[data-fs]');
+          v.textContent = `${Math.round(p)}%`;
+          v.dataset.band = band(p);
+          fchip.title = `${f.mount} - ${gb(f.used_kb / 1048576)} of ${gb(f.total_kb / 1048576)} GB used`;
         }
       }
 
@@ -1347,6 +1394,29 @@
     c.strokeStyle = dot + '55'; c.lineWidth = 1.4; c.stroke();
   }
 
+  /// The fullest filesystem. An average across mounts would let a roomy
+  /// /home hide a full /.
+  function fullestFs(h) {
+    if (!h.fs || !h.fs.length) return null;
+    return h.fs.reduce((worst, f) => {
+      const pct = f.total_kb ? f.used_kb / f.total_kb * 100 : 0;
+      const wp = worst ? (worst.total_kb ? worst.used_kb / worst.total_kb * 100 : 0) : -1;
+      return pct > wp ? f : worst;
+    }, null);
+  }
+
+  const fsPct = h => {
+    const f = fullestFs(h);
+    return f && f.total_kb ? f.used_kb / f.total_kb * 100 : null;
+  };
+
+  function humanUptime(secs) {
+    if (secs == null) return '';
+    const d = Math.floor(secs / 86400), hh = Math.floor((secs % 86400) / 3600);
+    const m = Math.floor((secs % 3600) / 60);
+    return d > 0 ? `${d}d ${hh}h` : hh > 0 ? `${hh}h ${m}m` : `${m}m`;
+  }
+
   const bandColour = v =>
     css(v >= 90 ? '--crit' : v >= 75 ? '--warn' : '--accent');
 
@@ -1582,6 +1652,14 @@
       h.dio = s.disk_read_bps + s.disk_write_bps; // bytes/sec
       h.load = s.load;
       h.temp = (typeof s.cpu_temp_c === 'number') ? s.cpu_temp_c : null;
+      h.uptime = s.uptime_secs ?? h.uptime ?? null;
+      h.swapUsed = s.swap_used_kb || 0;
+      h.swapTotal = s.swap_total_kb || 0;
+      h.breakdown = s.cpu_breakdown || null;
+      // Sent once per connection and on a slow cadence respectively; a frame
+      // without them means "unchanged", not "gone".
+      if (s.facts) h.facts = s.facts;
+      if (s.filesystems && s.filesystems.length) h.fs = s.filesystems;
       if (h.temp !== null) push(h.hist.temp, h.temp);
       if (s.gpu) {
         h.gpu = s.gpu.name;
