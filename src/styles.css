@@ -132,6 +132,14 @@
 }
 
 *{box-sizing:border-box}
+
+/* The `hidden` attribute must actually hide.
+   A UA stylesheet sets [hidden]{display:none}, but any author rule with its
+   own `display` outranks it - so every flex or grid element ignores the
+   attribute unless told otherwise. This has bitten twice: the fault banner
+   showed empty on every healthy card, then the temperature chip showed an
+   empty TEMP on every host without a sensor. One rule, once, for all of it. */
+[hidden]{display:none !important}
 body{
   margin:0;
   font-family:var(--font-ui);
@@ -218,7 +226,7 @@ body{
 .grid{
   display:grid;gap:12px;padding:14px;
   grid-template-columns:repeat(auto-fill,minmax(320px,1fr));
-  align-items:start;
+  align-items:stretch;
 }
 .card{
   background:var(--surface);
@@ -359,10 +367,6 @@ dialog::backdrop{background:rgba(6,10,18,.42);backdrop-filter:blur(3px)}
   border:1px solid color-mix(in srgb,var(--crit) 32%,transparent);
   border-radius:7px;padding:7px 9px;font-size:11.5px;line-height:1.45;
 }
-/* `display:flex` above beats the UA stylesheet's [hidden]{display:none},
-   so the hidden state has to be restated here or every card shows an
-   empty red banner. */
-.fault[hidden]{display:none}
 .fault b{display:block;color:var(--crit);font-weight:700;letter-spacing:.2px}
 .fault span{color:var(--text-2);font-family:var(--font-mono);font-size:11px;word-break:break-word}
 .card.down .cpurow,.card.down .cores,.card.down .metrics{opacity:.32}
@@ -674,3 +678,14 @@ body[data-bands="off"] .legend span:not(:last-child){display:none}
   font-family:var(--font-mono);font-size:11.5px;
   font-variant-numeric:tabular-nums;color:var(--text-3);
 }
+
+/* Cards in a row share a height. Chip counts differ per host - a GPU or a
+   temperature sensor adds one - so content-sized cards produced ragged rows.
+   The toggle sits at the bottom so the slack lands below the data, not
+   between the numbers. */
+.grid:not(.all-mode) .card{height:100%}
+.card > .card-toggle{margin-top:auto}
+
+/* A metric a host does not report is dimmed, not absent: removing the chip
+   changed the chip count and so the wrap, which made card heights differ. */
+.m.nodata .v{color:var(--text-3)}

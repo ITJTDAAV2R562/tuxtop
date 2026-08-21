@@ -559,7 +559,7 @@
           <div class="m"><span class="k">RAM</span><span class="v" data-ram></span></div>
           <div class="m"><span class="k">Disk</span><span class="v" data-dio></span></div>
           <div class="m"><span class="k">Net</span><span class="v" data-net></span></div>
-          <div class="m" data-temp-chip hidden><span class="k">Temp</span><span class="v" data-temp></span></div>
+          <div class="m" data-temp-chip><span class="k">Temp</span><span class="v" data-temp></span></div>
           ${h.gpu ? '<div class="m"><span class="k">GPU</span><span class="v" data-gpu></span></div>' : ''}
         </div>
         <button class="card-toggle" aria-expanded="false">
@@ -703,15 +703,18 @@
       el.querySelector('[data-dio]').textContent = bps(h.dio);
       el.querySelector('[data-net]').textContent = bps(h.net);
 
-      // Hidden rather than zeroed when a host exposes no CPU sensor, which is
-      // normal on a VM. A 0 would read as an implausibly cold CPU.
+      // A host with no CPU sensor - normal on a VM - shows a dash rather than
+      // a zero, which would read as an implausibly cold CPU. Shown rather than
+      // hidden: dropping the chip changed the chip count, so cards with a
+      // sensor wrapped to two lines and cards without stayed on one, giving
+      // rows visibly different heights. A dash also states the absence
+      // explicitly instead of leaving it to be inferred.
       const tchip = el.querySelector('[data-temp-chip]');
       if (tchip) {
         const hasTemp = h.temp !== null && h.temp !== undefined;
-        tchip.hidden = !hasTemp;
-        if (hasTemp) {
-          el.querySelector('[data-temp]').textContent = Math.round(h.temp) + '\u00b0C';
-        }
+        tchip.classList.toggle('nodata', !hasTemp);
+        el.querySelector('[data-temp]').textContent =
+          hasTemp ? Math.round(h.temp) + '\u00b0C' : '\u2014';
       }
       if (h.gpu) el.querySelector('[data-gpu]').textContent = Math.round(h.gpuU) + '%';
 
