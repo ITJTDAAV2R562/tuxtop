@@ -244,7 +244,12 @@
       el.querySelector('[data-cores]').textContent = (h.cores || '?') + 'c';
 
       el.querySelector('[data-cpu]').innerHTML = Math.round(cpu) + '<span>%</span>';
-      if (!h.fault) el.querySelector('.dot').className = 'dot' + (cpu > 85 ? ' warnstate' : '');
+      if (!h.fault) {
+        // A host that has never reported is connecting, not up. Showing it
+        // green would claim a fact we do not have yet.
+        const cls = LIVE && !h.seen ? ' pending' : (cpu > 85 ? ' warnstate' : '');
+        el.querySelector('.dot').className = 'dot' + cls;
+      }
       el.querySelector('[data-ram]').textContent = gb(h.ram) + ' / ' + h.ramGB + ' GB';
       el.querySelector('[data-dio]').textContent = Math.round(h.dio) + ' MB/s';
       el.querySelector('[data-net]').textContent = h.net.toFixed(1) + ' MB/s';
@@ -282,7 +287,7 @@
   function tally() {
     $('#nhosts').textContent = hosts.length;
     $('#ncores').textContent = hosts.reduce((a, h) => a + (h.cores || 0), 0);
-    $('#nup').textContent = hosts.filter(h => !h.fault).length;
+    $('#nup').textContent = hosts.filter(h => !h.fault && (!LIVE || h.seen)).length;
   }
 
   // Fault text. Each variant names a different fix, which is the entire
@@ -317,7 +322,15 @@
   });
 
   const dlg = $('#addDlg');
-  $('#addBtn').addEventListener('click', () => dlg.showModal());
+  $('#addBtn').addEventListener('click', () => {
+    // <form method="dialog"> does not reset on close, so reopening kept the
+    // previous host's details - submit again and you get a duplicate-name
+    // rejection for a host you thought you were adding fresh.
+    $('#addForm').reset();
+    dlg.showModal();
+    $('#f-name').focus();
+    $('#f-name').select();
+  });
   addEventListener('resize', () => paint());
 
   // ---------------------------------------------------------------- LIVE
@@ -348,6 +361,7 @@
     await listen('tuxtop://sample', ({ payload: s }) => {
       const h = ensure(s.host, s.cores.length);
       h.fault = null;
+      h.seen = true;   // it has actually reported, so it can count as up
       h.core = s.cores;
       h.ramGB = s.mem_total_kb / 1048576;
       h.ram = s.mem_used_kb / 1048576;
@@ -371,7 +385,12 @@
     });
 
     await listen('tuxtop://hosts-changed', ({ payload: list }) => {
-      hosts = hosts.filter(h => list.some(c => c.name === h.name));
+      // Reconcile both ways. Filtering alone only ever removed, so a newly
+      // added host got no card until its first sample arrived - and an
+      // unreachable host never sends one, so it stayed invisible for the
+      // full ssh connect timeout or forever. Order follows the backend list.
+      const byName = new Map(hosts.map(h => [h.name, h]));
+      hosts = list.map(c => byName.get(c.name) || mk(c.name, '', 0, 0, null, 0));
       build(); paint(); tally();
     });
 
@@ -380,7 +399,7 @@
     try {
       for (const cfg of await invoke('list_hosts')) ensure(cfg.name, 0);
     } catch (e) {
-      showEmpty(`Could not read hosts.toml: ${e}`);
+      showError(`Could not read hosts.toml: ${e}`);
       return;
     }
 
@@ -396,7 +415,7 @@
           addr: (f.get('addr') || '').toString().trim(),
           user: '', port: 22, beszel_url: null,
         }});
-      } catch (err) { showEmpty(String(err)); }
+      } catch (err) { showError(String(err)); }
     });
 
     grid.addEventListener('click', async e => {
@@ -405,13 +424,37 @@
       e.stopPropagation();
       const name = btn.closest('.card').dataset.name;
       try { await invoke('remove_host', { name }); }
-      catch (err) { showEmpty(String(err)); }
+      catch (err) { showError(String(err)); }
     });
   }
 
+  // An empty-state message. Only ever shown when there is genuinely nothing
+  // to display - never used to report an error, because it destroys the grid.
   function showEmpty(msg) {
-    if (!grid.querySelector('.card')) grid.innerHTML = `<div class="empty">${msg}</div>`;
-    else console.warn(msg);
+    if (!grid.querySelector('.card')) grid.innerHTML = `<div class="empty">${esc(msg)}</div>`;
+  }
+
+  function esc(s) {
+    return String(s).replace(/[<&]/g, c => ({ '<': '&lt;', '&': '&amp;' }[c]));
+  }
+
+  // Errors appear above the grid and leave existing cards alone. Previously an
+  // add failure was console.warn'd when cards existed and wiped the grid when
+  // they did not - invisible in one case, destructive in the other.
+  let errTimer = null;
+  function showError(msg) {
+    console.error(msg);
+    let box = document.querySelector('#errBar');
+    if (!box) {
+      box = document.createElement('div');
+      box.id = 'errBar';
+      box.className = 'errbar';
+      grid.parentNode.insertBefore(box, grid);
+    }
+    box.innerHTML = `<b>${esc(msg)}</b><button aria-label="Dismiss">&times;</button>`;
+    box.querySelector('button').onclick = () => box.remove();
+    clearTimeout(errTimer);
+    errTimer = setTimeout(() => box.remove(), 8000);
   }
 
   // ---------------------------------------------------------- SIMULATION

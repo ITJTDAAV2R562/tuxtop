@@ -13,11 +13,13 @@
 //! See `docs/ARCHITECTURE.md` for why there are two planes, and
 //! `docs/DECISIONS.md` for the measurement that forced the split.
 
+pub mod hostlist;
 pub mod model;
 pub mod proc;
 pub mod sampler;
 pub mod transport;
 
+pub use hostlist::{add as add_host_to, remove as remove_host_from, AddError};
 pub use model::{GpuSample, HostConfig, HostFault, HostStatus, Sample};
 pub use proc::{busy_pct, core_pcts, parse_meminfo, parse_stat, CpuTimes, MemInfo, StatSnapshot};
 pub use sampler::{parse_frame, sampler_command, split_frames, Frame, RateTracker, Rates};
