@@ -6,16 +6,8 @@
 
 use std::path::PathBuf;
 
-use serde::{Deserialize, Serialize};
+use tuxtop_core::hostlist::{self, HostsFile, Settings};
 use tuxtop_core::HostConfig;
-
-/// The on-disk shape. A wrapper struct is needed because TOML cannot have a
-/// bare array at the document root.
-#[derive(Debug, Default, Serialize, Deserialize)]
-pub struct HostsFile {
-    #[serde(default, rename = "host")]
-    pub hosts: Vec<HostConfig>,
-}
 
 /// Path to `hosts.toml`, creating the parent directory if needed.
 pub fn path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
@@ -39,27 +31,40 @@ pub fn path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 /// discarding a config the user hand-edited would lose their work and leave
 /// them staring at an empty window with no explanation.
 pub fn load(app: &tauri::AppHandle) -> Result<Vec<HostConfig>, String> {
+    Ok(load_file(app)?.hosts)
+}
+
+/// Read the whole file: settings and hosts.
+pub fn load_file(app: &tauri::AppHandle) -> Result<HostsFile, String> {
     let p = path(app)?;
 
     if !p.exists() {
-        return Ok(Vec::new());
+        return Ok(HostsFile::default());
     }
 
     let text = std::fs::read_to_string(&p).map_err(|e| format!("reading {}: {e}", p.display()))?;
 
-    let parsed: HostsFile =
-        toml::from_str(&text).map_err(|e| format!("{} is not valid TOML: {e}", p.display()))?;
-
-    Ok(parsed.hosts)
+    hostlist::parse_file(&text).map_err(|e| format!("{} is not valid TOML: {e}", p.display()))
 }
 
-/// Write the host list back, replacing the file.
-pub fn save(app: &tauri::AppHandle, hosts: &[HostConfig]) -> Result<(), String> {
-    let p = path(app)?;
-    let doc = HostsFile {
-        hosts: hosts.to_vec(),
-    };
-    let text = toml::to_string_pretty(&doc).map_err(|e| format!("serialising hosts: {e}"))?;
+/// Read settings alone.
+pub fn load_settings(app: &tauri::AppHandle) -> Result<Settings, String> {
+    Ok(load_file(app)?.settings)
+}
 
+/// Write the whole file back.
+pub fn save_file(app: &tauri::AppHandle, f: &HostsFile) -> Result<(), String> {
+    let p = path(app)?;
+    let text = hostlist::render_file(f)?;
     std::fs::write(&p, text).map_err(|e| format!("writing {}: {e}", p.display()))
+}
+
+/// Replace the host list, preserving whatever settings are on disk.
+///
+/// Reads before writing so a host edit never silently reverts a setting
+/// changed in another window or by hand.
+pub fn save(app: &tauri::AppHandle, hosts: &[HostConfig]) -> Result<(), String> {
+    let mut f = load_file(app)?;
+    f.hosts = hosts.to_vec();
+    save_file(app, &f)
 }

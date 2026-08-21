@@ -6,17 +6,18 @@
 //! one loop over all hosts.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tauri::{AppHandle, Emitter};
 use tokio::sync::mpsc;
-use tuxtop_core::{HostConfig, HostFault, SshSampler};
+use tuxtop_core::{HostConfig, HostFault, SshSampler, TrafficCounter, TrafficStats};
 
 /// Event names the frontend subscribes to.
 pub const EVENT_SAMPLE: &str = "tuxtop://sample";
 pub const EVENT_FAULT: &str = "tuxtop://fault";
 pub const EVENT_HOSTS: &str = "tuxtop://hosts-changed";
+pub const EVENT_SETTINGS: &str = "tuxtop://settings-changed";
 
 /// Payload for [`EVENT_FAULT`]. The host name is included because the frontend
 /// routes by it and a bare fault could not be attributed to a card.
@@ -36,6 +37,11 @@ pub struct Supervisor {
     // Tauri's JoinHandle, not tokio's: `tauri::async_runtime::spawn` returns
     // its own wrapper type and the two are distinct.
     tasks: Mutex<HashMap<String, tauri::async_runtime::JoinHandle<()>>>,
+    // Byte counters survive a restart of the host's task, so changing an
+    // interval does not reset the measurement it was chosen from.
+    traffic: Mutex<HashMap<String, Arc<TrafficCounter>>>,
+    // The interval each host is currently sampling at, for the meter.
+    intervals: Mutex<HashMap<String, u32>>,
 }
 
 impl Supervisor {
@@ -44,7 +50,19 @@ impl Supervisor {
         self.stop(&cfg.name);
 
         let name = cfg.name.clone();
-        let handle = tauri::async_runtime::spawn(watch(app, cfg, interval_secs));
+        let counter = self
+            .traffic
+            .lock()
+            .unwrap()
+            .entry(name.clone())
+            .or_insert_with(|| Arc::new(TrafficCounter::new()))
+            .clone();
+        self.intervals
+            .lock()
+            .unwrap()
+            .insert(name.clone(), interval_secs);
+
+        let handle = tauri::async_runtime::spawn(watch(app, cfg, interval_secs, counter));
 
         // A task dropped from the map is not cancelled, so the previous one is
         // aborted in `stop` before we overwrite the entry.
@@ -63,16 +81,51 @@ impl Supervisor {
     pub fn active(&self) -> Vec<String> {
         self.tasks.lock().unwrap().keys().cloned().collect()
     }
+
+    /// What each host has cost so far, and at what interval.
+    pub fn traffic(&self) -> Vec<HostTraffic> {
+        let counters = self.traffic.lock().unwrap();
+        let intervals = self.intervals.lock().unwrap();
+        counters
+            .iter()
+            .map(|(name, c)| HostTraffic {
+                host: name.clone(),
+                interval_secs: intervals.get(name).copied().unwrap_or(0),
+                stats: c.snapshot(),
+            })
+            .collect()
+    }
+
+    /// Forget a removed host's counter, so the meter stops counting a machine
+    /// nobody is watching any more.
+    pub fn forget(&self, name: &str) {
+        self.traffic.lock().unwrap().remove(name);
+        self.intervals.lock().unwrap().remove(name);
+    }
+}
+
+/// One host's measured cost, for the settings meter.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct HostTraffic {
+    pub host: String,
+    pub interval_secs: u32,
+    #[serde(flatten)]
+    pub stats: TrafficStats,
 }
 
 /// Watch one host forever, reconnecting with backoff.
-async fn watch(app: AppHandle, cfg: HostConfig, interval_secs: u32) {
+async fn watch(
+    app: AppHandle,
+    cfg: HostConfig,
+    interval_secs: u32,
+    traffic: Arc<TrafficCounter>,
+) {
     let mut attempt = 0usize;
 
     loop {
         let (tx, mut rx) = mpsc::channel(16);
 
-        let sampler = match SshSampler::start(cfg.clone(), interval_secs, tx) {
+        let sampler = match SshSampler::start(cfg.clone(), interval_secs, tx, traffic.clone()) {
             Ok(s) => s,
             Err(e) => {
                 // Could not even spawn ssh — almost always "not on PATH".

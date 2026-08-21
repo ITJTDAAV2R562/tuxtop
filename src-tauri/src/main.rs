@@ -10,12 +10,10 @@ mod hosts;
 mod supervisor;
 
 use tauri::{AppHandle, Emitter, Manager};
+use tuxtop_core::hostlist::{effective_interval, Settings};
 use tuxtop_core::HostConfig;
 
 use supervisor::Supervisor;
-
-/// Seconds between samples. One second is the Task-Manager feel; see ADR-002.
-const INTERVAL_SECS: u32 = 1;
 
 /// The configured hosts, for the frontend to render cards from.
 #[tauri::command]
@@ -37,7 +35,9 @@ fn add_host(
     // Start the sampler with the trimmed copy the list actually stored, not
     // the raw dialog input.
     let stored = all.last().cloned().expect("just pushed");
-    sup.start(app.clone(), stored, INTERVAL_SECS);
+    let settings = hosts::load_settings(&app)?;
+    let iv = effective_interval(&stored, &settings);
+    sup.start(app.clone(), stored, iv);
     let _ = app.emit(supervisor::EVENT_HOSTS, &all);
 
     Ok(all)
@@ -55,6 +55,7 @@ fn remove_host(
     hosts::save(&app, &all)?;
 
     sup.stop(&name);
+    sup.forget(&name);
     let _ = app.emit(supervisor::EVENT_HOSTS, &all);
 
     Ok(all)
@@ -77,6 +78,72 @@ fn reorder_hosts(
     Ok(all)
 }
 
+/// Current settings.
+#[tauri::command]
+fn get_settings(app: AppHandle) -> Result<Settings, String> {
+    hosts::load_settings(&app)
+}
+
+/// Replace settings and restart every host whose effective interval changed.
+///
+/// Only affected hosts restart. Changing the global interval when most hosts
+/// carry an override should not tear down connections that were already
+/// sampling at the right rate.
+#[tauri::command]
+fn set_settings(
+    app: AppHandle,
+    sup: tauri::State<'_, Supervisor>,
+    settings: Settings,
+) -> Result<Settings, String> {
+    let mut f = hosts::load_file(&app)?;
+    let before = f.settings;
+    f.settings = Settings {
+        interval_secs: settings.interval_secs.clamp(1, 3600),
+        history_cap_mb: settings.history_cap_mb.clamp(16, 8192),
+    };
+    hosts::save_file(&app, &f)?;
+
+    for h in &f.hosts {
+        if effective_interval(h, &before) != effective_interval(h, &f.settings) {
+            sup.start(app.clone(), h.clone(), effective_interval(h, &f.settings));
+        }
+    }
+
+    let _ = app.emit(supervisor::EVENT_SETTINGS, &f.settings);
+    Ok(f.settings)
+}
+
+/// Set or clear one host's interval override, restarting just that host.
+#[tauri::command]
+fn set_host_interval(
+    app: AppHandle,
+    sup: tauri::State<'_, Supervisor>,
+    name: String,
+    interval_secs: Option<u32>,
+) -> Result<Vec<HostConfig>, String> {
+    let mut f = hosts::load_file(&app)?;
+
+    let Some(h) = f.hosts.iter_mut().find(|h| h.name == name) else {
+        return Err(format!("no host named {name}"));
+    };
+    h.interval_secs = interval_secs.map(|v| v.clamp(1, 3600));
+    let updated = h.clone();
+
+    hosts::save_file(&app, &f)?;
+
+    // Restart only the host that changed, at its own effective interval.
+    sup.start(app.clone(), updated.clone(), effective_interval(&updated, &f.settings));
+
+    let _ = app.emit(supervisor::EVENT_HOSTS, &f.hosts);
+    Ok(f.hosts.clone())
+}
+
+/// Measured cost per host, for the settings meter.
+#[tauri::command]
+fn traffic_stats(sup: tauri::State<'_, Supervisor>) -> Vec<supervisor::HostTraffic> {
+    sup.traffic()
+}
+
 /// Which hosts currently have a live sampler task.
 #[tauri::command]
 fn active_hosts(sup: tauri::State<'_, Supervisor>) -> Vec<String> {
@@ -91,6 +158,10 @@ fn main() {
             add_host,
             remove_host,
             reorder_hosts,
+            get_settings,
+            set_settings,
+            set_host_interval,
+            traffic_stats,
             active_hosts
         ])
         .setup(|app| {
@@ -105,11 +176,12 @@ fn main() {
             // A broken hosts.toml is reported to the frontend rather than
             // panicking: the window should open and explain itself, not fail
             // to start over a stray comma.
-            match hosts::load(&handle) {
-                Ok(list) => {
+            match hosts::load_file(&handle) {
+                Ok(f) => {
                     let sup = handle.state::<Supervisor>();
-                    for cfg in list {
-                        sup.start(handle.clone(), cfg, INTERVAL_SECS);
+                    for cfg in f.hosts {
+                        let iv = effective_interval(&cfg, &f.settings);
+                        sup.start(handle.clone(), cfg, iv);
                     }
                 }
                 Err(e) => {

@@ -870,6 +870,133 @@
   // Tile sizing in all-cores mode depends on window width.
   addEventListener('resize', () => { if (prefs.view === 'all') build(); });
 
+  // ---- settings ----------------------------------------------------------
+  const INTERVALS = [1, 2, 5, 10, 30, 60];
+
+  /// Bytes per second the fleet would cost at `iv`, from measured frame sizes.
+  ///
+  /// Arithmetic, not estimation: frame size tracks disk and interface count
+  /// rather than load, so it is effectively constant per host and the rate at
+  /// interval I really is size over I. A host's own override is honoured, so
+  /// changing the global rate does not claim to change hosts it will not touch.
+  function projectFleet(rows, globalIv, overrides) {
+    return rows.reduce((sum, r) => {
+      const mean = r.frames_total ? r.bytes_total / r.frames_total : 0;
+      const iv = overrides.get(r.host) ?? globalIv;
+      return sum + (iv > 0 ? mean / iv : 0);
+    }, 0);
+  }
+
+  const perDay = bytesPerSec => bytesPerSec * 86400;
+
+  function fmtDay(b) {
+    return b >= 1024 ** 3 ? `${(b / 1024 ** 3).toFixed(1)} GB/day`
+         : b >= 1024 ** 2 ? `${(b / 1024 ** 2).toFixed(0)} MB/day`
+         : `${(b / 1024).toFixed(0)} KB/day`;
+  }
+
+  async function refreshMeter() {
+    if (!LIVE) return;
+    const { invoke } = TAURI.core;
+    let rows = [];
+    try { rows = await invoke('traffic_stats'); } catch { return; }
+
+    const reporting = rows.filter(r => r.frames_total > 0);
+    const overrides = new Map(
+      hosts.filter(h => h.intervalOverride).map(h => [h.name, h.intervalOverride]));
+    const chosen = +$('#s-interval').value;
+
+    const now = projectFleet(reporting, chosen, overrides);
+    $('[data-meter-now]').textContent = reporting.length
+      ? `${bps(now)}  ${fmtDay(perDay(now))}`
+      : 'no samples yet';
+
+    // Every interval, so the cost of the choice is visible before making it.
+    $('[data-meter-rows]').innerHTML = INTERVALS.map(iv => {
+      const b = projectFleet(reporting, iv, overrides);
+      return `<tr class="${iv === chosen ? 'current' : ''}">
+        <td>${iv === 1 ? '1 second' : iv < 60 ? iv + ' seconds' : '1 minute'}</td>
+        <td>${bps(b)}</td><td>${fmtDay(perDay(b))}</td></tr>`;
+    }).join('');
+
+    const overridden = overrides.size;
+    $('[data-meter-note]').textContent =
+      `Measured across ${reporting.length} reporting host${reporting.length === 1 ? '' : 's'}` +
+      (overridden ? `, ${overridden} with an override the global rate will not change.` : '.');
+
+    // What the memory budget actually buys, since the cap is set in MB.
+    const cap = +$('#s-cap').value;
+    const series = hosts.reduce((a, h) => a + 8 + (h.cores || 0), 0);
+    const perSeriesKB = 79.9;
+    const needMB = series * perSeriesKB / 1024;
+    $('[data-cap-hint]').textContent = series
+      ? `Full history for ${hosts.length} host${hosts.length === 1 ? '' : 's'} ` +
+        `needs about ${needMB.toFixed(0)} MB` +
+        (needMB <= cap ? ' - within the limit, so nothing is dropped.'
+                       : ' - over the limit, so the oldest detail is dropped first.')
+      : 'Held in memory only; a restart starts clean.';
+  }
+
+  function perHostRows() {
+    $('[data-perhost-rows]').innerHTML = hosts.map(h => `
+      <tr><td>${esc(h.name)}</td><td>
+        <select data-host-iv="${esc(h.name)}">
+          <option value="">follow global</option>
+          ${INTERVALS.map(iv =>
+            `<option value="${iv}"${h.intervalOverride === iv ? ' selected' : ''}>${iv}s</option>`
+          ).join('')}
+        </select></td></tr>`).join('');
+  }
+
+  const setDlg = $('#setDlg');
+  let meterTimer = null;
+
+  $('#settingsBtn').addEventListener('click', async () => {
+    if (LIVE) {
+      try {
+        const s = await TAURI.core.invoke('get_settings');
+        $('#s-interval').value = String(s.interval_secs);
+        $('#s-cap').value = String(s.history_cap_mb);
+      } catch (e) { showError(String(e)); }
+    }
+    perHostRows();
+    await refreshMeter();
+    setDlg.showModal();
+    // The meter is live while the dialog is open; measurements keep arriving.
+    clearInterval(meterTimer);
+    meterTimer = setInterval(refreshMeter, 2000);
+  });
+
+  setDlg.addEventListener('close', () => clearInterval(meterTimer));
+  $('#s-interval').addEventListener('change', refreshMeter);
+  $('#s-cap').addEventListener('change', refreshMeter);
+
+  $('#setForm').addEventListener('submit', async e => {
+    if (e.submitter && e.submitter.value !== 'save') return;
+    if (!LIVE) return;
+    try {
+      await TAURI.core.invoke('set_settings', { settings: {
+        interval_secs: +$('#s-interval').value,
+        history_cap_mb: +$('#s-cap').value,
+      }});
+    } catch (err) { showError(String(err)); }
+  });
+
+  // Per-host overrides apply immediately - the host restarts at the new rate
+  // and the meter updates, so the effect is visible while the dialog is open.
+  $('[data-perhost-rows]').addEventListener('change', async e => {
+    const sel = e.target.closest('[data-host-iv]');
+    if (!sel || !LIVE) return;
+    const name = sel.dataset.hostIv;
+    const v = sel.value === '' ? null : +sel.value;
+    const h = hosts.find(x => x.name === name);
+    if (h) h.intervalOverride = v;
+    try {
+      await TAURI.core.invoke('set_host_interval', { name, intervalSecs: v });
+    } catch (err) { showError(String(err)); }
+    refreshMeter();
+  });
+
   const dlg = $('#addDlg');
   $('#addBtn').addEventListener('click', () => {
     // <form method="dialog"> does not reset on close, so reopening kept the
@@ -952,6 +1079,9 @@
     });
 
     await listen('tuxtop://hosts-changed', ({ payload: list }) => {
+      // Remember each host's interval override so the meter can honour it.
+      const iv = new Map(list.map(c => [c.name, c.interval_secs ?? null]));
+      hosts.forEach(h => { h.intervalOverride = iv.get(h.name) ?? null; });
       // Reconcile both ways. Filtering alone only ever removed, so a newly
       // added host got no card until its first sample arrived - and an
       // unreachable host never sends one, so it stayed invisible for the
@@ -964,7 +1094,9 @@
     // Seed cards from hosts.toml so they exist before the first sample
     // lands -- otherwise the window is empty for a second on every launch.
     try {
-      for (const cfg of await invoke('list_hosts')) ensure(cfg.name, 0);
+      for (const cfg of await invoke('list_hosts')) {
+        ensure(cfg.name, 0).intervalOverride = cfg.interval_secs ?? null;
+      }
     } catch (e) {
       showError(`Could not read hosts.toml: ${e}`);
       return;

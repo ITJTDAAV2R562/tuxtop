@@ -63,6 +63,7 @@
       <button id="rateFast" aria-pressed="true">Direct &middot; 1 Hz</button>
       <button id="rateSlow" aria-pressed="false">Beszel &middot; 60 s</button>
     </div>
+    <button class="btn" id="settingsBtn">Settings</button>
     <button class="btn" id="themeBtn">Theme</button>
     <button class="btn primary" id="addBtn">Add host</button>
   </div>
@@ -78,6 +79,56 @@
     <span class="legend-note" data-mode-note>simulated data &middot; design mockup</span>
   </div>
 </div>
+
+<dialog id="setDlg">
+  <form method="dialog" class="dlg-body" id="setForm">
+    <h2>Settings</h2>
+
+    <div class="field">
+      <label for="s-interval">Sample interval</label>
+      <select id="s-interval">
+        <option value="1">1 second</option>
+        <option value="2">2 seconds</option>
+        <option value="5">5 seconds</option>
+        <option value="10">10 seconds</option>
+        <option value="30">30 seconds</option>
+        <option value="60">1 minute</option>
+      </select>
+      <p class="hint">Applies to hosts without their own override.</p>
+    </div>
+
+    <div class="meter" id="meter">
+      <div class="meter-head">
+        <span>What this costs</span>
+        <span class="meter-now" data-meter-now></span>
+      </div>
+      <table class="meter-table"><tbody data-meter-rows></tbody></table>
+      <p class="hint" data-meter-note></p>
+    </div>
+
+    <div class="field">
+      <label for="s-cap">History limit</label>
+      <select id="s-cap">
+        <option value="64">64 MB</option>
+        <option value="128">128 MB</option>
+        <option value="256">256 MB</option>
+        <option value="512">512 MB</option>
+        <option value="1024">1 GB</option>
+      </select>
+      <p class="hint" data-cap-hint></p>
+    </div>
+
+    <details class="perhost">
+      <summary>Per-host intervals</summary>
+      <table class="meter-table"><tbody data-perhost-rows></tbody></table>
+    </details>
+
+    <div class="dlg-actions">
+      <button class="btn ghost" value="cancel" formnovalidate>Close</button>
+      <button class="btn primary" value="save">Save</button>
+    </div>
+  </form>
+</dialog>
 
 <dialog id="addDlg">
   <form method="dialog" class="dlg-body" id="addForm">
