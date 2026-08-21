@@ -365,3 +365,13 @@ dialog::backdrop{background:rgba(6,10,18,.42);backdrop-filter:blur(3px)}
   .wall i{animation:none}
   *{transition-duration:.01ms!important}
 }
+
+/* Startup failures are rendered on the page, never left to the console. */
+.startup-error{display:flex;flex-direction:column;gap:9px;text-align:left;color:var(--text-2)}
+.startup-error b{color:var(--crit);font-size:13px}
+.startup-error code{
+  font-family:var(--font-mono);font-size:11.5px;color:var(--text);
+  background:var(--surface-sunk);border-radius:6px;padding:8px 10px;
+  white-space:pre-wrap;word-break:break-word;
+}
+.startup-error span{font-size:11.5px;color:var(--text-3)}

@@ -1,0 +1,9 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Permissions for the main window. Without this file Tauri's ACL grants nothing, and core:event:listen is denied - which kills the whole live data path silently.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default"
+  ]
+}

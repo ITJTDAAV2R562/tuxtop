@@ -10,6 +10,7 @@
     "withGlobalTauri": true,
     "windows": [
       {
+        "label": "main",
         "title": "Tuxtop",
         "width": 1240,
         "height": 860,

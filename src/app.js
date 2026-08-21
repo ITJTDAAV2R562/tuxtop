@@ -451,5 +451,30 @@
     start();
   }
 
-  if (LIVE) startLive(); else startSim();
+  // Nothing may fail silently.
+  //
+  // Twice now a dead UI has cost a debugging round trip: first a CSP nonce
+  // blocking the inline script, then Tauri's ACL denying core:event:listen.
+  // Both presented identically - a window that renders and does nothing.
+  // An unhandled rejection inside startLive() is exactly that failure mode,
+  // so it now gets shown on the page instead of only in a console nobody
+  // has open.
+  function fatal(what, err) {
+    const msg = err && err.message ? err.message : String(err);
+    console.error(what, err);
+    grid.innerHTML = `<div class="empty startup-error">
+      <b>${what}</b>
+      <code>${msg.replace(/[<&]/g, c => ({'<':'&lt;','&':'&amp;'}[c]))}</code>
+      <span>Right-click &rarr; Inspect &rarr; Console for the full trace.</span>
+    </div>`;
+  }
+
+  addEventListener('unhandledrejection', e => fatal('Startup failed', e.reason));
+  addEventListener('error', e => fatal('Script error', e.error || e.message));
+
+  if (LIVE) {
+    startLive().catch(err => fatal('Could not start live monitoring', err));
+  } else {
+    startSim();
+  }
 })();
