@@ -234,3 +234,74 @@ addr = "dove"
         assert_eq!(back, list);
     }
 }
+
+/// Reorder `list` to match `names`, which is the order the user dragged cards
+/// into.
+///
+/// Names not present in `list` are ignored, and hosts missing from `names`
+/// keep their relative order at the end. Both cases are ordinary races, not
+/// errors: a host can be removed in another window between the drag starting
+/// and the drop landing, and dropping the whole list on the floor because of
+/// that would lose the user's arrangement.
+pub fn reorder(list: &mut [HostConfig], names: &[String]) {
+    let rank = |h: &HostConfig| {
+        names
+            .iter()
+            .position(|n| n == &h.name)
+            .unwrap_or(usize::MAX)
+    };
+    // Stable sort, so unmentioned hosts keep their existing relative order.
+    list.sort_by_key(rank);
+}
+
+#[cfg(test)]
+mod reorder_tests {
+    use super::*;
+
+    fn list(names: &[&str]) -> Vec<HostConfig> {
+        names
+            .iter()
+            .map(|n| HostConfig {
+                name: (*n).into(),
+                addr: (*n).into(),
+                user: String::new(),
+                port: 22,
+                beszel_url: None,
+            })
+            .collect()
+    }
+
+    fn names(l: &[HostConfig]) -> Vec<String> {
+        l.iter().map(|h| h.name.clone()).collect()
+    }
+
+    #[test]
+    fn reorders_to_the_given_sequence() {
+        let mut l = list(&["dove", "heron", "wader"]);
+        reorder(&mut l, &["wader".into(), "dove".into(), "heron".into()]);
+        assert_eq!(names(&l), ["wader", "dove", "heron"]);
+    }
+
+    #[test]
+    fn unmentioned_hosts_go_last_in_their_existing_order() {
+        // A host added in another window mid-drag must not be dropped.
+        let mut l = list(&["dove", "heron", "wader", "falcon"]);
+        reorder(&mut l, &["wader".into(), "dove".into()]);
+        assert_eq!(names(&l), ["wader", "dove", "heron", "falcon"]);
+    }
+
+    #[test]
+    fn unknown_names_are_ignored() {
+        let mut l = list(&["dove", "heron"]);
+        reorder(&mut l, &["ghost".into(), "heron".into(), "dove".into()]);
+        assert_eq!(names(&l), ["heron", "dove"]);
+        assert_eq!(l.len(), 2, "no host invented from an unknown name");
+    }
+
+    #[test]
+    fn an_empty_order_leaves_the_list_alone() {
+        let mut l = list(&["dove", "heron", "wader"]);
+        reorder(&mut l, &[]);
+        assert_eq!(names(&l), ["dove", "heron", "wader"]);
+    }
+}

@@ -36,6 +36,14 @@
     mk('falcon', 'Ubuntu 24',  8, 32,  null,       2),
   ];
 
+  // View preferences, remembered between launches.
+  const PREFS = 'tuxtop.prefs';
+  const prefs = Object.assign(
+    { view: 'hosts', sort: 'manual' },
+    JSON.parse(localStorage.getItem(PREFS) || '{}')
+  );
+  const savePrefs = () => localStorage.setItem(PREFS, JSON.stringify(prefs));
+
   const HIST = 60;
   const push = (a, v) => { a.push(v); if (a.length > HIST) a.shift(); };
   const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
@@ -111,7 +119,135 @@
   const gb = v => v.toFixed(1);
 
   // ---- render skeleton ----
+  /// Hosts in display order. 'manual' is whatever order the backend holds,
+  /// which is what dragging persists — so sorting is a view over it, never a
+  /// mutation of it.
+  function ordered() {
+    const list = hosts.slice();
+    if (prefs.sort === 'load') {
+      return list.sort((a, b) => last(b.hist.cpu) - last(a.hist.cpu));
+    }
+    if (prefs.sort === 'name') {
+      return list.sort((a, b) => a.name.localeCompare(b.name));
+    }
+    return list;
+  }
+
+  const last = a => (a.length ? a[a.length - 1] : 0);
+
+  // Suspends repaints while a drag is in flight.
+  let dragging = null;
+  let frozen = false;
+
+  /// Move `name` next to `target` and persist the arrangement.
+  ///
+  /// Dragging implies manual ordering, so an active sort is switched off
+  /// rather than silently discarding the drop the user just made.
+  function commitOrder(name, target, after) {
+    if (!name || name === target) return;
+
+    const order = ordered().map(h => h.name).filter(n => n !== name);
+    const at = order.indexOf(target);
+    order.splice(at + (after ? 1 : 0), 0, name);
+
+    if (prefs.sort !== 'manual') {
+      prefs.sort = 'manual';
+      savePrefs();
+      const sel = document.querySelector('#sortSel');
+      if (sel) sel.value = 'manual';
+    }
+
+    // Apply locally first so the card lands where it was dropped, without
+    // waiting for a round trip.
+    const byName = new Map(hosts.map(h => [h.name, h]));
+    hosts = order.map(n => byName.get(n)).filter(Boolean);
+    build(); paint();
+
+    if (LIVE) {
+      TAURI.core.invoke('reorder_hosts', { names: order })
+        .catch(err => showError(`Could not save order: ${err}`));
+    }
+  }
+
+  // ---- all-cores view -----------------------------------------------------
+  //
+  // Every core of every host on one grid: pure load, nothing else. Tiles size
+  // themselves to the total core count so the whole fleet fits the window
+  // rather than scrolling — with 52 cores across four boxes, the point is
+  // seeing them all at once.
+  function buildAllCores() {
+    grid.innerHTML = '';
+    grid.classList.add('all-mode');
+
+    const total = hosts.reduce((a, h) => a + (h.cores || 0), 0);
+    if (!total) {
+      grid.innerHTML = '<div class="empty">No cores reporting yet.</div>';
+      return;
+    }
+
+    // ONE tile size for the whole fleet. Sizing per host made wader's 4 cores
+    // ten times the area of dove's 32, which reads as importance rather than
+    // count. Every block is the same width, so auto-fill derives the same
+    // column count for all of them and a core looks identical everywhere.
+    const avail = Math.max(240, grid.clientWidth - 34);
+    const wanted = Math.max(4, Math.ceil(total / 4));   // aim for roughly 4 rows
+    const px = Math.max(20, Math.min(52, Math.floor(avail / wanted)));
+
+    grid.style.setProperty('--tile', px + 'px');
+    grid.style.setProperty('--tile-h', Math.max(18, Math.round(px * 0.82)) + 'px');
+
+    ordered().forEach(h => {
+      const n = h.cores || 0;
+      const sec = document.createElement('section');
+      sec.className = 'hostblock';
+      sec.dataset.name = h.name;
+      sec.innerHTML = `
+        <header class="hb-head">
+          <span class="dot"></span>
+          <h2 class="hname">${esc(h.name)}</h2>
+          <span class="hb-cpu" data-hb-cpu></span>
+          <span class="hb-cores">${n || '?'} cores</span>
+        </header>
+        <div class="cores all"></div>`;
+
+      const wrap = sec.querySelector('.cores.all');
+      for (let i = 0; i < n; i++) {
+        const t = document.createElement('div');
+        t.className = 'core';
+        t.title = `${h.name} core ${i}`;
+        if (px >= 30) t.innerHTML = '<span class="pc"></span>';
+        wrap.appendChild(t);
+      }
+      grid.appendChild(sec);
+    });
+  }
+
+  function paintAllCores() {
+    hosts.forEach(h => {
+      const sec = grid.querySelector(`.hostblock[data-name="${CSS.escape(h.name)}"]`);
+      if (!sec) return;
+      const tiles = sec.querySelectorAll('.core');
+      if (tiles.length !== (h.cores || 0)) { build(); return; }
+
+      for (let i = 0; i < tiles.length; i++) {
+        const v = h.core[i] || 0;
+        tiles[i].style.setProperty('--l', (v / 100).toFixed(3));
+        tiles[i].dataset.band = band(v);
+        const pc = tiles[i].firstElementChild;
+        if (pc) pc.textContent = Math.round(v);
+      }
+
+      sec.querySelector('[data-hb-cpu]').textContent = Math.round(last(h.hist.cpu)) + '%';
+      sec.querySelector('.dot').className =
+        'dot' + (h.fault ? ' warnstate' : (LIVE && !h.seen ? ' pending' : ''));
+    });
+  }
+
   function build() {
+    if (prefs.view === 'all') return buildAllCores();
+    grid.classList.remove('all-mode');
+    grid.style.removeProperty('--tile');
+
     // build() tears down the DOM, so remember which card was open. Without
     // this, adding a host or a core-count change silently collapses the
     // detail panel the user was reading.
@@ -121,7 +257,7 @@
       grid.innerHTML = '<div class="empty">No hosts. Add one to start watching.</div>';
       return;
     }
-    hosts.forEach(h => {
+    ordered().forEach(h => {
       const el = document.createElement('article');
       el.className = 'card';
       el.dataset.id = h.id;
@@ -202,6 +338,43 @@
         }
         paint();
       });
+      // Drag to reorder. Only from the header, so dragging never fights the
+      // expand toggle or the remove button.
+      const head = el.querySelector('.chead');
+      head.draggable = true;
+      head.addEventListener('dragstart', ev => {
+        // A rebuild mid-drag would yank the element out from under the
+        // pointer, so repaints are suspended until the drag ends.
+        dragging = h.name;
+        frozen = true;
+        el.classList.add('is-dragging');
+        ev.dataTransfer.effectAllowed = 'move';
+        ev.dataTransfer.setData('text/plain', h.name);
+      });
+      head.addEventListener('dragend', () => {
+        dragging = null;
+        frozen = false;
+        grid.querySelectorAll('.card').forEach(c =>
+          c.classList.remove('is-dragging', 'drop-before', 'drop-after'));
+      });
+
+      el.addEventListener('dragover', ev => {
+        if (!dragging || dragging === h.name) return;
+        ev.preventDefault();
+        const r = el.getBoundingClientRect();
+        const after = ev.clientX > r.left + r.width / 2;
+        el.classList.toggle('drop-after', after);
+        el.classList.toggle('drop-before', !after);
+      });
+      el.addEventListener('dragleave', () =>
+        el.classList.remove('drop-before', 'drop-after'));
+      el.addEventListener('drop', ev => {
+        ev.preventDefault();
+        const after = el.classList.contains('drop-after');
+        el.classList.remove('drop-before', 'drop-after');
+        commitOrder(dragging, h.name, after);
+      });
+
       grid.appendChild(el);
     });
 
@@ -217,6 +390,8 @@
 
   // ---- paint values ----
   function paint() {
+    if (frozen) return;   // a rebuild mid-drag would drop the dragged card
+    if (prefs.view === 'all') return paintAllCores();
     const A = css('--accent'), MEM = css('--viz-mem'),
           DSK = css('--viz-disk'), NET = css('--viz-net'), GPU = css('--viz-gpu');
     hosts.forEach(h => {
@@ -250,7 +425,7 @@
         const cls = LIVE && !h.seen ? ' pending' : (cpu > 85 ? ' warnstate' : '');
         el.querySelector('.dot').className = 'dot' + cls;
       }
-      el.querySelector('[data-ram]').textContent = gb(h.ram) + ' / ' + h.ramGB + ' GB';
+      el.querySelector('[data-ram]').textContent = `${gb(h.ram)} / ${gb(h.ramGB)} GB`;
       el.querySelector('[data-dio]').textContent = Math.round(h.dio) + ' MB/s';
       el.querySelector('[data-net]').textContent = h.net.toFixed(1) + ' MB/s';
       if (h.gpu) el.querySelector('[data-gpu]').textContent = Math.round(h.gpuU) + '%';
@@ -320,6 +495,29 @@
     r.setAttribute('data-theme', dark ? 'light' : 'dark');
     paint();
   });
+
+  // ---- view + sort controls ----------------------------------------------
+  function setView(v) {
+    prefs.view = v; savePrefs();
+    $('#viewHosts').setAttribute('aria-pressed', String(v === 'hosts'));
+    $('#viewAll').setAttribute('aria-pressed', String(v === 'all'));
+    build(); paint();
+  }
+  $('#viewHosts').addEventListener('click', () => setView('hosts'));
+  $('#viewAll').addEventListener('click', () => setView('all'));
+
+  $('#sortSel').value = prefs.sort;
+  $('#sortSel').addEventListener('change', e => {
+    prefs.sort = e.target.value; savePrefs();
+    build(); paint();
+  });
+
+  // Restore the remembered view before the first render.
+  $('#viewHosts').setAttribute('aria-pressed', String(prefs.view === 'hosts'));
+  $('#viewAll').setAttribute('aria-pressed', String(prefs.view === 'all'));
+
+  // Tile sizing in all-cores mode depends on window width.
+  addEventListener('resize', () => { if (prefs.view === 'all') build(); });
 
   const dlg = $('#addDlg');
   $('#addBtn').addEventListener('click', () => {

@@ -30,23 +30,14 @@ fn add_host(
     sup: tauri::State<'_, Supervisor>,
     cfg: HostConfig,
 ) -> Result<Vec<HostConfig>, String> {
-    if cfg.name.trim().is_empty() {
-        return Err("host needs a name".into());
-    }
-    if cfg.addr.trim().is_empty() {
-        return Err("host needs an address".into());
-    }
-
     let mut all = hosts::load(&app)?;
-
-    if all.iter().any(|h| h.name == cfg.name) {
-        return Err(format!("a host named {} already exists", cfg.name));
-    }
-
-    all.push(cfg.clone());
+    tuxtop_core::hostlist::add(&mut all, cfg.clone()).map_err(|e| e.to_string())?;
     hosts::save(&app, &all)?;
 
-    sup.start(app.clone(), cfg, INTERVAL_SECS);
+    // Start the sampler with the trimmed copy the list actually stored, not
+    // the raw dialog input.
+    let stored = all.last().cloned().expect("just pushed");
+    sup.start(app.clone(), stored, INTERVAL_SECS);
     let _ = app.emit(supervisor::EVENT_HOSTS, &all);
 
     Ok(all)
@@ -60,12 +51,29 @@ fn remove_host(
     name: String,
 ) -> Result<Vec<HostConfig>, String> {
     let mut all = hosts::load(&app)?;
-    all.retain(|h| h.name != name);
+    tuxtop_core::hostlist::remove(&mut all, &name);
     hosts::save(&app, &all)?;
 
     sup.stop(&name);
     let _ = app.emit(supervisor::EVENT_HOSTS, &all);
 
+    Ok(all)
+}
+
+/// Persist a new card order after a drag.
+///
+/// `hosts.toml` is the single source of truth for ordering, so the arrangement
+/// survives a restart and stays consistent with what the backend emits.
+#[tauri::command]
+fn reorder_hosts(
+    app: AppHandle,
+    names: Vec<String>,
+) -> Result<Vec<HostConfig>, String> {
+    let mut all = hosts::load(&app)?;
+    tuxtop_core::hostlist::reorder(&mut all, &names);
+    hosts::save(&app, &all)?;
+
+    let _ = app.emit(supervisor::EVENT_HOSTS, &all);
     Ok(all)
 }
 
@@ -82,6 +90,7 @@ fn main() {
             list_hosts,
             add_host,
             remove_host,
+            reorder_hosts,
             active_hosts
         ])
         .setup(|app| {

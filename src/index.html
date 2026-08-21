@@ -42,6 +42,18 @@
   <div class="toolbar">
     <span class="tally"><b id="nhosts">4</b> hosts &middot; <b id="ncores">52</b> cores &middot; <b id="nup">4</b> up</span>
     <span class="tb-grow"></span>
+    <div class="seg" role="group" aria-label="View">
+      <button id="viewHosts" aria-pressed="true">Hosts</button>
+      <button id="viewAll" aria-pressed="false">All cores</button>
+    </div>
+    <label class="sortwrap">
+      <span>Sort</span>
+      <select id="sortSel" aria-label="Card order">
+        <option value="manual">Manual</option>
+        <option value="load">Busiest first</option>
+        <option value="name">Name</option>
+      </select>
+    </label>
     <div class="seg" role="group" aria-label="Sampling cadence">
       <button id="rateFast" aria-pressed="true">Direct &middot; 1 Hz</button>
       <button id="rateSlow" aria-pressed="false">Beszel &middot; 60 s</button>

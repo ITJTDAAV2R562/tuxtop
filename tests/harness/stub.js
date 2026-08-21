@@ -32,6 +32,13 @@
           emit('tuxtop://hosts-changed', structuredClone(hosts));
           return structuredClone(hosts);
         }
+        if (cmd === 'reorder_hosts') {
+          // Mirrors hostlist::reorder - stable, unmentioned hosts last.
+          const rank = h => { const i = args.names.indexOf(h.name); return i < 0 ? 1e9 : i; };
+          hosts = hosts.slice().sort((a, b) => rank(a) - rank(b));
+          emit('tuxtop://hosts-changed', structuredClone(hosts));
+          return structuredClone(hosts);
+        }
         if (cmd === 'active_hosts') return hosts.map(h => h.name);
         throw `unknown command ${cmd}`;
       },

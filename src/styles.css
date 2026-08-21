@@ -395,3 +395,59 @@ dialog::backdrop{background:rgba(6,10,18,.42);backdrop-filter:blur(3px)}
   background:var(--text-3);
   box-shadow:0 0 0 3px color-mix(in srgb,var(--text-3) 20%,transparent);
 }
+
+/* ============ all-cores view ============ */
+.grid.all-mode{grid-template-columns:1fr;gap:10px}
+.hostblock{
+  background:var(--surface);
+  border:1px solid var(--stroke);
+  border-radius:var(--r);
+  padding:10px 13px 12px;
+  backdrop-filter:blur(16px);
+  -webkit-backdrop-filter:blur(16px);
+}
+.hb-head{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+.hb-head .hname{font-size:13px}
+.hb-cpu{
+  font-family:var(--font-mono);font-size:12.5px;font-weight:600;
+  font-variant-numeric:tabular-nums;color:var(--text);
+}
+.hb-cores{
+  margin-left:auto;font-size:10px;font-weight:700;letter-spacing:.5px;
+  text-transform:uppercase;color:var(--text-3);
+}
+/* Every block is the same width, so auto-fill yields the same column count
+   in each - which is what keeps a core the same size on every host. */
+.cores.all{
+  display:grid;grid-auto-flow:row;height:auto;gap:3px;
+  grid-template-columns:repeat(auto-fill,minmax(var(--tile,34px),1fr));
+}
+.cores.all .core{
+  height:var(--tile-h,30px);border-radius:3px;
+  display:flex;align-items:flex-start;justify-content:flex-end;padding:2px 3px;
+}
+.cores.all .core .pc{
+  position:relative;z-index:1;
+  font-family:var(--font-mono);font-size:9.5px;font-weight:600;
+  font-variant-numeric:tabular-nums;color:var(--text-2);
+  text-shadow:0 0 3px var(--tile-halo),0 0 4px var(--tile-halo);
+}
+
+/* ============ drag to reorder ============ */
+.chead{cursor:grab}
+.chead:active{cursor:grabbing}
+.card.is-dragging{opacity:.4}
+.card.drop-before{box-shadow:-3px 0 0 0 var(--accent)}
+.card.drop-after{box-shadow:3px 0 0 0 var(--accent)}
+
+.sortwrap{display:flex;align-items:center;gap:6px}
+.sortwrap span{
+  font-size:10.5px;font-weight:700;letter-spacing:.6px;
+  text-transform:uppercase;color:var(--text-3);
+}
+.sortwrap select{
+  font:inherit;font-size:12px;font-weight:600;
+  padding:5px 8px;border-radius:7px;color:var(--text);
+  border:1px solid var(--stroke-hi);background:var(--surface-hi);
+}
+.sortwrap select:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
