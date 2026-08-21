@@ -6,10 +6,11 @@ Live per-core CPU, memory, disk, network and GPU for several hosts at once, in
 a real Win11 Mica window — not a browser tab, not a terminal, not a web
 dashboard you install as a PWA and pretend is an app.
 
-> **Status: early — there is a working CLI, but no GUI yet.**
-> `tuxtop-watch` streams live per-core CPU from a remote host over SSH and runs
-> today on Windows, Linux and macOS. The Tauri window is Phase 2 and does not
-> build yet. See [docs/ROADMAP.md](docs/ROADMAP.md).
+> **Status: the GUI works.** The Tauri window runs on Windows with a real Mica
+> backdrop, streaming live per-core data over SSH, with add/remove hosts and
+> faults reported on the card. `tuxtop-watch` remains as a terminal client.
+> Next up is Beszel history and the process list — see
+> [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ---
 
@@ -143,17 +144,25 @@ browser. It runs on simulated data and is the same page as the hosted
 
 ### `cargo test`
 
-38 tests, no GUI toolchain required, runs anywhere including WSL. Deliberate:
+53 tests, no GUI toolchain required, runs anywhere including WSL. Deliberate:
 the maths must be testable on the machine where the code is written, even
 though that machine cannot build the Windows binary.
 [ADR-006](docs/DECISIONS.md#adr-006--tuxtop-core-is-a-separate-crate-outside-the-tauri-workspace).
 
-### The GUI — not yet
+### The GUI
 
-`src-tauri/` is scaffolding that has never been compiled. There is no
-`package.json` and no icon set, so **`npm run tauri dev` will not work**.
-Phase 2 of the [roadmap](docs/ROADMAP.md) wires it up, on Windows, where it
-has to be built — Tauri pulls in webkit2gtk if built on Linux.
+Build it on **Windows** — Tauri pulls in webkit2gtk if built on Linux, so this
+cannot be cross-compiled from WSL.
+
+```powershell
+cd src-tauri
+cargo build
+.\target\debug\tuxtop.exe
+```
+
+No `npm` and no `tauri-cli` needed: the frontend is static files under `src/`,
+embedded at compile time. Hosts live in `%APPDATA%\dev.tuxtop.app\hosts.toml`
+and can be added from the window.
 
 ---
 

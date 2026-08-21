@@ -130,3 +130,43 @@ reaches the frontend through events.
 - **No agent to install.** [ADR-004](DECISIONS.md#adr-004--nothing-gets-installed-on-the-monitored-host).
 - **No credential storage.** SSH auth is delegated to the OS agent. Tuxtop
   never reads a private key or prompts for a passphrase.
+
+## Tauri pitfalls that fail silently
+
+Three bugs during Phase 2 presented **identically**: the window opens, renders
+correctly, and every control is inert. No crash, no console output anywhere you
+would naturally look, nothing in the Rust logs. Recognising the shape is worth
+more than the individual fixes.
+
+**1. CSP nonce defeats `'unsafe-inline'`.**
+Tauri injects a nonce into the page's `script-src`. Per the CSP spec, once a
+nonce is present the browser *ignores* `'unsafe-inline'` — so an inline
+`<script>` is blocked outright. The same applies to `style-src` and inline
+`style=""` attributes. Fix: keep CSS and JS in external files under
+`script-src 'self'`. There is now no inline script or style in `src/`, and the
+CSP declares no `'unsafe-inline'` at all.
+
+**2. The ACL denies everything without a capability file.**
+Tauri 2 grants nothing by default. With no `src-tauri/capabilities/*.json`,
+`gen/schemas/capabilities.json` is literally `{}` and `core:event:listen` is
+denied — so the first `await listen(...)` throws and every line after it in
+that async function never runs. Fix: `capabilities/default.json` granting
+`core:default` to the `main` window, whose label is pinned in `tauri.conf.json`
+because both the capability scope and the Mica lookup reference it by name.
+
+**3. An unhandled rejection in startup is invisible.**
+Both bugs above surfaced as a rejected promise inside `startLive()`, which
+browsers swallow into the console. `src/app.js` now installs
+`unhandledrejection` and `error` handlers that render the failure into the grid
+with a pointer to devtools.
+
+The through-line matches this project's founding bug: **a silent dead UI is the
+same class of failure as a silent wrong number.** Neither announces itself, and
+both are indistinguishable from working software until you check.
+
+### Testing the live path without a GUI
+
+`tests/harness/` stubs `window.__TAURI__` so the real `src/app.js` runs in an
+ordinary browser against a fake backend. Use it before hunting a UI bug by
+reading code — the "adding a second host removes the first" bug survived
+several rounds of inspection and was found in one pass there.

@@ -43,28 +43,37 @@ stream with a fault rather than retrying.
 
 ---
 
-## Phase 2 — Tauri shell with a real Mica backdrop — **next**
+## Phase 2 — Tauri shell with a real Mica backdrop — **done**
 
-- Tauri 2 project wired to `tuxtop-core`.
-- `window-vibrancy` for genuine Win11 Mica/Acrylic.
-- Port the mockup's HTML/CSS as the frontend, replacing its simulator with
-  Tauri events.
+- [x] Tauri 2 wired to `tuxtop-core`; `src-tauri` is its own workspace root
+- [x] `window-vibrancy` Mica, applied with failure logged and non-fatal
+- [x] Frontend runs the mockup's HTML/CSS on real events, with the simulator
+      kept as a fallback so the page still opens standalone as a browser mockup
+- [x] `hosts.toml` in the OS config dir; add and remove from the UI
+- [x] Faults render on the card with the reason and a suggested fix
+- [x] Verified on Windows: window opens with Mica, core grid animates from
+      live dove data
 
-**Done when:** the window opens on Windows with a real Mica backdrop and the
-core grid animates from live dove data.
-
-**Note:** must be built on the Windows side. WSL cannot compile the GUI.
+**Three silent-failure bugs cost most of this phase.** All presented the same
+way — the window renders and nothing responds. Recorded in
+[ARCHITECTURE.md](ARCHITECTURE.md#tauri-pitfalls-that-fail-silently) so the
+next session recognises the shape rather than re-deriving it.
 
 ---
 
-## Phase 3 — Multi-host — **planned**
+## Phase 3 — Multi-host — **mostly done, unverified**
 
-- `hosts.toml` for add/remove; one Tokio task per host.
-- A hung host degrades only its own card.
-- Faults render as a stated reason on the card.
+Landed with Phase 2 rather than as its own phase:
 
-**Done when:** four hosts stream at once, and killing sshd on one leaves the
-other three unaffected while that card explains what happened.
+- [x] `hosts.toml` add/remove, one Tokio task per host
+- [x] Reconnect with capped backoff; a good sample resets it
+- [x] Faults render as a stated reason on the card
+- [x] Hosts that have not reported show as connecting, not up
+- [ ] **Not yet verified:** four hosts streaming at once, and killing sshd on
+      one leaving the other three untouched. The isolation is written but has
+      only been exercised against a single real host.
+
+**Done when:** that last box is ticked against real hosts.
 
 ---
 
