@@ -522,6 +522,7 @@
   function build() {
     $('#histbar').hidden = prefs.view !== 'history';
     if (prefs.view === 'history') return buildHistory();
+    stopHistoryTimer();
     grid.classList.remove('hist-mode');
     if (prefs.view === 'all') return buildFleet();
     document.body.dataset.bands = 'on';
@@ -955,6 +956,7 @@
   }
 
   function buildHistory() {
+    startHistoryTimer();
     grid.innerHTML = '';
     grid.classList.remove('all-mode');
     // The chart grid does its own column layout, so the outer grid must give
@@ -1090,9 +1092,9 @@
 
   /// Draw the per-core grid, fetching every core in one call.
   async function refreshCoreCharts(secs, win) {
-    for (const sec of grid.querySelectorAll('.cores-hist')) {
-      await refreshOneCoreGrid(sec, secs, win);
-    }
+    await Promise.all(
+      [...grid.querySelectorAll('.cores-hist')]
+        .map(sec => refreshOneCoreGrid(sec, secs, win)));
   }
 
   async function refreshOneCoreGrid(sec, secs, win) {
@@ -1132,6 +1134,39 @@
   /// One window across all of them: scrubbing one moves them all, which is
   /// the point when correlating a spike - seeing that the CPU jump and the
   /// disk jump are the same second is the question being asked.
+  // History refreshes on a timer rather than on every 1 Hz sample: refetching
+  // a week of buckets once a second would be absurd, and 148 core charts even
+  // more so. Two seconds keeps it visibly live without that.
+  const HIST_REFRESH_MS = 2000;
+  let histTimer = null;
+  let histBusy = false;
+
+  function startHistoryTimer() {
+    clearInterval(histTimer);
+    histTimer = setInterval(tickHistory, HIST_REFRESH_MS);
+  }
+
+  function stopHistoryTimer() {
+    clearInterval(histTimer);
+    histTimer = null;
+  }
+
+  /// One refresh at a time.
+  ///
+  /// A fleet-wide core view issues a query per host; if a pass takes longer
+  /// than the interval, stacking them would queue work faster than it drains.
+  async function tickHistory() {
+    if (histBusy || prefs.view !== 'history' || document.hidden) return;
+    histBusy = true;
+    try {
+      await refreshHistory();
+    } catch (e) {
+      console.error('history refresh failed', e);
+    } finally {
+      histBusy = false;
+    }
+  }
+
   async function refreshHistory() {
     if (prefs.view !== 'history') return;
     const secs = sliderToSecs(+$('#histWindow').value);
@@ -1140,9 +1175,9 @@
     const win = { from: nowS - secs, to: nowS };
 
     const charts = [...grid.querySelectorAll('.chart')];
-    for (const el of charts) {
+    await Promise.all(charts.map(async el => {
       const m = METRICS[el.dataset.metric];
-      if (!m) continue;
+      if (!m) return;
       const cv = el.querySelector('canvas');
       const budget = Math.max(60, Math.round(cv.clientWidth || 320));
 
@@ -1163,7 +1198,7 @@
       el.querySelector('[data-latest]').textContent = last ? m.fmt(last.mean) : '\u2014';
       el.querySelector('[data-peak]').textContent = pts.length
         ? 'peak ' + m.fmt(pts.reduce((a, p) => Math.max(a, p.max), 0)) : '';
-    }
+    }));
 
     await refreshCoreCharts(secs, win);
   }
