@@ -100,12 +100,12 @@ Run it after touching tokens. This bug has landed twice (`--viz-*`, then the
 metal/reveal set): tokens go into the `@media` block and miss
 `:root[data-theme="dark"]`, so an explicit dark toggle silently falls back to
 light colours. It fails in one direction only, which is why eyeballing misses it.
- Bare `:root` carries
-the complete light palette; `@media (prefers-color-scheme: dark)` guarded as
-`:root:not([data-theme="light"])` redefines the tokens; `:root[data-theme="dark"]`
-redefines them again. A token defined in only one of the three renders one
-theme's text on the other theme's ground. This has already been caught once —
-check all three when adding a token.
+
+The three states: bare `:root` carries the complete light palette;
+`@media (prefers-color-scheme: dark)` guarded as `:root:not([data-theme="light"])`
+redefines the tokens; `:root[data-theme="dark"]` redefines them again. A token
+defined in only some of them renders one theme's colour on another theme's
+ground.
 
 **Any numeral drawn over a load-coloured surface needs a contrast halo.** The
 background colour is unpredictable by definition. Use `--tile-halo`.
@@ -119,9 +119,10 @@ dark only is unverified.
 ## Testing
 
 ```sh
-cargo test        # 33 tests, no GUI toolchain needed, runs anywhere
+cargo test        # 53 tests, no GUI toolchain needed, runs anywhere
 cargo clippy --all-targets
 cargo fmt
+python3 scripts/check-theme-tokens.py   # CSS tokens in all three theme states
 ```
 
 **Tests are the memory this project does not otherwise have.** Each test name
