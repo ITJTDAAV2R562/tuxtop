@@ -7,6 +7,17 @@ Status: **done** · **next** · **planned** · **idea**
 
 ---
 
+## What this is for
+
+**To see spikes across a fleet, immediately and beautifully.** That is the
+whole goal. Every feature is judged against it.
+
+It is a *seeing* tool, not a *watching* tool. It does not need to run
+unattended, remember anything across restarts, or tell anyone when something
+breaks — see [Non-goals](#non-goals).
+
+---
+
 ## Phase 0 — Core sampling maths — **done**
 
 The `/proc` parsing and rate maths, with no GUI dependency.
@@ -76,14 +87,22 @@ Landed with Phase 2 rather than as its own phase:
 
 ---
 
-## Phase 4 — Beszel history (slow plane) — **planned**
+## Phase 4 — Beszel as optional enrichment — **rescoped, low priority**
 
-- PocketBase client: auth, read `system_stats`, subscribe over SSE.
-- Sparklines extend backwards into history on hosts that have an agent.
-- Absent hub is a normal state, never an error.
+Written when Beszel was "the slow plane" and owned history. Phase 8 changed
+that: our own store covers **every** host at full resolution, including the
+ones with no agent, so Beszel is no longer load-bearing.
 
-**Done when:** expanding a card shows the last 24 h behind the live window, and
-a host with no agent still works with the live-only view.
+What remains worth having, if anything:
+
+- History extending *beyond* our 7-day ceiling, from Beszel's own records, for
+  hosts that happen to run an agent.
+- Nothing else. Container stats and SMART would be better collected directly
+  than read second-hand through a hub that may not be installed.
+
+Low priority precisely because it is now optional. ADR-002 still describes the
+old division of labour and needs superseding — that is the actual outstanding
+work here.
 
 ---
 
@@ -95,7 +114,14 @@ The Task Manager half, and the thing nothing off-the-shelf does from Windows.
 - Per-process CPU from `/proc/[pid]/stat` `utime + stime` deltas over
   `sysconf(_SC_CLK_TCK)`. **Do not parse `top`** — its output shifts across
   distros, versions and locales, and a decimal comma will silently break it.
-- Kill and renice, behind a confirmation, with an explicit sudo story.
+- Kill and renice, behind a confirmation.
+
+**The decision to take first:** this is the first feature that *changes* a
+remote machine rather than reading it. Everything so far has been `cat`
+against `/proc` — safe by construction, and the reason "nothing is installed
+on the host" has held. Killing a process is not that, and needs an explicit
+answer on privilege: own processes only, sudo when available, or a per-host
+setting. Take it once here; Phase 10's start/stop is the same question.
 
 **Open design question:** rows shaded by load need a contrast halo on their
 numerals — see [ADR-005](DECISIONS.md#adr-005--load-is-encoded-three-ways-at-once).
@@ -215,6 +241,90 @@ Settled:
   the slow plane in ADR-002.
 
 
+
+---
+
+## Phase 9 — Host facts and the data already on the floor — **next after 7**
+
+Cheap wins, several of which are already parsed and thrown away. Grounded in
+what Beszel actually stores, checked against its schema.
+
+- [ ] **Filesystem usage.** The largest real gap. Beszel stores disk total,
+      used and percent; we collect disk *I/O* and no capacity at all — so the
+      single most common way a Linux box falls over is invisible here. From
+      `/proc/mounts` plus `statvfs`, per mount, excluding pseudo-filesystems.
+- [ ] **Host identity** — CPU model, distro, kernel. Task Manager names the
+      processor at the top of its CPU pane, and a fleet view of 19 boxes badly
+      wants to know which are which. One `uname -srm`, `/etc/os-release` and
+      `/proc/cpuinfo` read, cached per connection rather than per sample —
+      none of it changes between frames.
+- [ ] **Uptime.** From `/proc/uptime`. Beszel stores it; we do not.
+- [ ] **Swap.** `MemInfo` already parses `SwapTotal` and `SwapFree`; `Sample`
+      simply never carried them.
+- [ ] **CPU breakdown.** We compute busy% from user/system/iowait and then
+      discard the split. Showing iowait separately is genuinely diagnostic:
+      "the CPU is not busy, it is waiting on disk" is a different problem with
+      a different fix.
+- [ ] **All temperature sensors**, not only the CPU. We rank sensors and keep
+      one; dove also reports NVMe, chipset and GPU.
+
+**Done when:** a host card can answer "what is this machine, how long has it
+been up, and is its disk about to fill".
+
+---
+
+## Phase 10 — systemd services — **planned**
+
+Both reference apps have this: Task Manager has a Services tab, and Beszel
+tracks 70 units on dove. Pairs naturally with the process list — a failed unit
+and a runaway process are the same question asked twice.
+
+- Unit name, load/active/sub state, and whether it is enabled.
+- Failed units surfaced without being hunted for.
+- Read-only first. Start and stop are the same trust decision as kill, and
+  should be taken once, in Phase 5, rather than twice.
+
+---
+
+## Phase 11 — Grouping hosts into clusters — **needs a spec**
+
+The next large design question, and deliberately unspecified.
+
+Group hosts — by role, by site, by cluster — and aggregate metrics per group,
+so a fleet of nineteen reads as five things rather than nineteen. Open
+questions before any code:
+
+- **What is a group, mechanically?** A label on a host, several labels, or a
+  tree? Labels compose and a tree does not, but a tree matches how people
+  describe infrastructure out loud.
+- **How does a metric aggregate?** Sum for cores and bytes; mean for
+  percentages; max for temperature. That is per-metric behaviour the registry
+  does not carry yet, and getting it wrong produces a confident wrong number —
+  a group "at 40% CPU" that is really one box at 100% and four idle.
+- **Does a group get its own card, or does it replace its hosts?** Probably
+  collapsible: the group as one row, expanding to its members.
+- **Does history follow?** A group series could be aggregated on read from
+  member series, or stored separately. On read is cheaper and cannot drift.
+- **What does it do to the fleet view's packing?** Groups are the natural
+  block boundary, which may simplify the layout rather than complicate it.
+
+This phase should produce a written spec first, as Phase 8 did.
+
+---
+
+## Non-goals
+
+**Alerting.** Deliberately out of scope, not merely unbuilt.
+
+Tuxtop is a desktop app you close. An alerting system that only fires while a
+window is open is worse than none, because you would come to rely on it. That
+is a job for something that runs unattended — Uptime Kuma, Pulse, Proxmox — and
+those already exist here. Beszel keeps its alerts for the same reason.
+
+**Persistence.** History is memory only and clears on restart, by design. See
+[specs/history-plane.md](specs/history-plane.md).
+
+**Multi-user, auth, tokens.** This is a single-user desktop application.
 
 ---
 

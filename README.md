@@ -2,9 +2,14 @@
 
 A Windows-native Task Manager for remote Linux boxes.
 
-Live per-core CPU, memory, disk, network and GPU for several hosts at once, in
-a real Win11 Mica window — not a browser tab, not a terminal, not a web
-dashboard you install as a PWA and pretend is an app.
+Live per-core CPU, memory, disk, network, temperature and GPU for a whole
+fleet at once, in a real Win11 Mica window — not a browser tab, not a
+terminal, not a web dashboard you install as a PWA and pretend is an app.
+
+**The goal is to see spikes across a fleet, immediately and beautifully.** It
+is a *seeing* tool, not a *watching* one: it does not run unattended, remember
+anything across restarts, or tell anyone when something breaks. Those are jobs
+for Uptime Kuma, Pulse or Proxmox, and they are deliberately out of scope.
 
 > **Status: the GUI works.** The Tauri window runs on Windows with a real Mica
 > backdrop, streaming live per-core data over SSH, with add/remove hosts and
