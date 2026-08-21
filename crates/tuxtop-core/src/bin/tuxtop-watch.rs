@@ -126,10 +126,28 @@ async fn main() -> ExitCode {
                 if first {
                     eprintln!(
                         "connected — {} cores. first sample is a baseline; \
-                         rates start on the second.\n",
+                         rates start on the second.",
                         s.cores.len()
                     );
+                    if let Some(f) = &s.facts {
+                        eprintln!("  {}  |  {}  |  {}", f.cpu_model, f.os, f.kernel);
+                    }
+                    if let Some(u) = s.uptime_secs {
+                        eprintln!("  up {}", human_uptime(u));
+                    }
+                    eprintln!();
                     first = false;
+                }
+                if !s.filesystems.is_empty() {
+                    for fs in &s.filesystems {
+                        eprintln!(
+                            "  disk {:<20} {:>5.1}%  ({:.1} / {:.1} GB)",
+                            fs.mount,
+                            fs.used_pct(),
+                            fs.used_kb as f64 / 1048576.0,
+                            fs.total_kb as f64 / 1048576.0
+                        );
+                    }
                 }
                 if args.plain {
                     println!(
@@ -140,6 +158,15 @@ async fn main() -> ExitCode {
                         bytes(s.net_tx_bps),
                         s.load[0],
                         temp(s.cpu_temp_c),
+                    );
+                    let b = s.cpu_breakdown;
+                    println!(
+                        "  usr {:4.1}%  sys {:4.1}%  io {:4.1}%  steal {:4.1}%   swap {:5.1}%",
+                        b.user,
+                        b.system,
+                        b.iowait,
+                        b.steal,
+                        pct(s.swap_used_kb, s.swap_total_kb),
                     );
                     if let Some(g) = &s.gpu {
                         println!(
@@ -281,6 +308,19 @@ fn temp(c: Option<f32>) -> String {
     match c {
         Some(v) => format!("{v:.0}C"),
         None => "  -".into(),
+    }
+}
+
+fn human_uptime(secs: u64) -> String {
+    let d = secs / 86400;
+    let h = (secs % 86400) / 3600;
+    let m = (secs % 3600) / 60;
+    if d > 0 {
+        format!("{d}d {h}h")
+    } else if h > 0 {
+        format!("{h}h {m}m")
+    } else {
+        format!("{m}m")
     }
 }
 

@@ -21,16 +21,41 @@ pub const FRAME_DELIMITER: &str = "--=TUXTOP=--";
 /// `interval_secs` bounds how fast the host is polled. One second is the
 /// Task-Manager feel; anything slower and the core grid stops being live.
 pub fn sampler_command(interval_secs: u32) -> String {
+    // Disk capacity every DF_EVERY frames, not every frame. It changes over
+    // minutes, and `df` output is larger than everything else combined on a
+    // host with several mounts - paying for it once a second would be the
+    // biggest single line on the traffic meter for the least-changing data.
+    let df_every = DF_EVERY;
     format!(
-        "while :; do \
+        "{FACTS_SNIPPET} \
+         i=0; \
+         while :; do \
            cat /proc/stat /proc/meminfo /proc/diskstats /proc/net/dev /proc/loadavg 2>/dev/null; \
+           echo \"TXU|$(cut -d' ' -f1 /proc/uptime 2>/dev/null)\"; \
            {TEMP_SNIPPET} \
            {GPU_SNIPPET} \
+           if [ $((i % {df_every})) -eq 0 ]; then \
+             df -P -k 2>/dev/null | tail -n +2 | sed 's/^/TXF|/'; \
+           fi; \
+           i=$((i+1)); \
            echo '{FRAME_DELIMITER}'; \
            sleep {interval_secs}; \
          done"
     )
 }
+
+/// How often disk capacity is re-read, in frames.
+pub const DF_EVERY: u32 = 30;
+
+/// Identity, read once before the loop starts.
+///
+/// None of it changes between frames, so re-reading it 86,400 times a day
+/// would be pure waste. It arrives in the first frame and the UI keeps it.
+const FACTS_SNIPPET: &str = "\
+  echo \"TXI|kernel|$(uname -sr 2>/dev/null)\"; \
+  echo \"TXI|arch|$(uname -m 2>/dev/null)\"; \
+  echo \"TXI|os|$( . /etc/os-release 2>/dev/null; echo \"$PRETTY_NAME\" )\"; \
+  echo \"TXI|cpu|$(grep -m1 -E '^(model name|Model)' /proc/cpuinfo 2>/dev/null | cut -d: -f2- | sed 's/^ *//')\";";
 
 /// Emits one `TXT|driver|label|millidegrees` line per hwmon temperature.
 ///
@@ -73,6 +98,12 @@ pub struct Frame {
     pub cpu_temp_c: Option<f32>,
     /// First GPU reported by nvidia-smi, if any.
     pub gpu: Option<crate::model::GpuSample>,
+    /// Seconds since boot.
+    pub uptime_secs: Option<u64>,
+    /// Identity, present only in the first frame of a connection.
+    pub facts: Option<crate::facts::HostFacts>,
+    /// Filesystems, present only in frames where `df` ran.
+    pub filesystems: Vec<crate::facts::FsEntry>,
 }
 
 /// Split a stream buffer into complete frames, returning the unconsumed tail.
@@ -112,6 +143,12 @@ pub fn parse_frame(text: &str) -> Frame {
     frame.load = parse_loadavg(text);
     frame.cpu_temp_c = parse_cpu_temp(text);
     frame.gpu = parse_gpu(text);
+    frame.uptime_secs = crate::facts::parse_uptime(text);
+
+    let facts = crate::facts::parse_facts(text);
+    frame.facts = (!facts.is_empty()).then_some(facts);
+    frame.filesystems = crate::facts::parse_filesystems(text);
+
     frame
 }
 
@@ -348,6 +385,14 @@ pub struct Rates {
 impl RateTracker {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// The previous frame's aggregate CPU row, for computing a breakdown.
+    ///
+    /// `None` before the second frame, since a breakdown is a delta and needs
+    /// two points exactly as a rate does.
+    pub fn prev_aggregate(&self) -> Option<crate::proc::CpuTimes> {
+        self.prev.as_ref().map(|f| f.stat.aggregate)
     }
 
     /// Feed the next frame, getting rates and per-core percentages back.
@@ -682,5 +727,75 @@ mod gpu_tests {
         );
         assert!(cmd.contains("TXG|"));
         assert!(!cmd.contains("[["), "must stay POSIX sh");
+    }
+}
+
+#[cfg(test)]
+mod phase9_tests {
+    use super::*;
+
+    #[test]
+    fn the_command_reads_identity_once_before_the_loop() {
+        let cmd = sampler_command(1);
+        let facts_at = cmd.find("TXI|kernel").expect("identity is collected");
+        let loop_at = cmd.find("while :;").expect("there is a loop");
+        assert!(
+            facts_at < loop_at,
+            "identity must not be re-read every frame"
+        );
+    }
+
+    #[test]
+    fn disk_capacity_is_not_read_every_frame() {
+        let cmd = sampler_command(1);
+        assert!(cmd.contains("df -P -k"));
+        assert!(
+            cmd.contains(&format!("% {DF_EVERY}")),
+            "df should be rate-limited"
+        );
+    }
+
+    #[test]
+    fn the_command_stays_posix_sh() {
+        let cmd = sampler_command(1);
+        assert!(!cmd.contains("[["), "no bashisms");
+        assert!(cmd.contains("$(("), "arithmetic is POSIX $(( ))");
+    }
+
+    #[test]
+    fn a_frame_carries_facts_uptime_and_filesystems() {
+        let text = "\
+TXI|kernel|Linux 6.12.101+deb13-amd64
+TXI|os|Debian GNU/Linux 13 (trixie)
+TXI|cpu|AMD Ryzen 9 5950X 16-Core Processor
+cpu  100 0 50 900
+cpu0 100 0 50 900
+TXU|858066.79
+TXF|/dev/nvme0n1p1 1888752112 158276184 1634458828 9% /
+";
+        let f = parse_frame(text);
+        assert_eq!(
+            f.stat.cores.len(),
+            1,
+            "the new lines must not parse as cores"
+        );
+        assert_eq!(f.uptime_secs, Some(858_066));
+        assert_eq!(
+            f.facts.as_ref().unwrap().cpu_model,
+            "AMD Ryzen 9 5950X 16-Core Processor"
+        );
+        assert_eq!(f.filesystems.len(), 1);
+    }
+
+    #[test]
+    fn a_frame_without_them_reports_none_rather_than_empty_strings() {
+        // Most frames carry neither: facts come once, df every DF_EVERY.
+        let f = parse_frame("cpu 100 0 50 900\ncpu0 100 0 50 900\n");
+        assert!(
+            f.facts.is_none(),
+            "absent facts must be None, not blank strings"
+        );
+        assert!(f.filesystems.is_empty());
+        assert_eq!(f.uptime_secs, None);
     }
 }

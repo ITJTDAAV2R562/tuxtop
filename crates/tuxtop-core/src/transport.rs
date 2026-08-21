@@ -164,10 +164,20 @@ async fn pump(
             last = now;
 
             let cores_len = frame.stat.cores.len();
+            let agg = frame.stat.aggregate;
             let mem = frame.mem;
             let load = frame.load;
             let cpu_temp_c = frame.cpu_temp_c;
             let gpu = frame.gpu.clone();
+            let uptime_secs = frame.uptime_secs;
+            let facts = frame.facts.clone();
+            let filesystems = frame.filesystems.clone();
+            let swap_total_kb = frame.mem.swap_total_kb;
+            let swap_used_kb = frame
+                .mem
+                .swap_total_kb
+                .saturating_sub(frame.mem.swap_free_kb);
+            let prev_agg = tracker.prev_aggregate();
             let (rates, cores) = tracker.push(frame, elapsed);
 
             // A frame with no CPU rows means the remote cat produced nothing
@@ -193,6 +203,14 @@ async fn pump(
                 gpu,
                 load,
                 cpu_temp_c,
+                swap_used_kb,
+                swap_total_kb,
+                uptime_secs,
+                cpu_breakdown: prev_agg
+                    .map(|p| crate::proc::breakdown(&p, &agg))
+                    .unwrap_or_default(),
+                facts,
+                filesystems,
             }));
         }
 

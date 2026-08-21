@@ -122,6 +122,42 @@ pub fn busy_pct(prev: &CpuTimes, cur: &CpuTimes) -> f32 {
     (busy as f32 / total as f32 * 100.0).clamp(0.0, 100.0)
 }
 
+/// Where the CPU's time went, as percentages of the interval.
+///
+/// `busy_pct` collapses this to one number, which answers "is it busy" but
+/// not "busy doing what". Showing iowait separately is genuinely diagnostic:
+/// a box at 90% iowait is not short of CPU, it is waiting on a disk, and that
+/// is a different problem with a different fix.
+#[derive(Debug, Clone, Copy, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct CpuBreakdown {
+    pub user: f32,
+    pub system: f32,
+    pub iowait: f32,
+    pub steal: f32,
+    pub idle: f32,
+}
+
+pub fn breakdown(prev: &CpuTimes, cur: &CpuTimes) -> CpuBreakdown {
+    let total = cur.total_jiffies().saturating_sub(prev.total_jiffies());
+    if total == 0 {
+        return CpuBreakdown::default();
+    }
+    let pct =
+        |a: u64, b: u64| (a.saturating_sub(b) as f32 / total as f32 * 100.0).clamp(0.0, 100.0);
+    CpuBreakdown {
+        // `nice` is user time; folding it in avoids a category most people
+        // never think about while keeping the total honest.
+        user: pct(cur.user + cur.nice, prev.user + prev.nice),
+        system: pct(
+            cur.system + cur.irq + cur.softirq,
+            prev.system + prev.irq + prev.softirq,
+        ),
+        iowait: pct(cur.iowait, prev.iowait),
+        steal: pct(cur.steal, prev.steal),
+        idle: pct(cur.idle, prev.idle),
+    }
+}
+
 /// Per-core busy percentages between two snapshots.
 ///
 /// Zips to the shorter of the two core lists. A CPU that was offlined between

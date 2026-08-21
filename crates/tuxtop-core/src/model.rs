@@ -62,6 +62,20 @@ pub struct Sample {
     /// a plausible cold CPU.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cpu_temp_c: Option<f32>,
+    /// Swap in use. Zero total means no swap configured, which is normal.
+    pub swap_used_kb: u64,
+    pub swap_total_kb: u64,
+    /// Seconds since boot.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub uptime_secs: Option<u64>,
+    /// Where the CPU's time went, not merely how much of it was used.
+    pub cpu_breakdown: crate::proc::CpuBreakdown,
+    /// Identity. Sent once per connection, then `None`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub facts: Option<crate::facts::HostFacts>,
+    /// Filesystems. Sent on a slow cadence, then empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub filesystems: Vec<crate::facts::FsEntry>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
