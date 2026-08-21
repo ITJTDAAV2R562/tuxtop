@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::mpsc;
 use tuxtop_core::{HostConfig, HostFault, SshSampler, TrafficCounter, TrafficStats};
 
@@ -147,6 +147,10 @@ async fn watch(
                 Ok(sample) => {
                     got_data = true;
                     attempt = 0; // a good sample resets the backoff
+                    // Record before emitting: history must not depend on a
+                    // webview being attached to receive it.
+                    app.state::<crate::history_store::HistoryStore>()
+                        .record(&sample);
                     if app.emit(EVENT_SAMPLE, &sample).is_err() {
                         // The webview is gone; nothing left to feed.
                         return;

@@ -6,6 +6,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod history_store;
 mod hosts;
 mod supervisor;
 
@@ -13,6 +14,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use tuxtop_core::hostlist::{effective_interval, Settings};
 use tuxtop_core::HostConfig;
 
+use history_store::{HistoryStore, HistoryUsage};
 use supervisor::Supervisor;
 
 /// The configured hosts, for the frontend to render cards from.
@@ -56,6 +58,7 @@ fn remove_host(
 
     sup.stop(&name);
     sup.forget(&name);
+    app.state::<HistoryStore>().forget_host(&name);
     let _ = app.emit(supervisor::EVENT_HOSTS, &all);
 
     Ok(all)
@@ -144,6 +147,33 @@ fn traffic_stats(sup: tauri::State<'_, Supervisor>) -> Vec<supervisor::HostTraff
     sup.traffic()
 }
 
+/// A window of history for one series.
+///
+/// `from` and `to` are seconds before now, so the frontend can ask for "the
+/// last 20 minutes" without needing the two clocks to agree. `max_points`
+/// should be about the chart's pixel width: downsampling happens here, where
+/// the data is, so the webview only receives what it can draw.
+#[tauri::command]
+fn query_history(
+    store: tauri::State<'_, HistoryStore>,
+    host: String,
+    metric: String,
+    from_secs_ago: u64,
+    to_secs_ago: u64,
+    max_points: usize,
+) -> Vec<tuxtop_core::history::Point> {
+    let now = history_store::now_secs();
+    let from = now.saturating_sub(from_secs_ago);
+    let to = now.saturating_sub(to_secs_ago);
+    store.query(&host, &metric, from, to, max_points.clamp(1, 4096))
+}
+
+/// How much the history store is currently holding.
+#[tauri::command]
+fn history_usage(store: tauri::State<'_, HistoryStore>) -> HistoryUsage {
+    store.usage()
+}
+
 /// Which hosts currently have a live sampler task.
 #[tauri::command]
 fn active_hosts(sup: tauri::State<'_, Supervisor>) -> Vec<String> {
@@ -153,6 +183,7 @@ fn active_hosts(sup: tauri::State<'_, Supervisor>) -> Vec<String> {
 fn main() {
     tauri::Builder::default()
         .manage(Supervisor::default())
+        .manage(HistoryStore::new())
         .invoke_handler(tauri::generate_handler![
             list_hosts,
             add_host,
@@ -162,6 +193,8 @@ fn main() {
             set_settings,
             set_host_interval,
             traffic_stats,
+            query_history,
+            history_usage,
             active_hosts
         ])
         .setup(|app| {
