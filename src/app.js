@@ -166,6 +166,7 @@
       vector: h => h.core || [],
       scalar: h => last(h.hist.cpu),
       fmt: v => Math.round(v) + '%',
+      has: h => (h.cores || 0) > 0,
     },
     cpu: {
       label: 'CPU', shape: 'scalar', scale: 'absolute', max: 100,
@@ -190,9 +191,21 @@
       label: 'Load avg', shape: 'scalar', scale: 'log', floor: 1, decades: 3,
       scalar: h => (h.load ? h.load[0] : 0), fmt: v => v.toFixed(2),
     },
+    // GPU needs nvidia-smi in the sampler loop, which is Phase 6. Until a
+    // host actually reports it these stay out of the picker entirely: a
+    // metric that renders 0% everywhere because nothing collects it is a
+    // confidently wrong number, which is the one thing this app must not do.
     gpu: {
-      label: 'GPU', shape: 'scalar', scale: 'absolute', max: 100,
-      scalar: h => h.gpuU || 0, fmt: v => Math.round(v) + '%',
+      label: 'GPU load', shape: 'scalar', scale: 'absolute', max: 100,
+      scalar: h => (h.gpu ? h.gpuU || 0 : null), fmt: v => Math.round(v) + '%',
+      has: h => !!h.gpu,
+    },
+    gpumem: {
+      label: 'GPU memory', shape: 'scalar', scale: 'absolute', max: 100,
+      scalar: h => (h.gpu && h.gpuTotal ? h.gpuUsed / h.gpuTotal * 100 : null),
+      fmt: v => Math.round(v) + '%',
+      sub: h => (h.gpuTotal ? `${Math.round(h.gpuUsed)} / ${Math.round(h.gpuTotal)} MB` : ''),
+      has: h => !!(h.gpu && h.gpuTotal),
     },
   };
 
@@ -217,6 +230,22 @@
   }
 
   const metric = () => METRICS[prefs.metric] || METRICS.cores;
+
+  /// Metrics at least one host actually reports.
+  ///
+  /// A metric with no data behind it would render zeros across the fleet and
+  /// look exactly like a genuinely idle one. Hiding it is the honest option;
+  /// it reappears the moment a host reports it.
+  const availableMetrics = () => {
+    // Only hosts that have actually reported can testify to what exists.
+    // Cards seeded from hosts.toml start with cores: 0 before their first
+    // sample, so judging availability on all hosts declared every gated
+    // metric missing and overwrote the saved preference on the way to the
+    // first sample. Absence of data is not evidence of an absent metric.
+    const reporting = hosts.filter(h => h.seen || !LIVE);
+    if (!reporting.length) return Object.entries(METRICS);
+    return Object.entries(METRICS).filter(([, m]) => !m.has || reporting.some(h => m.has(h)));
+  };
 
   // Suspends repaints while a drag is in flight.
   let dragging = null;
@@ -383,20 +412,25 @@
 
   function paintScalar(m) {
     // Peak across the fleet, so every bar shares one axis.
-    const peak = hosts.reduce((a, h) => Math.max(a, m.scalar(h) || 0), 0);
+    // Hosts that do not report the metric must not drag the peak to zero.
+    const peak = hosts.reduce((a, h) => Math.max(a, m.scalar(h) ?? 0), 0);
 
     hosts.forEach(h => {
       const row = grid.querySelector(`.fbar[data-name="${CSS.escape(h.name)}"]`);
       if (!row) return;
-      const v = m.scalar(h) || 0;
-      const n = normalise(m, v, peak);
+      const raw = m.scalar(h);
+      const missing = raw === null || raw === undefined;
+      const v = missing ? 0 : raw;
+      const n = missing ? 0 : normalise(m, v, peak);
 
       const fill = row.querySelector('.fbar-fill');
       fill.style.width = (n * 100).toFixed(1) + '%';
+      row.classList.toggle('nodata', missing);
       // Percentage metrics carry the load bands; a rate has no "too hot".
       fill.dataset.band = m.scale === 'absolute' ? band(v) : 'cool';
 
-      row.querySelector('[data-val]').textContent = h.fault ? '\u2014' : m.fmt(v);
+      row.querySelector('[data-val]').textContent =
+        (h.fault || missing) ? '\u2014' : m.fmt(v);
       row.querySelector('[data-sub]').textContent = (!h.fault && m.sub) ? m.sub(h) : '';
       row.querySelector('.dot').className = dotClass(h);
       row.classList.toggle('down', !!h.fault);
@@ -648,6 +682,7 @@
   }
 
   function tally() {
+    refreshMetricOptions();
     $('#nhosts').textContent = hosts.length;
     $('#ncores').textContent = hosts.reduce((a, h) => a + (h.cores || 0), 0);
     $('#nup').textContent = hosts.filter(h => !h.fault && (!LIVE || h.seen)).length;
@@ -688,12 +723,31 @@
   // Populate the metric picker from the registry, so a new metric needs no
   // markup change.
   const msel = $('#metricSel');
-  for (const [id, m] of Object.entries(METRICS)) {
-    const o = document.createElement('option');
-    o.value = id; o.textContent = m.label;
-    msel.appendChild(o);
+
+  function refreshMetricOptions() {
+    const avail = availableMetrics();
+    const ids = avail.map(([id]) => id);
+    const current = ids.join(',');
+    if (msel.dataset.ids === current) return;
+    msel.dataset.ids = current;
+
+    msel.innerHTML = '';
+    for (const [id, m] of avail) {
+      const o = document.createElement('option');
+      o.value = id; o.textContent = m.label;
+      msel.appendChild(o);
+    }
+    // A metric can vanish when its last reporting host goes away. Only then
+    // is rewriting the preference correct - never merely because data has not
+    // arrived yet.
+    const reporting = hosts.some(h => h.seen || !LIVE);
+    if (reporting && !ids.includes(prefs.metric)) {
+      prefs.metric = ids[0] || 'cores';
+      savePrefs();
+    }
+    msel.value = prefs.metric;
   }
-  msel.value = prefs.metric;
+  refreshMetricOptions();
 
   function setView(v) {
     prefs.view = v; savePrefs();

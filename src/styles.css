@@ -34,8 +34,8 @@
   /* metal + reveal */
   --bevel-top:rgba(255,255,255,.95);
   --bevel-bottom:rgba(14,22,38,.08);
-  --reveal-face:rgba(11,111,196,.20);
-  --reveal-edge:rgba(11,111,196,.60);
+  --reveal-face:rgba(11,111,196,.11);
+  --reveal-edge:rgba(11,111,196,.42);
   --gloss:rgba(255,255,255,.55);
   --grain:.030;
 
@@ -79,8 +79,8 @@
     /* metal + reveal */
     --bevel-top:rgba(255,255,255,.14);
     --bevel-bottom:rgba(0,0,0,.50);
-    --reveal-face:rgba(88,189,247,.17);
-    --reveal-edge:rgba(150,218,255,.78);
+    --reveal-face:rgba(88,189,247,.10);
+    --reveal-edge:rgba(150,218,255,.55);
     --gloss:rgba(255,255,255,.22);
     --grain:.055;
     --on-accent:#07131E;
@@ -123,8 +123,8 @@
   /* metal + reveal */
   --bevel-top:rgba(255,255,255,.14);
   --bevel-bottom:rgba(0,0,0,.50);
-  --reveal-face:rgba(88,189,247,.17);
-  --reveal-edge:rgba(150,218,255,.78);
+  --reveal-face:rgba(88,189,247,.10);
+  --reveal-edge:rgba(150,218,255,.55);
   --gloss:rgba(255,255,255,.22);
   --grain:.055;
 
@@ -595,8 +595,10 @@ body[data-bands="off"] .legend span:not(:last-child){display:none}
 .card::after, .hostblock::after{
   content:"";position:absolute;inset:0;z-index:1;border-radius:inherit;
   pointer-events:none;opacity:0;transition:opacity .28s ease;
-  background:radial-gradient(circle 220px at var(--mx,50%) var(--my,50%),
-    var(--reveal-face) 0%, transparent 68%);
+  background:radial-gradient(circle 460px at var(--mx,50%) var(--my,50%),
+    var(--reveal-face) 0%,
+    color-mix(in srgb,var(--reveal-face) 45%,transparent) 38%,
+    transparent 88%);
 }
 .card:hover::after, .hostblock:hover::after{opacity:1}
 
@@ -605,8 +607,10 @@ body[data-bands="off"] .legend span:not(:last-child){display:none}
 .reveal-edge{
   position:absolute;inset:0;z-index:3;border-radius:inherit;
   pointer-events:none;padding:1px;opacity:0;transition:opacity .28s ease;
-  background:radial-gradient(circle 200px at var(--mx,50%) var(--my,50%),
-    var(--reveal-edge) 0%, transparent 62%);
+  background:radial-gradient(circle 380px at var(--mx,50%) var(--my,50%),
+    var(--reveal-edge) 0%,
+    color-mix(in srgb,var(--reveal-edge) 40%,transparent) 42%,
+    transparent 86%);
   -webkit-mask:linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
   -webkit-mask-composite:xor;
   mask:linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
@@ -652,3 +656,9 @@ body[data-bands="off"] .legend span:not(:last-child){display:none}
 @media (prefers-reduced-motion:reduce){
   .card::after,.hostblock::after,.reveal-edge{transition:none}
 }
+
+
+/* A host that does not report the selected metric says so, rather than
+   drawing an empty bar that looks identical to a genuinely idle one. */
+.fbar.nodata .fbar-track{opacity:.35}
+.fbar.nodata .fbar-val{color:var(--text-3)}
