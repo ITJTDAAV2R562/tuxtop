@@ -866,6 +866,7 @@
     $('#viewAll').setAttribute('aria-pressed', String(v === 'all'));
     $('#viewHist').setAttribute('aria-pressed', String(v === 'history'));
     $('#metricWrap').hidden = v !== 'all';
+    $('#histWrap').hidden = v !== 'history';
     build(); paint();
   }
 
@@ -897,6 +898,7 @@
   $('#viewAll').setAttribute('aria-pressed', String(prefs.view === 'all'));
   $('#viewHist').setAttribute('aria-pressed', String(prefs.view === 'history'));
   $('#metricWrap').hidden = prefs.view !== 'all';
+  $('#histWrap').hidden = prefs.view !== 'history';
   $('#histbar').hidden = prefs.view !== 'history';
 
   // Tile sizing in all-cores mode depends on window width.
@@ -941,9 +943,7 @@
   function currentSlice() {
     const s = prefs.slice;
     if (s && s.mode === 'host' && hosts.some(h => h.name === s.host)) return s;
-    if (s && s.mode === 'metric' && METRICS[s.metric]) {
-      return { mode: 'metric', metric: scalarMetricId(s.metric) };
-    }
+    if (s && s.mode === 'metric' && METRICS[s.metric]) return s;
     // Nothing remembered or the subject is gone: fall back to what is on
     // screen rather than an arbitrary choice.
     return hosts.length
@@ -974,6 +974,7 @@
 
     if (slice.mode === 'host') {
       // Pick a different host without leaving History.
+      $('[data-hist-label]').textContent = 'Host';
       sub.innerHTML = ordered()
         .map(h => `<option value="${esc(h.name)}"${h.name === slice.host ? ' selected' : ''}>${esc(h.name)}</option>`)
         .join('');
@@ -985,11 +986,22 @@
     } else {
       // Pick a different metric without leaving History. Vector metrics are
       // excluded: there is no single line per host to compare.
+      $('[data-hist-label]').textContent = 'Metric';
       sub.innerHTML = availableMetrics()
-        .filter(([, m]) => m.shape !== 'vector')
         .map(([id, m]) => `<option value="${id}"${id === slice.metric ? ' selected' : ''}>${esc(m.label)}</option>`)
         .join('');
       $('#histSwap').textContent = 'Show one host';
+
+      const vm = METRICS[slice.metric];
+      if (vm && vm.shape === 'vector') {
+        // A vector metric across the fleet is every host's small multiples,
+        // grouped by host. There is no single line to overlay.
+        for (const h of ordered()) {
+          if (h.cores > 0) grid.appendChild(coreChartsEl(h));
+        }
+        refreshHistory();
+        return;
+      }
       for (const h of ordered()) {
         wrap.appendChild(chartEl(`${h.name}::${slice.metric}`, h.name, slice.metric, h.name));
       }
@@ -1031,6 +1043,7 @@
     sec.dataset.host = h.name;
     sec.innerHTML = `
       <div class="cores-hist-head">
+        <span class="ch-host">${esc(h.name)}</span>
         <span>${h.cores} logical cores</span>
         <span class="chart-peak" data-cores-peak></span>
       </div>
@@ -1049,7 +1062,12 @@
 
   /// Draw the per-core grid, fetching every core in one call.
   async function refreshCoreCharts(secs) {
-    const sec = grid.querySelector('.cores-hist');
+    for (const sec of grid.querySelectorAll('.cores-hist')) {
+      await refreshOneCoreGrid(sec, secs);
+    }
+  }
+
+  async function refreshOneCoreGrid(sec, secs) {
     if (!sec) return;
     const host = sec.dataset.host;
     const cells = [...sec.querySelectorAll('.core-chart')];
@@ -1066,7 +1084,7 @@
         });
       } catch { data = {}; }
     } else {
-      metrics.forEach((m, i) => { data[m] = simHistory(host, 'cpu', secs, budget); });
+      metrics.forEach(m => { data[m] = simHistory(host, 'cpu', secs, budget); });
     }
 
     let fleetPeak = 0;
@@ -1142,7 +1160,7 @@
 
     const peak = m.scale === 'absolute'
       ? (m.max || 100)
-      : Math.max(1, pts.reduce((a, p) => Math.max(a, p.max), 0)) * 1.1;
+      : Math.max(1, pts.reduce((a, p) => Math.max(a, p.max), 0)) * 1.12;
 
     const t0 = pts[0].t, t1 = pts[pts.length - 1].t;
     const span = Math.max(1, t1 - t0);
@@ -1157,23 +1175,62 @@
 
     const colour = m.scale === 'absolute' ? css('--accent') : css('--viz-net');
 
-    // min/max band
+    // Area under the mean, always.
+    //
+    // The min/max band alone leaves short windows looking like a bare line:
+    // those are served by the raw tier, where min == mean == max, so the band
+    // has no height at all. The fill is what gives every zoom level the same
+    // weight - and it is the part that reads as a chart rather than a wire.
     c.beginPath();
-    pts.forEach((p, i) => (i ? c.lineTo(x(p), y(p.max)) : c.moveTo(x(p), y(p.max))));
-    for (let i = pts.length - 1; i >= 0; i--) c.lineTo(x(pts[i]), y(pts[i].min));
+    c.moveTo(x(pts[0]), h);
+    pts.forEach(p => c.lineTo(x(p), y(p.mean)));
+    c.lineTo(x(pts[pts.length - 1]), h);
     c.closePath();
-    const g = c.createLinearGradient(0, 0, 0, h);
-    g.addColorStop(0, colour + '55');
-    g.addColorStop(1, colour + '10');
-    c.fillStyle = g; c.fill();
+    const fill = c.createLinearGradient(0, 0, 0, h);
+    fill.addColorStop(0, colour + '66');
+    fill.addColorStop(0.55, colour + '2A');
+    fill.addColorStop(1, colour + '05');
+    c.fillStyle = fill;
+    c.fill();
 
-    // mean
+    // The min/max band on top, where the tier has spread to show.
+    const spread = pts.some(p => p.max - p.min > 1e-6);
+    if (spread) {
+      c.beginPath();
+      pts.forEach((p, i) => (i ? c.lineTo(x(p), y(p.max)) : c.moveTo(x(p), y(p.max))));
+      for (let i = pts.length - 1; i >= 0; i--) c.lineTo(x(pts[i]), y(pts[i].min));
+      c.closePath();
+      const band = c.createLinearGradient(0, 0, 0, h);
+      band.addColorStop(0, colour + '4D');
+      band.addColorStop(1, colour + '14');
+      c.fillStyle = band;
+      c.fill();
+    }
+
+    // A specular sheen along the top, matching the tiles and bars.
+    c.save();
+    c.beginPath();
+    c.moveTo(x(pts[0]), h);
+    pts.forEach(p => c.lineTo(x(p), y(p.mean)));
+    c.lineTo(x(pts[pts.length - 1]), h);
+    c.closePath();
+    c.clip();
+    const gloss = c.createLinearGradient(0, 0, 0, h * 0.55);
+    gloss.addColorStop(0, css('--gloss'));
+    gloss.addColorStop(1, 'transparent');
+    c.fillStyle = gloss;
+    c.fillRect(0, 0, w, h);
+    c.restore();
+
+    // Mean line last, so it sits above its own fill.
     c.beginPath();
     pts.forEach((p, i) => (i ? c.lineTo(x(p), y(p.mean)) : c.moveTo(x(p), y(p.mean))));
     c.strokeStyle = colour; c.lineWidth = 1.5; c.lineJoin = 'round'; c.stroke();
 
     const lx = x(pts[pts.length - 1]), ly = y(pts[pts.length - 1].mean);
     c.beginPath(); c.arc(lx, ly, 2.6, 0, 7); c.fillStyle = colour; c.fill();
+    c.beginPath(); c.arc(lx, ly, 5.2, 0, 7);
+    c.strokeStyle = colour + '55'; c.lineWidth = 1.4; c.stroke();
   }
 
   /// Browser-mode history, so the page still demonstrates itself as a mockup.

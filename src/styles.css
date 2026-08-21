@@ -771,6 +771,10 @@ body[data-bands="off"] .legend span:not(:last-child){display:none}
 .card-actions{display:flex;align-items:center;gap:14px;margin-top:auto}
 .card-hist{margin-left:auto}
 
+.ch-host{
+  font-family:var(--font-mono);font-size:12px;font-weight:600;
+  color:var(--text);text-transform:none;letter-spacing:0;
+}
 .hist-subject select{
   font:inherit;font-family:var(--font-mono);font-size:13px;font-weight:600;
   padding:4px 8px;border-radius:7px;color:var(--text);
