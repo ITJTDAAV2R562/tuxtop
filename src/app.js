@@ -39,7 +39,8 @@
   // View preferences, remembered between launches.
   const PREFS = 'tuxtop.prefs';
   const prefs = Object.assign(
-    { view: 'hosts', sort: 'manual', metric: 'cores', slice: null, procKernel: false },
+    { view: 'hosts', sort: 'manual', metric: 'cores', slice: null,
+      procKernel: false, procSort: 'cpu_pct', procDesc: true },
     JSON.parse(localStorage.getItem(PREFS) || '{}')
   );
   const savePrefs = () => localStorage.setItem(PREFS, JSON.stringify(prefs));
@@ -1492,6 +1493,20 @@
     finally { procBusy = false; }
   }
 
+  /// Columns, and how each one sorts.
+  ///
+  /// Numeric columns default to descending because the interesting end of a
+  /// process table is the top; text columns default to ascending because the
+  /// interesting thing there is finding a name.
+  const PROC_COLS = [
+    { key: 'host', label: 'Host', cls: 'host', num: false },
+    { key: 'cpu_pct', label: 'CPU', cls: 'num', num: true },
+    { key: 'rss_kb', label: 'Memory', cls: 'num', num: true },
+    { key: 'pid', label: 'PID', cls: 'num', num: true },
+    { key: 'user', label: 'User', cls: '', num: false },
+    { key: 'comm', label: 'Command', cls: 'cmd', num: false },
+  ];
+
   function buildProcs() {
     startProcs();
     grid.innerHTML = '';
@@ -1499,16 +1514,69 @@
     grid.classList.add('proc-mode');
     $('#procbar').hidden = false;
     $('#procKernel').checked = !!prefs.procKernel;
+    $('#procFilter').value = procFilter;
+
+    const head = PROC_COLS.map(c => {
+      const active = prefs.procSort === c.key;
+      const arrow = active ? (prefs.procDesc ? '\u25bc' : '\u25b2') : '';
+      return `<th class="${c.cls}" data-col="${c.key}" tabindex="0"
+        ${active ? `aria-sort="${prefs.procDesc ? 'descending' : 'ascending'}"` : ''}
+        >${c.label}<span class="arrow">${arrow}</span></th>`;
+    }).join('');
 
     grid.innerHTML = `
       <table class="proctable">
-        <thead><tr>
-          <th>Host</th><th class="num">CPU</th><th class="num">Memory</th>
-          <th class="num">PID</th><th>User</th><th class="cmd">Command</th>
-        </tr></thead>
+        <thead><tr>${head}</tr></thead>
         <tbody data-proc-rows></tbody>
       </table>`;
+
+    grid.querySelectorAll('th[data-col]').forEach(th => {
+      const go = () => sortProcsBy(th.dataset.col);
+      th.addEventListener('click', go);
+      th.addEventListener('keydown', e => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(); }
+      });
+    });
+
     refreshProcs();
+  }
+
+  function sortProcsBy(key) {
+    const col = PROC_COLS.find(c => c.key === key);
+    if (!col) return;
+    if (prefs.procSort === key) {
+      prefs.procDesc = !prefs.procDesc;
+    } else {
+      prefs.procSort = key;
+      prefs.procDesc = col.num;   // numbers open at the busy end
+    }
+    savePrefs();
+    build();   // headers carry the indicator, so they are rebuilt too
+  }
+
+  /// Filter is transient: it answers a question being asked now, and having a
+  /// stale one restored on a later launch would hide rows for no visible
+  /// reason.
+  let procFilter = '';
+
+  function matchesFilter(p, q) {
+    if (!q) return true;
+    return `${p.host} ${p.user} ${p.comm} ${p.pid}`.toLowerCase().includes(q);
+  }
+
+  function sortProcs(list) {
+    const key = prefs.procSort || 'cpu_pct';
+    const desc = prefs.procDesc !== false;
+    const col = PROC_COLS.find(c => c.key === key) || PROC_COLS[1];
+    return list.slice().sort((a, b) => {
+      let r = col.num
+        ? (a[key] - b[key])
+        : String(a[key]).localeCompare(String(b[key]));
+      if (desc) r = -r;
+      // Equal values keep a stable, meaningful order rather than whatever
+      // the merge happened to produce.
+      return r || (b.cpu_pct - a.cpu_pct) || (b.rss_kb - a.rss_kb);
+    });
   }
 
   async function refreshProcs() {
@@ -1522,8 +1590,20 @@
 
     if (!prefs.procKernel) list = list.filter(p => !p.kernel);
 
+    const total = list.length;
+    const q = procFilter.trim().toLowerCase();
+    if (q) list = list.filter(p => matchesFilter(p, q));
+    list = sortProcs(list);
+
     const body = $('[data-proc-rows]');
     if (!body) return;
+
+    if (!list.length && q) {
+      body.innerHTML = `<tr><td colspan="6">Nothing matches
+        \u201c${esc(procFilter)}\u201d among ${total} processes.</td></tr>`;
+      $('[data-proc-note]').textContent = `0 of ${total} shown`;
+      return;
+    }
 
     if (!list.length) {
       body.innerHTML = `<tr><td colspan="6">Sampling — first results take a
@@ -1544,9 +1624,12 @@
 
     const hosts_seen = new Set(list.map(p => p.host)).size;
     // Saying which convention is in use matters: top would call the same
-    // process 3200% on a 32-core box.
+    // process 3200% on a 32-core box. And when a filter is active, say how
+    // much is being hidden - a filtered count that looks like a total is a
+    // quiet way to mislead.
+    const shown = q ? `${list.length} of ${total} processes` : `${list.length} processes`;
     $('[data-proc-note]').textContent =
-      `${list.length} processes across ${hosts_seen} host${hosts_seen === 1 ? '' : 's'} ` +
+      `${shown} across ${hosts_seen} host${hosts_seen === 1 ? '' : 's'} ` +
       `\u00b7 CPU is % of the whole machine`;
   }
 
@@ -1566,6 +1649,11 @@
       kernel: n.startsWith('kworker'),
     }))).sort((a, b) => b.cpu_pct - a.cpu_pct || b.rss_kb - a.rss_kb);
   }
+
+  $('#procFilter').addEventListener('input', e => {
+    procFilter = e.target.value;
+    refreshProcs();
+  });
 
   $('#procKernel').addEventListener('change', e => {
     prefs.procKernel = e.target.checked; savePrefs(); refreshProcs();

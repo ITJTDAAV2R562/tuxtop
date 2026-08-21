@@ -71,6 +71,22 @@
           }
           return out;
         }
+        if (cmd === 'set_processes_enabled') return null;
+        if (cmd === 'process_list') {
+          const names = ['tailscaled','searchd','python','node','postgres',
+                         'kworker/3:1','dockerd','nginx','redis-server','java'];
+          const out = [];
+          for (const h of hosts) {
+            names.forEach((n, i) => out.push({
+              host: h.name, pid: 1000 + i * 37 + h.name.length,
+              cpu_pct: Math.max(0, 45 - i * 5 + Math.random() * 6),
+              rss_kb: (950 - i * 90) * 1024,
+              user: i % 3 ? 'root' : 'sam', comm: n,
+              kernel: n.startsWith('kworker'),
+            }));
+          }
+          return out.sort((a, b) => b.cpu_pct - a.cpu_pct || b.rss_kb - a.rss_kb);
+        }
         if (cmd === 'history_usage') return { bytes: 24 * 1024 * 1024, series: 300 };
         if (cmd === 'active_hosts') return hosts.map(h => h.name);
         throw `unknown command ${cmd}`;
