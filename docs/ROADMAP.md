@@ -173,12 +173,30 @@ throughput plus projections at other intervals for the configured fleet.
 
 ---
 
-## Phase 8 — History plane — **specced, ready to build**
+## Phase 8 — History plane — **built; per-core charts outstanding**
 
 **Goal:** metrics over time, not only in the moment. Charts over a window, and
 retention that survives a restart.
 
-Full spec: **[specs/history-plane.md](specs/history-plane.md)**. Settled:
+Full spec: **[specs/history-plane.md](specs/history-plane.md)**.
+
+- [x] Four-tier cascade in `crates/tuxtop-core/src/history.rs`, memory only.
+- [x] Gaps written explicitly, so a silent host leaves a hole rather than a
+      straight line implying it was fine.
+- [x] Stored in the Rust backend, queried with a window and a point budget.
+- [x] History view with min/max bands, a shared window, and a slider spanning
+      a minute to a week continuously.
+- [x] Contextual entry: from a host card or a fleet block, that host and its
+      metrics; from the Fleet view, that metric across every host.
+- [ ] **Per-core charts** — the Task Manager small-multiples shape. The data
+      is stored (`core.N` series); only the view is missing.
+- [ ] **Cap enforcement.** The cap is configurable and displayed but nothing
+      evicts on it yet. At ~24 MB for a 19-host fleet nothing has come close;
+      it matters around 100 hosts.
+- [ ] **Superseding ADR for Beszel.** ADR-002 still calls it the slow plane
+      responsible for history, which is no longer true.
+
+Settled:
 
 - **Our own store, memory only.** A restart starts clean, like Task Manager.
   History is low-value data; losing it costs nothing, which removes

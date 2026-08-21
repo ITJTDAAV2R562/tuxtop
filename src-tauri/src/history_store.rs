@@ -10,12 +10,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tuxtop_core::history::{History, Point};
 use tuxtop_core::Sample;
 
-/// Metric keys used in the store. These match the frontend registry ids so a
-/// chart can ask for what it already displays.
-pub const SCALARS: &[&str] = &[
-    "cpu", "mem", "disk", "net", "load", "temp", "gpu", "gpumem",
-];
-
 #[derive(Default)]
 pub struct HistoryStore {
     inner: Mutex<History>,
@@ -27,6 +21,10 @@ impl HistoryStore {
     }
 
     /// Record one sample against the wall clock.
+    ///
+    /// Stores `cpu`, `mem`, `disk`, `net`, `load`, `temp`, `gpu`, `gpumem` and
+    /// `core.N` — the same keys the frontend metric registry uses, so a chart
+    /// asks for exactly what it already displays.
     pub fn record(&self, s: &Sample) {
         let t = now_secs();
         let mut h = self.inner.lock().unwrap();

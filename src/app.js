@@ -39,7 +39,7 @@
   // View preferences, remembered between launches.
   const PREFS = 'tuxtop.prefs';
   const prefs = Object.assign(
-    { view: 'hosts', sort: 'manual', metric: 'cores' },
+    { view: 'hosts', sort: 'manual', metric: 'cores', slice: null },
     JSON.parse(localStorage.getItem(PREFS) || '{}')
   );
   const savePrefs = () => localStorage.setItem(PREFS, JSON.stringify(prefs));
@@ -439,6 +439,10 @@
       </header>
       <div class="hb-body"></div>
       <span class="reveal-edge" aria-hidden="true"></span>`;
+    sec.querySelector('.hb-head').addEventListener('click', () =>
+      openHistory({ mode: 'host', host: h.name }));
+    sec.querySelector('.hb-head').style.cursor = 'pointer';
+    sec.querySelector('.hb-head').title = `History for ${h.name}`;
     return sec;
   }
 
@@ -516,6 +520,9 @@
     'dot' + (h.fault ? ' warnstate' : (LIVE && !h.seen ? ' pending' : ''));
 
   function build() {
+    $('#histbar').hidden = prefs.view !== 'history';
+    if (prefs.view === 'history') return buildHistory();
+    grid.classList.remove('hist-mode');
     if (prefs.view === 'all') return buildFleet();
     document.body.dataset.bands = 'on';
     grid.classList.remove('all-mode');
@@ -573,10 +580,13 @@
           <div class="m" data-gpu-chip hidden><span class="k" data-gpu-k>GPU</span><span class="v" data-gpu></span></div>
           ${h.gpu ? '<div class="m"><span class="k">GPU</span><span class="v" data-gpu></span></div>' : ''}
         </div>
-        <button class="card-toggle" aria-expanded="false">
-          <svg width="10" height="10" viewBox="0 0 10 10"><path d="M1 3.5L5 7l4-3.5" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round"/></svg>
-          <span class="tlabel">Per-core detail</span>
-        </button>
+        <div class="card-actions">
+          <button class="card-toggle" aria-expanded="false">
+            <svg width="10" height="10" viewBox="0 0 10 10"><path d="M1 3.5L5 7l4-3.5" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round"/></svg>
+            <span class="tlabel">Per-core detail</span>
+          </button>
+          <button class="card-toggle card-hist" data-hist>History</button>
+        </div>
         <div class="detail">
           <div>
             <p class="dhead">${h.cores} logical cores</p>
@@ -620,6 +630,12 @@
         }
         paint();
       });
+      // Entering history from a host carries that host with it.
+      el.querySelector('[data-hist]').addEventListener('click', ev => {
+        ev.stopPropagation();
+        openHistory({ mode: 'host', host: h.name });
+      });
+
       // Drag to reorder. Only from the header, so dragging never fights the
       // expand toggle or the remove button.
       const head = el.querySelector('.chead');
@@ -676,6 +692,9 @@
   // ---- paint values ----
   function paint() {
     if (frozen) return;   // a rebuild mid-drag would drop the dragged card
+    // History redraws on its own cadence, not on every 1 Hz sample: refetching
+    // a week of buckets once a second would be absurd.
+    if (prefs.view === 'history') return;
     if (prefs.view === 'all') return paintFleet();
     const A = css('--accent'), MEM = css('--viz-mem'),
           DSK = css('--viz-disk'), NET = css('--viz-net'), GPU = css('--viz-gpu');
@@ -845,6 +864,7 @@
     prefs.view = v; savePrefs();
     $('#viewHosts').setAttribute('aria-pressed', String(v === 'hosts'));
     $('#viewAll').setAttribute('aria-pressed', String(v === 'all'));
+    $('#viewHist').setAttribute('aria-pressed', String(v === 'history'));
     $('#metricWrap').hidden = v !== 'all';
     build(); paint();
   }
@@ -855,6 +875,18 @@
   });
   $('#viewHosts').addEventListener('click', () => setView('hosts'));
   $('#viewAll').addEventListener('click', () => setView('all'));
+  // The tab is contextual too: coming from the Fleet view means "this metric,
+  // everywhere", which is the slice already on screen. From Hosts it keeps
+  // whatever host was last shown.
+  $('#viewHist').addEventListener('click', () => {
+    if (prefs.view === 'all') {
+      const m = metric();
+      // A vector metric has no single line per host, so carry the aggregate.
+      prefs.slice = { mode: 'metric', metric: m.shape === 'vector' ? 'cpu' : prefs.metric };
+      savePrefs();
+    }
+    setView('history');
+  });
 
   $('#sortSel').value = prefs.sort;
   $('#sortSel').addEventListener('change', e => {
@@ -865,10 +897,221 @@
   // Restore the remembered view before the first render.
   $('#viewHosts').setAttribute('aria-pressed', String(prefs.view === 'hosts'));
   $('#viewAll').setAttribute('aria-pressed', String(prefs.view === 'all'));
+  $('#viewHist').setAttribute('aria-pressed', String(prefs.view === 'history'));
   $('#metricWrap').hidden = prefs.view !== 'all';
+  $('#histbar').hidden = prefs.view !== 'history';
 
   // Tile sizing in all-cores mode depends on window width.
   addEventListener('resize', () => { if (prefs.view === 'all') build(); });
+
+  // ---- history -----------------------------------------------------------
+  //
+  // History has no default slice: it inherits one from wherever it was
+  // entered. The user is already looking at a host or a metric when they ask
+  // for its history, so re-asking would be a question the app can answer.
+
+  /// Window spans the slider maps onto, log-spaced from a minute to a week.
+  /// Continuous rather than preset buttons: tiers are storage, the window is
+  /// a view, and crossing a tier boundary should be invisible.
+  const WIN_MIN = 60, WIN_MAX = 604800;
+
+  const sliderToSecs = v => Math.round(
+    WIN_MIN * Math.pow(WIN_MAX / WIN_MIN, v / 1000));
+
+  function fmtSpan(s) {
+    if (s < 90) return `${Math.round(s)} sec`;
+    if (s < 5400) return `${Math.round(s / 60)} min`;
+    if (s < 172800) return `${(s / 3600).toFixed(s < 36000 ? 1 : 0)} hr`;
+    return `${(s / 86400).toFixed(1)} days`;
+  }
+
+  /// Enter history showing `slice`, remembering it for a direct return.
+  function openHistory(slice) {
+    if (slice) { prefs.slice = slice; savePrefs(); }
+    setView('history');
+  }
+
+  function currentSlice() {
+    const s = prefs.slice;
+    if (s && s.mode === 'host' && hosts.some(h => h.name === s.host)) return s;
+    if (s && s.mode === 'metric' && METRICS[s.metric]) return s;
+    // Nothing remembered or the subject is gone: fall back to what is on
+    // screen rather than an arbitrary choice.
+    return hosts.length
+      ? { mode: 'host', host: ordered()[0].name }
+      : { mode: 'metric', metric: prefs.metric };
+  }
+
+  function buildHistory() {
+    grid.innerHTML = '';
+    grid.classList.remove('all-mode');
+    // The chart grid does its own column layout, so the outer grid must give
+    // it the full width. Left as a multi-column grid it becomes a single
+    // 320px item and every chart stacks inside that one track.
+    grid.classList.add('hist-mode');
+    grid.style.removeProperty('--tile');
+    $('#histbar').hidden = false;
+
+    if (!hosts.length) {
+      grid.innerHTML = '<div class="empty">No hosts yet. Add one to start watching.</div>';
+      return;
+    }
+
+    const slice = currentSlice();
+    const wrap = document.createElement('div');
+    wrap.className = 'charts-grid';
+
+    if (slice.mode === 'host') {
+      $('[data-hist-title]').textContent = slice.host;
+      $('#histSwap').textContent = 'Compare across fleet';
+      for (const [id, m] of availableMetrics()) {
+        if (m.shape === 'vector') continue;
+        wrap.appendChild(chartEl(`${slice.host}::${id}`, m.label, id, slice.host));
+      }
+    } else {
+      const m = METRICS[slice.metric] || METRICS.cpu;
+      $('[data-hist-title]').textContent = m.label;
+      $('#histSwap').textContent = 'Show one host';
+      for (const h of ordered()) {
+        wrap.appendChild(chartEl(`${h.name}::${slice.metric}`, h.name, slice.metric, h.name));
+      }
+    }
+
+    grid.appendChild(wrap);
+    refreshHistory();
+  }
+
+  function chartEl(key, label, metric, host) {
+    const el = document.createElement('div');
+    el.className = 'chart';
+    el.dataset.key = key;
+    el.dataset.metric = metric;
+    el.dataset.host = host;
+    el.innerHTML = `
+      <div class="chart-head">
+        <span class="chart-name">${esc(label)}</span>
+        <span class="chart-peak" data-peak></span>
+        <span class="chart-latest" data-latest></span>
+      </div>
+      <canvas></canvas>`;
+    return el;
+  }
+
+  /// Fetch and draw every visible chart for the current window.
+  ///
+  /// One window across all of them: scrubbing one moves them all, which is
+  /// the point when correlating a spike - seeing that the CPU jump and the
+  /// disk jump are the same second is the question being asked.
+  async function refreshHistory() {
+    if (prefs.view !== 'history') return;
+    const secs = sliderToSecs(+$('#histWindow').value);
+    $('[data-hist-span]').textContent = 'last ' + fmtSpan(secs);
+
+    const charts = [...grid.querySelectorAll('.chart')];
+    for (const el of charts) {
+      const m = METRICS[el.dataset.metric];
+      if (!m) continue;
+      const cv = el.querySelector('canvas');
+      const budget = Math.max(60, Math.round(cv.clientWidth || 320));
+
+      let pts = [];
+      if (LIVE) {
+        try {
+          pts = await TAURI.core.invoke('query_history', {
+            host: el.dataset.host, metric: el.dataset.metric,
+            fromSecsAgo: secs, toSecsAgo: 0, maxPoints: budget,
+          });
+        } catch { pts = []; }
+      } else {
+        pts = simHistory(el.dataset.host, el.dataset.metric, secs, budget);
+      }
+
+      drawHistory(cv, pts, m);
+      const last = pts.length ? pts[pts.length - 1] : null;
+      el.querySelector('[data-latest]').textContent = last ? m.fmt(last.mean) : '\u2014';
+      el.querySelector('[data-peak]').textContent = pts.length
+        ? 'peak ' + m.fmt(pts.reduce((a, p) => Math.max(a, p.max), 0)) : '';
+    }
+  }
+
+  /// Draw a min/max band with the mean over it.
+  ///
+  /// The band is the honest part: a coarse bucket that showed only its mean
+  /// would hide exactly the spikes worth seeing.
+  function drawHistory(cv, pts, m) {
+    const dpr = devicePixelRatio || 1;
+    const w = cv.clientWidth, h = cv.clientHeight;
+    if (!w || !h) return;
+    if (cv.width !== w * dpr || cv.height !== h * dpr) { cv.width = w * dpr; cv.height = h * dpr; }
+    const c = cv.getContext('2d');
+    c.setTransform(dpr, 0, 0, dpr, 0, 0);
+    c.clearRect(0, 0, w, h);
+
+    if (!pts.length) {
+      c.fillStyle = css('--text-3');
+      c.font = '11px ' + css('--font-mono');
+      c.fillText('no history yet', 8, h / 2);
+      return;
+    }
+
+    const peak = m.scale === 'absolute'
+      ? (m.max || 100)
+      : Math.max(1, pts.reduce((a, p) => Math.max(a, p.max), 0)) * 1.1;
+
+    const t0 = pts[0].t, t1 = pts[pts.length - 1].t;
+    const span = Math.max(1, t1 - t0);
+    const x = p => (p.t - t0) / span * w;
+    const y = v => h - Math.min(1, Math.max(0, v / peak)) * (h - 4) - 2;
+
+    c.strokeStyle = css('--stroke');
+    c.lineWidth = 1;
+    for (const f of [0.25, 0.5, 0.75]) {
+      c.beginPath(); c.moveTo(0, h * f); c.lineTo(w, h * f); c.stroke();
+    }
+
+    const colour = m.scale === 'absolute' ? css('--accent') : css('--viz-net');
+
+    // min/max band
+    c.beginPath();
+    pts.forEach((p, i) => (i ? c.lineTo(x(p), y(p.max)) : c.moveTo(x(p), y(p.max))));
+    for (let i = pts.length - 1; i >= 0; i--) c.lineTo(x(pts[i]), y(pts[i].min));
+    c.closePath();
+    const g = c.createLinearGradient(0, 0, 0, h);
+    g.addColorStop(0, colour + '55');
+    g.addColorStop(1, colour + '10');
+    c.fillStyle = g; c.fill();
+
+    // mean
+    c.beginPath();
+    pts.forEach((p, i) => (i ? c.lineTo(x(p), y(p.mean)) : c.moveTo(x(p), y(p.mean))));
+    c.strokeStyle = colour; c.lineWidth = 1.5; c.lineJoin = 'round'; c.stroke();
+
+    const lx = x(pts[pts.length - 1]), ly = y(pts[pts.length - 1].mean);
+    c.beginPath(); c.arc(lx, ly, 2.6, 0, 7); c.fillStyle = colour; c.fill();
+  }
+
+  /// Browser-mode history, so the page still demonstrates itself as a mockup.
+  function simHistory(host, metric, secs, budget) {
+    const h = hosts.find(x => x.name === host);
+    const base = h ? (last(h.hist.cpu) || 10) : 10;
+    const n = Math.min(budget, 200);
+    const now = Math.floor(Date.now() / 1000);
+    return Array.from({ length: n }, (_, i) => {
+      const t = now - secs + Math.round(i * secs / n);
+      const mean = Math.max(0, base + Math.sin(i / 7) * 8 + Math.random() * 4);
+      return { t, min: Math.max(0, mean - 4), mean, max: mean + 6 + (i % 23 === 0 ? 30 : 0) };
+    });
+  }
+
+  $('#histWindow').addEventListener('input', refreshHistory);
+  $('#histSwap').addEventListener('click', () => {
+    const s = currentSlice();
+    prefs.slice = s.mode === 'host'
+      ? { mode: 'metric', metric: prefs.metric }
+      : { mode: 'host', host: ordered()[0]?.name };
+    savePrefs();
+    build();
+  });
 
   // ---- settings ----------------------------------------------------------
   const INTERVALS = [1, 2, 5, 10, 30, 60];

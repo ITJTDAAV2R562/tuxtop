@@ -46,6 +46,7 @@
     <div class="seg" role="group" aria-label="View">
       <button id="viewHosts" aria-pressed="true">Hosts</button>
       <button id="viewAll" aria-pressed="false">Fleet</button>
+      <button id="viewHist" aria-pressed="false">History</button>
     </div>
     <label class="sortwrap" id="metricWrap" hidden>
       <span>Metric</span>
@@ -69,6 +70,17 @@
   </div>
 
   <p class="cadence-note" id="cadNote">Sampling at the Beszel agent's cadence &mdash; the grid now refreshes once a minute. This is the lag the direct <code>/proc/stat</code> path removes.</p>
+
+  <div class="histbar" id="histbar" hidden>
+    <span class="hist-title" data-hist-title></span>
+    <button class="btn ghost hist-swap" id="histSwap"></button>
+    <span class="tb-grow"></span>
+    <label class="hist-range">
+      <span data-hist-span></span>
+      <input type="range" id="histWindow" min="0" max="1000" value="450"
+             aria-label="History window">
+    </label>
+  </div>
 
   <div class="grid" id="grid"></div>
 
