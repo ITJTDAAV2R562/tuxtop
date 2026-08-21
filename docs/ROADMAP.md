@@ -157,55 +157,34 @@ Absence is normal for both, not an error.
 
 ---
 
-## Phase 7 — Configurable sample interval, with a live traffic meter — **next**
+## Phase 7 — Configurable sample interval, with a live traffic meter — **done**
 
 **Goal:** the interval stops being hardcoded at 1 Hz, and the app shows what
 its own sampling costs.
 
-### The interval
+- [x] A global interval, persisted in `hosts.toml` beside the host list.
+- [x] A per-host override — 1 Hz on the box being watched, 10 s on the twelve
+      that only need to be noticed going down. `interval_secs: Option<u32>` on
+      the host, falling back to the global.
+- [x] Changing it restarts that host's sampler and leaves the others streaming.
+- [x] The history cap setting, which Phase 8 depends on.
+- [x] **Measured, not estimated.** `SshSampler` already reads every byte off
+      the pipe, so `TrafficCounter` counts them: bytes per host and last frame
+      size. The settings panel shows current throughput for the hosts actually
+      configured, plus projections at other intervals.
 
-- A global interval, persisted alongside the host list.
-- A per-host override: 1 Hz on the box being watched, 10 s on the twelve that
-  only need to be noticed going down.
-- Changing it restarts that host's sampler without disturbing the others.
-- The history cap setting lands here too, since Phase 8 depends on it.
-
-### The traffic meter
-
-Not an estimate. `SshSampler` already reads every byte off the pipe, so it can
-count them: bytes received per host, and the size of the last frame.
-
-That turns the projection into arithmetic rather than guesswork. Frame size is
-effectively constant for a given host — it tracks disk and interface count,
-not load — so at interval *I* the rate is exactly `frame_bytes / I`. The
-settings panel can therefore show, for **the hosts actually configured**:
-
-```
-current            19 hosts, 1 s      132 KB/s     10.8 GB/day
-    at  2 s                            66 KB/s      5.4 GB/day
-    at  5 s                            26 KB/s      2.2 GB/day
-    at 10 s                            13 KB/s      1.1 GB/day
-    at 30 s                           4.4 KB/s     0.36 GB/day
-```
-
-Measured, per-fleet, updating as hosts are added or removed — rather than the
-table of extrapolations in
-[evidence/sampling-cost.md](evidence/sampling-cost.md), which was computed by
-hand against three hosts.
-
-Per-host rows matter too: a 32-core box with many disks costs roughly twice a
-4-core VM, so the meter shows where the traffic actually goes and which host
-is worth slowing down.
+Frame size is effectively constant for a given host — it tracks disk and
+interface count, not load — so at interval *I* the rate is exactly
+`frame_bytes / I`, and the projection is arithmetic rather than guesswork.
 
 **Design note.** A monitoring tool that has never measured itself is in a poor
-position to lecture anyone, and this is the first number the app reports about
-its own behaviour rather than someone else's. It should be exactly as honest
-as the rest: measured, attributed per host, and never rounded into a
-reassuring shape.
+position to lecture anyone. This is the first number the app reports about its
+own behaviour rather than someone else's, and it is held to the same standard
+as the rest: measured, attributed per host, never rounded into a reassuring
+shape.
 
-**Done when:** the interval can be changed globally and per host from the
-window, survives a restart, and the settings panel shows measured current
-throughput plus projections at other intervals for the configured fleet.
+Superseded [evidence/sampling-cost.md](evidence/sampling-cost.md), which was
+extrapolated by hand from three hosts.
 
 ---
 
