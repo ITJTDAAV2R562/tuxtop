@@ -18,13 +18,13 @@
     core: Array.from({length: cores}, () => Math.random() * 4),
     burst: 0, burstSet: [],
     ram: ramGB * (0.14 + Math.random() * 0.12),
-    hist: { cpu: [], ram: [], dio: [], net: [], gpu: [] },
+    hist: { cpu: [], ram: [], dio: [], net: [], gpu: [], temp: [] },
     net: 0.4, dio: 2, gpuU: 0
   });
 
   // Under Tauri the host list comes from hosts.toml and every number arrives
   // from the backend. Opened as a plain file there is no backend, so the
-  // simulator below runs against these instead — that keeps this page usable
+  // simulator below runs against these instead -- that keeps this page usable
   // as the design mockup it started life as.
   const TAURI = globalThis.__TAURI__;
   const LIVE = !!TAURI;
@@ -43,6 +43,9 @@
     JSON.parse(localStorage.getItem(PREFS) || '{}')
   );
   const savePrefs = () => localStorage.setItem(PREFS, JSON.stringify(prefs));
+
+  // One fixed core-tile size everywhere, in every fleet, on every host.
+  const TILE_PX = 34;
 
   const HIST = 60;
   const push = (a, v) => { a.push(v); if (a.length > HIST) a.shift(); };
@@ -120,7 +123,7 @@
 
   // ---- render skeleton ----
   /// Hosts in display order. 'manual' is whatever order the backend holds,
-  /// which is what dragging persists — so sorting is a view over it, never a
+  /// which is what dragging persists -- so sorting is a view over it, never a
   /// mutation of it.
   function ordered() {
     const list = hosts.slice();
@@ -178,6 +181,15 @@
       scalar: h => (h.ramGB ? h.ram / h.ramGB * 100 : 0),
       fmt: v => Math.round(v) + '%',
       sub: h => `${gb(h.ram)} / ${gb(h.ramGB)} GB`,
+    },
+    temp: {
+      // Absolute, not log: degrees are already a bounded, directly comparable
+      // scale. 100C is the conventional throttle point, so the bar reads as
+      // "fraction of the way to too hot".
+      label: 'CPU temp', shape: 'scalar', scale: 'absolute', max: 100,
+      scalar: h => (h.temp ?? null),
+      fmt: v => Math.round(v) + '\u00b0C',
+      has: h => h.temp !== null && h.temp !== undefined,
     },
     disk: {
       label: 'Disk I/O', shape: 'scalar', scale: 'log', floor: 1e6, decades: 4,
@@ -285,7 +297,7 @@
   //
   // Every core of every host on one grid: pure load, nothing else. Tiles size
   // themselves to the total core count so the whole fleet fits the window
-  // rather than scrolling — with 52 cores across four boxes, the point is
+  // rather than scrolling -- with 52 cores across four boxes, the point is
   // seeing them all at once.
   // ---- fleet view: one metric, every host --------------------------------
   function buildFleet() {
@@ -330,9 +342,12 @@
     const CHROME = 28;    // block padding + borders
     const MIN_W = 172;    // enough for hostname, load and the core count
 
+    // Fixed tile size, not scaled to fleet size. A core is a core: at 20px on
+    // a big fleet and 52px on a small one, the same load looked like a
+    // different quantity depending on how many other machines happened to be
+    // on screen. Constant size also makes the packing predictable.
+    const px = TILE_PX;
     const avail = Math.max(240, grid.clientWidth - 28);
-    const wanted = Math.max(4, Math.ceil(total / 4));
-    const px = Math.max(20, Math.min(52, Math.floor(avail / wanted)));
     // Most tiles that fit across the widest possible block.
     const maxCols = Math.max(1, Math.floor((avail - CHROME + GAP) / (px + GAP)));
 
@@ -409,6 +424,7 @@
         <span class="dot"></span>
         <h2 class="hname">${esc(h.name)}</h2>
         <span class="hb-cpu" data-hb-cpu></span>
+        <span class="hb-temp" data-hb-temp></span>
         <span class="hb-cores">${meta}</span>
       </header>
       <div class="hb-body"></div>
@@ -438,6 +454,9 @@
         if (pc) pc.textContent = Math.round(v);
       }
       sec.querySelector('[data-hb-cpu]').textContent = m.fmt(m.scalar(h));
+      const ht = sec.querySelector('[data-hb-temp]');
+      if (ht) ht.textContent =
+        (h.temp === null || h.temp === undefined) ? '' : Math.round(h.temp) + '\u00b0C';
       sec.querySelector('.dot').className = dotClass(h);
     });
   }
@@ -540,6 +559,7 @@
           <div class="m"><span class="k">RAM</span><span class="v" data-ram></span></div>
           <div class="m"><span class="k">Disk</span><span class="v" data-dio></span></div>
           <div class="m"><span class="k">Net</span><span class="v" data-net></span></div>
+          <div class="m" data-temp-chip hidden><span class="k">Temp</span><span class="v" data-temp></span></div>
           ${h.gpu ? '<div class="m"><span class="k">GPU</span><span class="v" data-gpu></span></div>' : ''}
         </div>
         <button class="card-toggle" aria-expanded="false">
@@ -682,6 +702,17 @@
       el.querySelector('[data-ram]').textContent = `${gb(h.ram)} / ${gb(h.ramGB)} GB`;
       el.querySelector('[data-dio]').textContent = bps(h.dio);
       el.querySelector('[data-net]').textContent = bps(h.net);
+
+      // Hidden rather than zeroed when a host exposes no CPU sensor, which is
+      // normal on a VM. A 0 would read as an implausibly cold CPU.
+      const tchip = el.querySelector('[data-temp-chip]');
+      if (tchip) {
+        const hasTemp = h.temp !== null && h.temp !== undefined;
+        tchip.hidden = !hasTemp;
+        if (hasTemp) {
+          el.querySelector('[data-temp]').textContent = Math.round(h.temp) + '\u00b0C';
+        }
+      }
       if (h.gpu) el.querySelector('[data-gpu]').textContent = Math.round(h.gpuU) + '%';
 
       const minis = el.querySelectorAll('.cores.mini .core');
@@ -867,6 +898,8 @@
       h.net = s.net_rx_bps + s.net_tx_bps;      // bytes/sec
       h.dio = s.disk_read_bps + s.disk_write_bps; // bytes/sec
       h.load = s.load;
+      h.temp = (typeof s.cpu_temp_c === 'number') ? s.cpu_temp_c : null;
+      if (h.temp !== null) push(h.hist.temp, h.temp);
       if (s.gpu) { h.gpu = s.gpu.name; h.gpuU = s.gpu.util_pct; }
       push(h.hist.cpu, s.cpu);
       push(h.hist.ram, h.ramGB ? h.ram / h.ramGB * 100 : 0);
@@ -894,7 +927,7 @@
     });
 
     // Seed cards from hosts.toml so they exist before the first sample
-    // lands — otherwise the window is empty for a second on every launch.
+    // lands -- otherwise the window is empty for a second on every launch.
     try {
       for (const cfg of await invoke('list_hosts')) ensure(cfg.name, 0);
     } catch (e) {

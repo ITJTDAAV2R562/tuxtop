@@ -192,15 +192,26 @@ addr = "dove"
     #[test]
     fn round_trip_preserves_every_host() {
         let mut list = parse(SEEDED).unwrap();
-        super::add(&mut list, HostConfig {
-            name: "heron".into(), addr: "heron".into(),
-            user: String::new(), port: 22, beszel_url: None,
-        }).unwrap();
+        super::add(
+            &mut list,
+            HostConfig {
+                name: "heron".into(),
+                addr: "heron".into(),
+                user: String::new(),
+                port: 22,
+                beszel_url: None,
+            },
+        )
+        .unwrap();
 
         let text = render(&list).expect("renders");
         let back = parse(&text).expect("re-parses what we just wrote");
 
-        assert_eq!(back.len(), 2, "writing then reading must not lose a host\n{text}");
+        assert_eq!(
+            back.len(),
+            2,
+            "writing then reading must not lose a host\n{text}"
+        );
         assert_eq!(back[0].name, "dove");
         assert_eq!(back[1].name, "heron");
     }
@@ -209,10 +220,17 @@ addr = "dove"
     fn three_hosts_survive_a_round_trip() {
         let mut list = vec![];
         for n in ["dove", "heron", "wader"] {
-            super::add(&mut list, HostConfig {
-                name: n.into(), addr: n.into(),
-                user: String::new(), port: 22, beszel_url: None,
-            }).unwrap();
+            super::add(
+                &mut list,
+                HostConfig {
+                    name: n.into(),
+                    addr: n.into(),
+                    user: String::new(),
+                    port: 22,
+                    beszel_url: None,
+                },
+            )
+            .unwrap();
         }
         let text = render(&list).unwrap();
         assert_eq!(parse(&text).unwrap().len(), 3, "wrote:\n{text}");
@@ -223,10 +241,20 @@ addr = "dove"
         // Some(..) and None serialise differently; make sure a mixed list
         // does not lose the entries after the first Option.
         let list = vec![
-            HostConfig { name: "dove".into(), addr: "dove".into(), user: String::new(),
-                         port: 22, beszel_url: Some("https://dove.example".into()) },
-            HostConfig { name: "heron".into(), addr: "heron".into(), user: String::new(),
-                         port: 22, beszel_url: None },
+            HostConfig {
+                name: "dove".into(),
+                addr: "dove".into(),
+                user: String::new(),
+                port: 22,
+                beszel_url: Some("https://dove.example".into()),
+            },
+            HostConfig {
+                name: "heron".into(),
+                addr: "heron".into(),
+                user: String::new(),
+                port: 22,
+                beszel_url: None,
+            },
         ];
         let text = render(&list).unwrap();
         let back = parse(&text).unwrap();

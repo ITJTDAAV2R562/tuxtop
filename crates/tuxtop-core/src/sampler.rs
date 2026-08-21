@@ -24,11 +24,27 @@ pub fn sampler_command(interval_secs: u32) -> String {
     format!(
         "while :; do \
            cat /proc/stat /proc/meminfo /proc/diskstats /proc/net/dev /proc/loadavg 2>/dev/null; \
+           {TEMP_SNIPPET} \
            echo '{FRAME_DELIMITER}'; \
            sleep {interval_secs}; \
          done"
     )
 }
+
+/// Emits one `TXT|driver|label|millidegrees` line per hwmon temperature.
+///
+/// Pipe-delimited because labels contain spaces ("Package id 0", "Sensor 1"),
+/// so whitespace splitting would lose the value. Unreadable sensors are
+/// skipped rather than failing the frame - a wifi chip that refuses a read
+/// must not cost us the CPU temperature.
+const TEMP_SNIPPET: &str = "for d in /sys/class/hwmon/hwmon*/; do \
+  n=$(cat \"$d/name\" 2>/dev/null); \
+  for t in \"$d\"temp*_input; do \
+    [ -r \"$t\" ] || continue; \
+    l=$(cat \"${t%_input}_label\" 2>/dev/null); \
+    echo \"TXT|$n|$l|$(cat \"$t\" 2>/dev/null)\"; \
+  done; \
+done;";
 
 /// One parsed frame, before deltas are applied.
 ///
@@ -43,6 +59,8 @@ pub struct Frame {
     pub net_tx_bytes: u64,
     pub disk_read_bytes: u64,
     pub disk_write_bytes: u64,
+    /// CPU package temperature in degrees C, when a sensor identifies one.
+    pub cpu_temp_c: Option<f32>,
 }
 
 /// Split a stream buffer into complete frames, returning the unconsumed tail.
@@ -80,7 +98,64 @@ pub fn parse_frame(text: &str) -> Frame {
     frame.disk_write_bytes = w;
 
     frame.load = parse_loadavg(text);
+    frame.cpu_temp_c = parse_cpu_temp(text);
     frame
+}
+
+/// Pick the CPU package temperature out of the hwmon lines.
+///
+/// Ranking matters more than it looks. A box reports temperatures for NVMe
+/// drives, chipsets, wifi and the CPU, and an NVMe under load is routinely
+/// hotter than the CPU - so "hottest sensor" would report the wrong component
+/// with total confidence. Only drivers known to be CPU sensors are considered.
+///
+/// Within AMD's k10temp, `Tdie` is the real junction temperature and `Tctl` is
+/// the control value, which on some parts carries a fixed offset above Tdie.
+/// Tdie wins when both are present.
+pub fn parse_cpu_temp(text: &str) -> Option<f32> {
+    let mut best: Option<(u8, f32)> = None;
+
+    for line in text.lines() {
+        let Some(rest) = line.strip_prefix("TXT|") else {
+            continue;
+        };
+        let mut f = rest.split('|');
+        let (Some(driver), Some(label), Some(value)) = (f.next(), f.next(), f.next()) else {
+            continue;
+        };
+        let Ok(milli) = value.trim().parse::<f32>() else {
+            continue;
+        };
+        let celsius = milli / 1000.0;
+
+        // Discard implausible readings. A failed or uninitialised sensor
+        // commonly reports exactly 0 or a huge value, and a powered CPU below
+        // 5C is essentially unheard of outside a lab - so a low floor here
+        // costs nothing real and avoids reporting a confidently wrong
+        // temperature, which is worse than reporting none.
+        if !(5.0..=150.0).contains(&celsius) {
+            continue;
+        }
+
+        // Lower rank number wins.
+        let rank = match (driver, label) {
+            ("coretemp", l) if l.starts_with("Package") => 0,
+            ("k10temp", "Tdie") | ("zenpower", "Tdie") => 0,
+            ("k10temp", "Tctl") | ("zenpower", "Tctl") => 1,
+            ("coretemp", l) if l.starts_with("Core") => 2,
+            ("k10temp", l) if l.starts_with("Tccd") => 2,
+            ("cpu_thermal", _) | ("soc_thermal", _) => 3,
+            _ => continue, // nvme, acpitz, wifi, drivetemp: not the CPU
+        };
+
+        // At equal rank keep the hottest, which is the meaningful core.
+        match best {
+            Some((r, t)) if r < rank || (r == rank && t >= celsius) => {}
+            _ => best = Some((rank, celsius)),
+        }
+    }
+
+    best.map(|(_, t)| t)
 }
 
 /// Sum receive and transmit bytes across real interfaces in `/proc/net/dev`.
@@ -387,5 +462,97 @@ tailscale0: 500 5 0 0 0 0 0 0 700 7 0 0 0 0 0 0
         assert_eq!(f.load, [0.46, 1.10, 0.65]);
         assert_eq!(f.net_rx_bytes, 1500);
         assert_eq!(f.disk_read_bytes, 220 * 512);
+    }
+}
+
+#[cfg(test)]
+mod temp_tests {
+    use super::*;
+
+    /// Real hwmon output from dove (AMD, k10temp) with an NVMe running hotter
+    /// than the CPU - the case that makes "hottest sensor wins" wrong.
+    const CROW: &str = "\
+TXT|acpitz||16800
+TXT|acpitz||16800
+TXT|nvme|Composite|49850
+TXT|nvme|Sensor 1|71850
+TXT|nvme|Sensor 2|40850
+TXT|k10temp|Tctl|31000
+TXT|k10temp|Tccd1|34250
+TXT|k10temp|Tccd2|31750
+";
+
+    #[test]
+    fn a_hot_nvme_is_not_reported_as_the_cpu() {
+        // Sensor 1 is 71.85C, far above the CPU. Picking the hottest sensor
+        // would confidently report the wrong component.
+        let t = parse_cpu_temp(CROW).expect("dove reports a CPU temperature");
+        assert!(t < 40.0, "got {t}, which looks like the NVMe");
+        assert!((t - 31.0).abs() < 0.01, "expected Tctl 31.0, got {t}");
+    }
+
+    #[test]
+    fn tdie_is_preferred_over_tctl() {
+        // Tctl carries a fixed offset above Tdie on some AMD parts, so Tdie is
+        // the real junction temperature.
+        let text = "TXT|k10temp|Tctl|59750\nTXT|k10temp|Tdie|49750\n";
+        assert!((parse_cpu_temp(text).unwrap() - 49.75).abs() < 0.01);
+    }
+
+    #[test]
+    fn intel_package_temperature_is_found() {
+        let text = "\
+TXT|coretemp|Package id 0|54000
+TXT|coretemp|Core 0|51000
+TXT|coretemp|Core 1|53000
+TXT|nvme|Composite|60000
+";
+        assert!((parse_cpu_temp(text).unwrap() - 54.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn per_core_is_used_when_no_package_sensor_exists() {
+        // Falls back to the hottest core, which is the one that matters.
+        let text = "TXT|coretemp|Core 0|44000\nTXT|coretemp|Core 1|61000\n";
+        assert!((parse_cpu_temp(text).unwrap() - 61.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn a_host_with_no_cpu_sensor_reports_none() {
+        // A VM typically exposes no CPU sensor at all. None, never a zero that
+        // would render as a plausible cold CPU.
+        let text = "TXT|nvme|Composite|49850\nTXT|acpitz||16800\n";
+        assert_eq!(parse_cpu_temp(text), None);
+    }
+
+    #[test]
+    fn implausible_readings_are_discarded() {
+        // A failed sensor commonly reports exactly 0 or a huge value. Both
+        // must yield None rather than a plausible-looking temperature.
+        let text = "TXT|k10temp|Tctl|0\nTXT|k10temp|Tccd1|4294967\n";
+        assert_eq!(parse_cpu_temp(text), None);
+    }
+
+    #[test]
+    fn labels_containing_spaces_survive_parsing() {
+        // Whitespace splitting would have lost the value of "Package id 0".
+        let text = "TXT|coretemp|Package id 0|48000\n";
+        assert!((parse_cpu_temp(text).unwrap() - 48.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn temperature_lines_do_not_disturb_the_rest_of_the_frame() {
+        let text = format!("cpu  100 0 50 900\ncpu0 100 0 50 900\n{CROW}");
+        let f = parse_frame(&text);
+        assert_eq!(f.stat.cores.len(), 1, "temp lines must not parse as cores");
+        assert!(f.cpu_temp_c.is_some());
+    }
+
+    #[test]
+    fn the_sampler_command_collects_temperatures() {
+        let cmd = sampler_command(1);
+        assert!(cmd.contains("/sys/class/hwmon"));
+        assert!(cmd.contains("TXT|"));
+        assert!(!cmd.contains("[["), "must stay POSIX sh");
     }
 }

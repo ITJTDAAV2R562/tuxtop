@@ -159,6 +159,7 @@ async fn pump(
             let cores_len = frame.stat.cores.len();
             let mem = frame.mem;
             let load = frame.load;
+            let cpu_temp_c = frame.cpu_temp_c;
             let (rates, cores) = tracker.push(frame, elapsed);
 
             // A frame with no CPU rows means the remote cat produced nothing
@@ -183,6 +184,7 @@ async fn pump(
                 disk_write_bps: rates.disk_write_bps,
                 gpu: None,
                 load,
+                cpu_temp_c,
             }));
         }
 

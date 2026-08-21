@@ -52,6 +52,11 @@ pub struct Sample {
     pub gpu: Option<GpuSample>,
     /// Kernel load averages over 1, 5 and 15 minutes.
     pub load: [f32; 3],
+    /// CPU package temperature in degrees C. `None` when no CPU sensor is
+    /// exposed, which is normal on a VM - never a zero, which would render as
+    /// a plausible cold CPU.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cpu_temp_c: Option<f32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

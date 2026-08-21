@@ -11,6 +11,9 @@
     mem_used_kb: 5 * 1048576, mem_total_kb: 31 * 1048576,
     net_rx_bps: 1e6, net_tx_bps: 2e5, disk_read_bps: 0, disk_write_bps: 5e5,
     gpu: null, load: [0.4, 0.3, 0.2],
+    // Some hosts expose no CPU sensor - VMs typically do not - so the UI has
+    // to handle both in the same fleet.
+    cpu_temp_c: (name.length % 3 === 0) ? null : 34 + (name.length * 7) % 45,
   });
 
   window.__TAURI__ = {

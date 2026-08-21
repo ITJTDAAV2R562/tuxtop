@@ -668,3 +668,9 @@ body[data-bands="off"] .legend span:not(:last-child){display:none}
    drawing an empty bar that looks identical to a genuinely idle one. */
 .fbar.nodata .fbar-track{opacity:.35}
 .fbar.nodata .fbar-val{color:var(--text-3)}
+
+/* CPU temperature in the fleet block header, beside the load figure. */
+.hb-temp{
+  font-family:var(--font-mono);font-size:11.5px;
+  font-variant-numeric:tabular-nums;color:var(--text-3);
+}

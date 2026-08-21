@@ -121,12 +121,13 @@ async fn main() -> ExitCode {
                 }
                 if args.plain {
                     println!(
-                        "cpu {:5.1}%  mem {:5.1}%  net rx {:>9} tx {:>9}  load {:.2}",
+                        "cpu {:5.1}%  mem {:5.1}%  net rx {:>9} tx {:>9}  load {:.2}  temp {}",
                         s.cpu,
                         pct(s.mem_used_kb, s.mem_total_kb),
                         bytes(s.net_rx_bps),
                         bytes(s.net_tx_bps),
-                        s.load[0]
+                        s.load[0],
+                        temp(s.cpu_temp_c),
                     );
                 } else {
                     if rendered_lines > 0 {
@@ -171,12 +172,13 @@ fn render(s: &tuxtop_core::model::Sample) -> usize {
     lines += 1;
 
     println!(
-        "{:<16} net rx {:>9}/s  tx {:>9}/s   disk r {:>9}/s  w {:>9}/s\x1b[K",
+        "{:<16} net rx {:>9}/s  tx {:>9}/s   disk r {:>9}/s  w {:>9}/s   cpu {}\x1b[K",
         "",
         bytes(s.net_rx_bps),
         bytes(s.net_tx_bps),
         bytes(s.disk_read_bps),
         bytes(s.disk_write_bps),
+        temp(s.cpu_temp_c),
     );
     lines += 1;
 
@@ -222,6 +224,15 @@ fn bar(v: f32) -> String {
         s.push(if i < filled { '█' } else { '·' });
     }
     s
+}
+
+/// A host with no CPU sensor - normal on a VM - shows a dash, never a zero
+/// that would read as an implausibly cold CPU.
+fn temp(c: Option<f32>) -> String {
+    match c {
+        Some(v) => format!("{v:.0}C"),
+        None => "  -".into(),
+    }
 }
 
 fn pct(used: u64, total: u64) -> f32 {
