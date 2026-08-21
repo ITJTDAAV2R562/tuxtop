@@ -789,7 +789,10 @@ body[data-bands="off"] .legend span:not(:last-child){display:none}
   display:flex;align-items:baseline;gap:8px;margin-bottom:7px;
   font-size:10.5px;font-weight:700;letter-spacing:.7px;
   text-transform:uppercase;color:var(--text-3);
+  white-space:nowrap;overflow:hidden;
 }
+.ch-count{font-family:var(--font-mono);letter-spacing:0}
+.cores-hist-head .chart-peak{margin-left:auto}
 .core-charts{display:grid;gap:5px;grid-template-columns:repeat(auto-fill,minmax(132px,1fr))}
 .core-chart{
   background:var(--surface-sunk);border:1px solid var(--stroke);
@@ -806,3 +809,12 @@ body[data-bands="off"] .legend span:not(:last-child){display:none}
   font-variant-numeric:tabular-nums;text-shadow:0 0 3px var(--tile-halo);
 }
 .core-chart canvas{width:100%;height:46px;display:block}
+
+/* Core grids pack like fleet blocks when several are shown. */
+.cores-pack{display:flex;flex-wrap:wrap;gap:10px;align-items:stretch}
+.cores-hist.packed{
+  background:var(--surface);border:1px solid var(--stroke);
+  border-radius:var(--r);padding:9px 12px 11px;margin-top:0;
+  display:flex;flex-direction:column;max-width:100%;flex-shrink:0;
+}
+.cores-hist.packed .core-charts{justify-content:start}

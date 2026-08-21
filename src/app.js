@@ -881,7 +881,10 @@
   // whatever host was last shown.
   $('#viewHist').addEventListener('click', () => {
     if (prefs.view === 'all') {
-      prefs.slice = { mode: 'metric', metric: scalarMetricId(prefs.metric) };
+      // Vector metrics are valid in history now - "CPU cores across the
+      // fleet" is every host's small multiples - so the metric on screen
+      // carries over unchanged rather than being downgraded to CPU.
+      prefs.slice = { mode: 'metric', metric: prefs.metric };
       savePrefs();
     }
     setView('history');
@@ -996,9 +999,12 @@
       if (vm && vm.shape === 'vector') {
         // A vector metric across the fleet is every host's small multiples,
         // grouped by host. There is no single line to overlay.
+        const pack = document.createElement('div');
+        pack.className = 'cores-pack';
         for (const h of ordered()) {
-          if (h.cores > 0) grid.appendChild(coreChartsEl(h));
+          if (h.cores > 0) pack.appendChild(coreChartsEl(h, true));
         }
+        grid.appendChild(pack);
         refreshHistory();
         return;
       }
@@ -1037,19 +1043,41 @@
   }
 
   /// The per-core grid: one small chart per core, all the same size.
-  function coreChartsEl(h) {
+  /// Fixed chart size, same on every host - the same rule as the fleet
+  /// tiles, and for the same reason: a core on a 2-core box must not look
+  /// bigger than a core on a 32-core box.
+  const CORE_CHART_W = 126;
+
+  function coreChartsEl(h, packed) {
     const sec = document.createElement('section');
-    sec.className = 'cores-hist';
+    sec.className = 'cores-hist' + (packed ? ' packed' : '');
     sec.dataset.host = h.name;
     sec.innerHTML = `
       <div class="cores-hist-head">
         <span class="ch-host">${esc(h.name)}</span>
-        <span>${h.cores} logical cores</span>
+        <span class="ch-count">${h.cores}c</span>
         <span class="chart-peak" data-cores-peak></span>
       </div>
       <div class="core-charts"></div>`;
 
     const wrap = sec.querySelector('.core-charts');
+    if (packed) {
+      // Width tracks core count, so blocks pack and a 2-core host stops
+      // claiming a full-width strip with two charts in it.
+      const GAP = 5, CHROME = 26;
+      const avail = Math.max(240, grid.clientWidth - 28);
+      const maxCols = Math.max(1, Math.floor((avail - CHROME + GAP) / (CORE_CHART_W + GAP)));
+      const cols = Math.max(1, Math.min(h.cores, maxCols));
+      wrap.style.gridTemplateColumns = `repeat(${cols}, ${CORE_CHART_W}px)`;
+      const natural = cols * CORE_CHART_W + (cols - 1) * GAP + CHROME;
+      if (h.cores >= maxCols) {
+        sec.style.flex = '1 1 100%';
+      } else {
+        sec.style.flexBasis = natural + 'px';
+        sec.style.flexGrow = '1';
+        sec.style.maxWidth = Math.round(natural * 1.6) + 'px';
+      }
+    }
     for (let i = 0; i < h.cores; i++) {
       const el = document.createElement('div');
       el.className = 'core-chart';
@@ -1061,13 +1089,13 @@
   }
 
   /// Draw the per-core grid, fetching every core in one call.
-  async function refreshCoreCharts(secs) {
+  async function refreshCoreCharts(secs, win) {
     for (const sec of grid.querySelectorAll('.cores-hist')) {
-      await refreshOneCoreGrid(sec, secs);
+      await refreshOneCoreGrid(sec, secs, win);
     }
   }
 
-  async function refreshOneCoreGrid(sec, secs) {
+  async function refreshOneCoreGrid(sec, secs, win) {
     if (!sec) return;
     const host = sec.dataset.host;
     const cells = [...sec.querySelectorAll('.core-chart')];
@@ -1090,7 +1118,7 @@
     let fleetPeak = 0;
     for (const c of cells) {
       const pts = data[`core.${c.dataset.core}`] || [];
-      drawHistory(c.querySelector('canvas'), pts, METRICS.cpu);
+      drawHistory(c.querySelector('canvas'), pts, METRICS.cpu, win);
       const pk = pts.reduce((a, p) => Math.max(a, p.max), 0);
       fleetPeak = Math.max(fleetPeak, pk);
       c.querySelector('.pk').textContent = pts.length ? Math.round(pk) + '%' : '';
@@ -1108,6 +1136,8 @@
     if (prefs.view !== 'history') return;
     const secs = sliderToSecs(+$('#histWindow').value);
     $('[data-hist-span]').textContent = 'last ' + fmtSpan(secs);
+    const nowS = Math.floor(Date.now() / 1000);
+    const win = { from: nowS - secs, to: nowS };
 
     const charts = [...grid.querySelectorAll('.chart')];
     for (const el of charts) {
@@ -1128,21 +1158,43 @@
         pts = simHistory(el.dataset.host, el.dataset.metric, secs, budget);
       }
 
-      drawHistory(cv, pts, m);
+      drawHistory(cv, pts, m, win);
       const last = pts.length ? pts[pts.length - 1] : null;
       el.querySelector('[data-latest]').textContent = last ? m.fmt(last.mean) : '\u2014';
       el.querySelector('[data-peak]').textContent = pts.length
         ? 'peak ' + m.fmt(pts.reduce((a, p) => Math.max(a, p.max), 0)) : '';
     }
 
-    await refreshCoreCharts(secs);
+    await refreshCoreCharts(secs, win);
   }
 
   /// Draw a min/max band with the mean over it.
   ///
   /// The band is the honest part: a coarse bucket that showed only its mean
   /// would hide exactly the spikes worth seeing.
-  function drawHistory(cv, pts, m) {
+  /// A gradient keyed to the value axis, so the high parts of a chart are red
+  /// wherever in time they happen.
+  ///
+  /// Colouring a whole chart by one number would make a single 100% spike
+  /// turn an otherwise idle hour red. Banding by height keeps the load
+  /// meaning of the colour identical to the tiles and bars: blue below 75,
+  /// amber to 89, red above.
+  function bandedGradient(c, m, yOf, h) {
+    const g = c.createLinearGradient(0, 0, 0, h);
+    if (m.scale !== 'absolute' || (m.max || 100) !== 100) return null;
+
+    const stop = v => Math.min(1, Math.max(0, yOf(v) / h));
+    // Built top-down, which is high value to low.
+    g.addColorStop(0, css('--crit'));
+    g.addColorStop(stop(90), css('--crit'));
+    g.addColorStop(stop(89.9), css('--warn'));
+    g.addColorStop(stop(75), css('--warn'));
+    g.addColorStop(stop(74.9), css('--accent'));
+    g.addColorStop(1, css('--accent'));
+    return g;
+  }
+
+  function drawHistory(cv, pts, m, win) {
     const dpr = devicePixelRatio || 1;
     const w = cv.clientWidth, h = cv.clientHeight;
     if (!w || !h) return;
@@ -1162,7 +1214,12 @@
       ? (m.max || 100)
       : Math.max(1, pts.reduce((a, p) => Math.max(a, p.max), 0)) * 1.12;
 
-    const t0 = pts[0].t, t1 = pts[pts.length - 1].t;
+    // The axis spans the requested window, not merely the data that exists.
+    // Mapping the points across the full width stretched four minutes of
+    // history over a chart labelled "last 7 days"; now partial history fills
+    // the proportion it actually covers, at the right-hand edge.
+    const t0 = win ? win.from : pts[0].t;
+    const t1 = win ? win.to : pts[pts.length - 1].t;
     const span = Math.max(1, t1 - t0);
     const x = p => (p.t - t0) / span * w;
     const y = v => h - Math.min(1, Math.max(0, v / peak)) * (h - 4) - 2;
@@ -1174,6 +1231,7 @@
     }
 
     const colour = m.scale === 'absolute' ? css('--accent') : css('--viz-net');
+    const banded = bandedGradient(c, m, y, h);
 
     // Area under the mean, always.
     //
@@ -1186,12 +1244,29 @@
     pts.forEach(p => c.lineTo(x(p), y(p.mean)));
     c.lineTo(x(pts[pts.length - 1]), h);
     c.closePath();
-    const fill = c.createLinearGradient(0, 0, 0, h);
-    fill.addColorStop(0, colour + '66');
-    fill.addColorStop(0.55, colour + '2A');
-    fill.addColorStop(1, colour + '05');
-    c.fillStyle = fill;
-    c.fill();
+    if (banded) {
+      // Band the hue by height, then fade it downward so the fill still reads
+      // as a fill rather than a solid block.
+      c.save();
+      c.clip();
+      c.globalAlpha = 0.42;
+      c.fillStyle = banded;
+      c.fillRect(0, 0, w, h);
+      c.globalAlpha = 1;
+      const fade = c.createLinearGradient(0, 0, 0, h);
+      fade.addColorStop(0, 'transparent');
+      fade.addColorStop(1, css('--surface-sunk'));
+      c.fillStyle = fade;
+      c.fillRect(0, 0, w, h);
+      c.restore();
+    } else {
+      const fill = c.createLinearGradient(0, 0, 0, h);
+      fill.addColorStop(0, colour + '66');
+      fill.addColorStop(0.55, colour + '2A');
+      fill.addColorStop(1, colour + '05');
+      c.fillStyle = fill;
+      c.fill();
+    }
 
     // The min/max band on top, where the tier has spread to show.
     const spread = pts.some(p => p.max - p.min > 1e-6);
@@ -1225,13 +1300,18 @@
     // Mean line last, so it sits above its own fill.
     c.beginPath();
     pts.forEach((p, i) => (i ? c.lineTo(x(p), y(p.mean)) : c.moveTo(x(p), y(p.mean))));
-    c.strokeStyle = colour; c.lineWidth = 1.5; c.lineJoin = 'round'; c.stroke();
+    c.strokeStyle = banded || colour; c.lineWidth = 1.5; c.lineJoin = 'round'; c.stroke();
 
-    const lx = x(pts[pts.length - 1]), ly = y(pts[pts.length - 1].mean);
-    c.beginPath(); c.arc(lx, ly, 2.6, 0, 7); c.fillStyle = colour; c.fill();
+    const lastP = pts[pts.length - 1];
+    const lx = x(lastP), ly = y(lastP.mean);
+    const dot = banded ? bandColour(lastP.mean) : colour;
+    c.beginPath(); c.arc(lx, ly, 2.6, 0, 7); c.fillStyle = dot; c.fill();
     c.beginPath(); c.arc(lx, ly, 5.2, 0, 7);
-    c.strokeStyle = colour + '55'; c.lineWidth = 1.4; c.stroke();
+    c.strokeStyle = dot + '55'; c.lineWidth = 1.4; c.stroke();
   }
+
+  const bandColour = v =>
+    css(v >= 90 ? '--crit' : v >= 75 ? '--warn' : '--accent');
 
   /// Browser-mode history, so the page still demonstrates itself as a mockup.
   function simHistory(host, metric, secs, budget) {

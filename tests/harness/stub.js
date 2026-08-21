@@ -32,7 +32,7 @@
         t: now - fromSecsAgo + Math.round(i * fromSecsAgo / n),
         min: Math.max(0, mean * 0.7),
         mean,
-        max: mean * 1.25 + spike,
+        max: pct ? Math.min(100, mean * 1.25 + spike) : mean * 1.25 + spike,
       };
     });
   }
@@ -81,7 +81,7 @@
               t: now - fromSecsAgo + Math.round(i * fromSecsAgo / n),
               min: Math.max(0, mean * 0.7),
               mean,
-              max: mean * 1.25 + spike,
+              max: pct ? Math.min(100, mean * 1.25 + spike) : mean * 1.25 + spike,
             };
           });
         }
