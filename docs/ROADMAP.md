@@ -102,7 +102,7 @@ numerals — see [ADR-005](DECISIONS.md#adr-005--load-is-encoded-three-ways-at-o
 
 ---
 
-## Phase 6 — GPU and temperatures — **half done**
+## Phase 6 — GPU and temperatures — **done**
 
 - [x] **Temperatures.** `/sys/class/hwmon` read in the sampler loop, emitted as
       pipe-delimited `TXT|driver|label|millidegrees` lines. Only known CPU
@@ -110,12 +110,62 @@ numerals — see [ADR-005](DECISIONS.md#adr-005--load-is-encoded-three-ways-at-o
       than the CPU, so "hottest sensor wins" names the wrong component with
       total confidence. Verified against a real host: reports 31C where `Tctl`
       reads 31C. A host with no sensor yields `None`, never a zero.
-- [ ] **GPU.** `nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total,power.draw
-      --format=csv,noheader,nounits`, appended to the same loop and absent
-      without error when the binary is missing. The `gpu` and `gpumem` metric
-      slots already exist and stay hidden until a host reports them.
+- [x] **GPU.** `nvidia-smi` appended to the same loop, guarded by `command -v`
+      so a host without the driver contributes nothing and costs no error.
+      Verified against an RTX 3080: reports 0%, 1969 / 10240 MiB, 18W matching
+      nvidia-smi exactly. A malformed utilisation field discards the reading
+      rather than defaulting to zero, which would be indistinguishable from an
+      idle card.
 
 Absence is normal for both, not an error.
+
+---
+
+## Phase 7 — Configurable sample interval — **next**
+
+**Goal:** the interval stops being hardcoded at 1 Hz.
+
+Measured across the live fleet, 19 hosts at 1 Hz is **132 KB/s, 10.8 GB/day**
+— see [evidence/sampling-cost.md](evidence/sampling-cost.md). That is not a
+reason to sample more slowly by default; 1 Hz is the entire point of the fast
+plane. It is a reason for the interval to be a choice.
+
+- A global interval in settings, persisted alongside the host list.
+- A per-host override: 1 Hz on the box you are watching, 10 s on the twelve
+  you only want to notice going down.
+- Changing it must restart that host's sampler without disturbing the others.
+- Surface the cost in the UI, so the tool measures itself rather than
+  lecturing about measurement.
+
+**Done when:** the interval can be changed per host from the window, survives
+a restart, and the fleet's current sampling cost is visible somewhere.
+
+---
+
+## Phase 8 — History plane — **needs a spec first**
+
+**Goal:** metrics over time, not only in the moment. Charts over a window, and
+retention that survives a restart.
+
+Deliberately unspecified. It is the largest remaining piece and touches
+storage, retention policy, aggregation, and the chart layer at once — the
+kind of work that goes wrong when it is started rather than designed. Open
+questions before any code:
+
+- **Where does history live?** Beszel already stores 1-minute history and the
+  hub is already running (ADR-002). Reading from it is far less work than
+  building our own store — but it only covers hosts that run a Beszel agent,
+  and only at 1-minute resolution. Our own store would cover every host at
+  full resolution and duplicate something that exists.
+- **What resolution, for how long?** 1 Hz for an hour is 3,600 points per
+  metric per host; across 19 hosts and 8 metrics that is not free. Rolling
+  aggregation is the usual answer, and is exactly what Beszel already does.
+- **In-memory or on disk?** The app currently keeps a 60-point ring buffer per
+  host and nothing survives a restart.
+- **What does the UI become?** A time axis is a third dimension on the
+  hosts x metrics matrix, and the fleet view has no obvious place for it.
+
+This phase should produce a written spec before an implementation.
 
 ---
 
