@@ -140,6 +140,16 @@
 
   const last = a => (a.length ? a[a.length - 1] : 0);
 
+  /// "NVIDIA GeForce RTX 3080" -> "RTX 3080". The vendor and product line are
+  /// the same across a fleet; the model is the part that identifies the card.
+  function shortGpu(name) {
+    return String(name)
+      .replace(/^NVIDIA\s+/i, '')
+      .replace(/^GeForce\s+/i, '')
+      .replace(/^Tesla\s+/i, '')
+      .trim() || 'GPU';
+  }
+
   function bps(v) {
     const U = ['B', 'KB', 'MB', 'GB'];
     let n = v || 0, i = 0;
@@ -560,6 +570,7 @@
           <div class="m"><span class="k">Disk</span><span class="v" data-dio></span></div>
           <div class="m"><span class="k">Net</span><span class="v" data-net></span></div>
           <div class="m" data-temp-chip><span class="k">Temp</span><span class="v" data-temp></span></div>
+          <div class="m" data-gpu-chip hidden><span class="k" data-gpu-k>GPU</span><span class="v" data-gpu></span></div>
           ${h.gpu ? '<div class="m"><span class="k">GPU</span><span class="v" data-gpu></span></div>' : ''}
         </div>
         <button class="card-toggle" aria-expanded="false">
@@ -709,6 +720,21 @@
       // sensor wrapped to two lines and cards without stayed on one, giving
       // rows visibly different heights. A dash also states the absence
       // explicitly instead of leaving it to be inferred.
+      // Unlike temperature, the GPU chip is hidden outright when a host has
+      // no card. A dash would imply a GPU that failed to report, when the
+      // truth is there is no GPU - and unlike temperature this does not
+      // change the chip count unevenly, because whole classes of host have
+      // one or none.
+      const gchip = el.querySelector('[data-gpu-chip]');
+      if (gchip) {
+        gchip.hidden = !h.gpu;
+        if (h.gpu) {
+          el.querySelector('[data-gpu-k]').textContent = shortGpu(h.gpu);
+          el.querySelector('[data-gpu]').textContent =
+            `${Math.round(h.gpuU)}% ${gb(h.gpuUsed / 1024)}/${gb(h.gpuTotal / 1024)}G`;
+        }
+      }
+
       const tchip = el.querySelector('[data-temp-chip]');
       if (tchip) {
         const hasTemp = h.temp !== null && h.temp !== undefined;
@@ -903,7 +929,13 @@
       h.load = s.load;
       h.temp = (typeof s.cpu_temp_c === 'number') ? s.cpu_temp_c : null;
       if (h.temp !== null) push(h.hist.temp, h.temp);
-      if (s.gpu) { h.gpu = s.gpu.name; h.gpuU = s.gpu.util_pct; }
+      if (s.gpu) {
+        h.gpu = s.gpu.name;
+        h.gpuU = s.gpu.util_pct;
+        h.gpuUsed = s.gpu.mem_used_mb;
+        h.gpuTotal = s.gpu.mem_total_mb;
+        h.gpuW = s.gpu.power_w;
+      }
       push(h.hist.cpu, s.cpu);
       push(h.hist.ram, h.ramGB ? h.ram / h.ramGB * 100 : 0);
       push(h.hist.dio, h.dio);

@@ -25,6 +25,7 @@ pub fn sampler_command(interval_secs: u32) -> String {
         "while :; do \
            cat /proc/stat /proc/meminfo /proc/diskstats /proc/net/dev /proc/loadavg 2>/dev/null; \
            {TEMP_SNIPPET} \
+           {GPU_SNIPPET} \
            echo '{FRAME_DELIMITER}'; \
            sleep {interval_secs}; \
          done"
@@ -46,6 +47,15 @@ const TEMP_SNIPPET: &str = "for d in /sys/class/hwmon/hwmon*/; do \
   done; \
 done;";
 
+/// Emits `TXG|index, name, util%, used MiB, total MiB, watts` per GPU.
+///
+/// Guarded by `command -v`, so a host without the driver contributes nothing
+/// and costs no error - the overwhelmingly common case. `nounits` keeps the
+/// values bare so parsing does not have to strip suffixes.
+const GPU_SNIPPET: &str = "command -v nvidia-smi >/dev/null 2>&1 && \
+  nvidia-smi --query-gpu=index,name,utilization.gpu,memory.used,memory.total,power.draw \
+  --format=csv,noheader,nounits 2>/dev/null | sed 's/^/TXG|/';";
+
 /// One parsed frame, before deltas are applied.
 ///
 /// Counters here are cumulative-since-boot, exactly as the kernel reports
@@ -61,6 +71,8 @@ pub struct Frame {
     pub disk_write_bytes: u64,
     /// CPU package temperature in degrees C, when a sensor identifies one.
     pub cpu_temp_c: Option<f32>,
+    /// First GPU reported by nvidia-smi, if any.
+    pub gpu: Option<crate::model::GpuSample>,
 }
 
 /// Split a stream buffer into complete frames, returning the unconsumed tail.
@@ -99,7 +111,48 @@ pub fn parse_frame(text: &str) -> Frame {
 
     frame.load = parse_loadavg(text);
     frame.cpu_temp_c = parse_cpu_temp(text);
+    frame.gpu = parse_gpu(text);
     frame
+}
+
+/// Parse the first GPU from the `TXG|` lines.
+///
+/// Only the first is taken for now: the wire type carries one GPU, and a
+/// multi-GPU host would need the UI to decide what "the" GPU means before
+/// collecting more would be useful.
+///
+/// A field that will not parse discards the whole reading rather than
+/// defaulting to zero - a GPU reported at 0% because its utilisation field was
+/// malformed is indistinguishable from an idle one.
+pub fn parse_gpu(text: &str) -> Option<crate::model::GpuSample> {
+    for line in text.lines() {
+        let Some(rest) = line.strip_prefix("TXG|") else {
+            continue;
+        };
+        let f: Vec<&str> = rest.split(',').map(str::trim).collect();
+        // index, name, util, used, total, power
+        if f.len() < 6 {
+            continue;
+        }
+        let (Ok(util), Ok(used), Ok(total)) = (
+            f[2].parse::<f32>(),
+            f[3].parse::<u64>(),
+            f[4].parse::<u64>(),
+        ) else {
+            continue;
+        };
+        // Power draw is unsupported on some cards and reports [N/A].
+        let power = f[5].parse::<f32>().unwrap_or(0.0);
+
+        return Some(crate::model::GpuSample {
+            name: f[1].to_string(),
+            util_pct: util.clamp(0.0, 100.0),
+            mem_used_mb: used,
+            mem_total_mb: total,
+            power_w: power,
+        });
+    }
+    None
 }
 
 /// Pick the CPU package temperature out of the hwmon lines.
@@ -553,6 +606,81 @@ TXT|nvme|Composite|60000
         let cmd = sampler_command(1);
         assert!(cmd.contains("/sys/class/hwmon"));
         assert!(cmd.contains("TXT|"));
+        assert!(!cmd.contains("[["), "must stay POSIX sh");
+    }
+}
+
+#[cfg(test)]
+mod gpu_tests {
+    use super::*;
+
+    /// Real nvidia-smi output from dove's RTX 3080.
+    const CROW_GPU: &str = "TXG|0, NVIDIA GeForce RTX 3080, 0, 1969, 10240, 17.36\n";
+
+    #[test]
+    fn parses_a_real_card() {
+        let g = parse_gpu(CROW_GPU).expect("dove reports a GPU");
+        assert_eq!(g.name, "NVIDIA GeForce RTX 3080");
+        assert_eq!(g.util_pct, 0.0);
+        assert_eq!(g.mem_used_mb, 1969);
+        assert_eq!(g.mem_total_mb, 10240);
+        assert!((g.power_w - 17.36).abs() < 0.01);
+    }
+
+    #[test]
+    fn a_host_without_a_gpu_reports_none() {
+        // The overwhelmingly common case: no nvidia-smi, so no TXG lines.
+        let text = "cpu  100 0 50 900\nTXT|k10temp|Tctl|31000\n";
+        assert_eq!(parse_gpu(text), None);
+    }
+
+    #[test]
+    fn power_draw_unsupported_does_not_discard_the_reading() {
+        // Many cards report [N/A] for power. Utilisation and memory are still
+        // worth having, so only power degrades.
+        let text = "TXG|0, NVIDIA T400, 12, 300, 2048, [N/A]\n";
+        let g = parse_gpu(text).expect("still a valid reading");
+        assert_eq!(g.util_pct, 12.0);
+        assert_eq!(g.power_w, 0.0);
+    }
+
+    #[test]
+    fn a_malformed_utilisation_discards_the_reading() {
+        // Zero here would be indistinguishable from a genuinely idle GPU.
+        let text = "TXG|0, NVIDIA T400, oops, 300, 2048, 15\n";
+        assert_eq!(parse_gpu(text), None);
+    }
+
+    #[test]
+    fn a_truncated_line_is_skipped() {
+        assert_eq!(parse_gpu("TXG|0, NVIDIA T400, 12\n"), None);
+    }
+
+    #[test]
+    fn the_first_gpu_wins_on_a_multi_gpu_host() {
+        let text = "TXG|0, NVIDIA A100, 55, 4000, 40960, 210\n\
+                    TXG|1, NVIDIA A100, 3, 100, 40960, 60\n";
+        let g = parse_gpu(text).unwrap();
+        assert_eq!(g.util_pct, 55.0, "index 0 is the one reported");
+    }
+
+    #[test]
+    fn gpu_lines_do_not_disturb_the_rest_of_the_frame() {
+        let text = format!("cpu  100 0 50 900\ncpu0 100 0 50 900\n{CROW_GPU}");
+        let f = parse_frame(&text);
+        assert_eq!(f.stat.cores.len(), 1, "TXG lines must not parse as cores");
+        assert!(f.gpu.is_some());
+    }
+
+    #[test]
+    fn the_sampler_command_collects_gpu_and_tolerates_absence() {
+        let cmd = sampler_command(1);
+        assert!(cmd.contains("nvidia-smi"));
+        assert!(
+            cmd.contains("command -v"),
+            "must not error on hosts without it"
+        );
+        assert!(cmd.contains("TXG|"));
         assert!(!cmd.contains("[["), "must stay POSIX sh");
     }
 }

@@ -129,6 +129,12 @@ async fn main() -> ExitCode {
                         s.load[0],
                         temp(s.cpu_temp_c),
                     );
+                    if let Some(g) = &s.gpu {
+                        println!(
+                            "  gpu {} {:.0}%  {} / {} MiB  {:.0}W",
+                            g.name, g.util_pct, g.mem_used_mb, g.mem_total_mb, g.power_w
+                        );
+                    }
                 } else {
                     if rendered_lines > 0 {
                         // Redraw in place.
@@ -181,6 +187,14 @@ fn render(s: &tuxtop_core::model::Sample) -> usize {
         temp(s.cpu_temp_c),
     );
     lines += 1;
+
+    if let Some(g) = &s.gpu {
+        println!(
+            "{:<16} gpu \x1b[1m{:.0}%\x1b[0m  {} / {} MiB  {:.0}W  ({})\x1b[K",
+            "", g.util_pct, g.mem_used_mb, g.mem_total_mb, g.power_w, g.name
+        );
+        lines += 1;
+    }
 
     println!("\x1b[K");
     lines += 1;
