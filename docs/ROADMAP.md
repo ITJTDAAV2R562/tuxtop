@@ -349,6 +349,21 @@ Work that arrived from design conversation rather than the plan:
 
 ## Ideas — not committed
 
+- **Windows hosts.** SSH to Windows works and OpenSSH ships with it, but there
+  is no `/proc`, so it needs a second sampler shape — PowerShell performance
+  counters or CIM — behind the same `Sample`. Lean version: detect the OS once
+  at connect (host facts already do this) and pick a command set. Until then
+  a Windows box can be watched through its WSL instance, which is how `owl` is
+  reachable today, and which reports the Windows kernel's view of CPU and
+  memory anyway.
+- **Browser access, not only the desktop app.** The frontend is already static
+  HTML/CSS/JS against a small command surface, and the backend is already Rust
+  holding all the state. Serving the same commands over HTTP instead of Tauri
+  IPC would make the whole UI reachable from a browser with no second
+  implementation. The work is an HTTP layer beside `invoke`, not a rewrite -
+  but it turns a single-user desktop app into something listening on a port,
+  which is a different security posture and should be a deliberate decision.
+
 - **Per-core sparklines** instead of single-value tiles at large card sizes.
 - **More metrics** now that the registry exists: temperatures, per-filesystem
   usage, per-NIC and per-disk vectors. Each is a table entry, not a renderer.
