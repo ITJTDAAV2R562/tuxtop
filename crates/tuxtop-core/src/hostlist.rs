@@ -65,6 +65,7 @@ mod tests {
             user: String::new(),
             port: 22,
             beszel_url: None,
+            interval_secs: None,
         }
     }
 
@@ -142,27 +143,80 @@ mod tests {
     }
 }
 
+/// Global settings, stored alongside the host list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Settings {
+    /// Default sample interval, overridable per host.
+    #[serde(default = "default_interval")]
+    pub interval_secs: u32,
+    /// Ceiling on the in-memory history store.
+    ///
+    /// Expressed in MB rather than hours because the tiers already express the
+    /// span: you set a memory budget and the UI shows what span it buys. At
+    /// ~23 MB for a 19-host fleet this is a setting most people never touch;
+    /// it earns its place around 100 hosts.
+    #[serde(default = "default_history_mb")]
+    pub history_cap_mb: u32,
+}
+
+fn default_interval() -> u32 {
+    1
+}
+
+fn default_history_mb() -> u32 {
+    256
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            interval_secs: default_interval(),
+            history_cap_mb: default_history_mb(),
+        }
+    }
+}
+
 /// The on-disk shape of `hosts.toml`.
 ///
 /// A wrapper struct is required because TOML has no bare root array.
+/// `settings` must be declared before `hosts`: TOML requires plain tables to
+/// precede arrays-of-tables in a document, so field order here is load-bearing
+/// rather than cosmetic.
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct HostsFile {
+    #[serde(default)]
+    pub settings: Settings,
     #[serde(default, rename = "host")]
     pub hosts: Vec<HostConfig>,
 }
 
+/// The interval that applies to `host`, given the global default.
+pub fn effective_interval(host: &HostConfig, settings: &Settings) -> u32 {
+    host.interval_secs
+        .unwrap_or(settings.interval_secs)
+        .clamp(1, 3600)
+}
+
 /// Parse `hosts.toml`. Kept separate from file I/O so it is testable.
 pub fn parse(text: &str) -> Result<Vec<HostConfig>, String> {
-    let f: HostsFile = toml::from_str(text).map_err(|e| e.to_string())?;
-    Ok(f.hosts)
+    Ok(parse_file(text)?.hosts)
+}
+
+/// Parse the whole file, settings included.
+pub fn parse_file(text: &str) -> Result<HostsFile, String> {
+    toml::from_str(text).map_err(|e| e.to_string())
 }
 
 /// Render the list back to TOML.
 pub fn render(hosts: &[HostConfig]) -> Result<String, String> {
-    toml::to_string_pretty(&HostsFile {
+    render_file(&HostsFile {
+        settings: Settings::default(),
         hosts: hosts.to_vec(),
     })
-    .map_err(|e| e.to_string())
+}
+
+pub fn render_file(f: &HostsFile) -> Result<String, String> {
+    toml::to_string_pretty(f).map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
@@ -200,6 +254,7 @@ addr = "dove"
                 user: String::new(),
                 port: 22,
                 beszel_url: None,
+                interval_secs: None,
             },
         )
         .unwrap();
@@ -228,6 +283,7 @@ addr = "dove"
                     user: String::new(),
                     port: 22,
                     beszel_url: None,
+                    interval_secs: None,
                 },
             )
             .unwrap();
@@ -247,6 +303,7 @@ addr = "dove"
                 user: String::new(),
                 port: 22,
                 beszel_url: Some("https://dove.example".into()),
+                interval_secs: None,
             },
             HostConfig {
                 name: "heron".into(),
@@ -254,6 +311,7 @@ addr = "dove"
                 user: String::new(),
                 port: 22,
                 beszel_url: None,
+                interval_secs: None,
             },
         ];
         let text = render(&list).unwrap();
@@ -295,6 +353,7 @@ mod reorder_tests {
                 user: String::new(),
                 port: 22,
                 beszel_url: None,
+                interval_secs: None,
             })
             .collect()
     }
@@ -331,5 +390,96 @@ mod reorder_tests {
         let mut l = list(&["dove", "heron", "wader"]);
         reorder(&mut l, &[]);
         assert_eq!(names(&l), ["dove", "heron", "wader"]);
+    }
+}
+
+#[cfg(test)]
+mod settings_tests {
+    use super::*;
+
+    fn host(name: &str, iv: Option<u32>) -> HostConfig {
+        HostConfig {
+            name: name.into(),
+            addr: name.into(),
+            user: String::new(),
+            port: 22,
+            beszel_url: None,
+            interval_secs: iv,
+        }
+    }
+
+    #[test]
+    fn a_file_without_settings_still_parses() {
+        // Every existing hosts.toml predates settings; none of them may break.
+        let f = parse_file("[[host]]\nname = \"dove\"\naddr = \"dove\"\n").unwrap();
+        assert_eq!(f.hosts.len(), 1);
+        assert_eq!(f.settings.interval_secs, 1);
+        assert_eq!(f.settings.history_cap_mb, 256);
+    }
+
+    #[test]
+    fn settings_round_trip_with_hosts() {
+        let f = HostsFile {
+            settings: Settings {
+                interval_secs: 5,
+                history_cap_mb: 512,
+            },
+            hosts: vec![host("dove", None), host("heron", Some(30))],
+        };
+        let text = render_file(&f).unwrap();
+        let back = parse_file(&text).unwrap();
+
+        assert_eq!(back.settings.interval_secs, 5, "wrote:\n{text}");
+        assert_eq!(back.settings.history_cap_mb, 512);
+        assert_eq!(
+            back.hosts.len(),
+            2,
+            "settings must not swallow the hosts\n{text}"
+        );
+        assert_eq!(back.hosts[1].interval_secs, Some(30));
+    }
+
+    #[test]
+    fn settings_are_written_before_the_host_array() {
+        // TOML requires plain tables to precede arrays-of-tables. Getting this
+        // backwards produces a file that serialises fine and fails to parse.
+        let text = render_file(&HostsFile {
+            settings: Settings::default(),
+            hosts: vec![host("dove", None)],
+        })
+        .unwrap();
+        assert!(
+            text.find("[settings]").unwrap() < text.find("[[host]]").unwrap(),
+            "settings must come first:\n{text}"
+        );
+    }
+
+    #[test]
+    fn a_host_without_an_override_follows_the_global_interval() {
+        let s = Settings {
+            interval_secs: 10,
+            history_cap_mb: 256,
+        };
+        assert_eq!(effective_interval(&host("dove", None), &s), 10);
+    }
+
+    #[test]
+    fn a_per_host_override_wins() {
+        let s = Settings {
+            interval_secs: 10,
+            history_cap_mb: 256,
+        };
+        assert_eq!(effective_interval(&host("dove", Some(1)), &s), 1);
+    }
+
+    #[test]
+    fn absurd_intervals_are_clamped_not_obeyed() {
+        // Zero would spin the remote loop as fast as sh can fork.
+        let s = Settings {
+            interval_secs: 1,
+            history_cap_mb: 256,
+        };
+        assert_eq!(effective_interval(&host("dove", Some(0)), &s), 1);
+        assert_eq!(effective_interval(&host("dove", Some(999_999)), &s), 3600);
     }
 }

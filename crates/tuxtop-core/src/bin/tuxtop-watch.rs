@@ -34,18 +34,26 @@ struct Args {
     host: String,
     interval: u32,
     plain: bool,
+    /// Exit after this many samples. Makes the run scriptable, and makes the
+    /// cost report at exit reachable - under a signal it never prints.
+    frames: Option<u64>,
 }
 
 fn parse_args() -> Result<Args, String> {
     let mut host = None;
     let mut interval = 1u32;
     let mut plain = false;
+    let mut frames = None;
     let mut it = env::args().skip(1);
 
     while let Some(a) = it.next() {
         match a.as_str() {
             "-h" | "--help" => return Err(String::new()),
             "--plain" => plain = true,
+            "--frames" => {
+                let v = it.next().ok_or("--frames needs a value")?;
+                frames = Some(v.parse().map_err(|_| format!("bad frame count: {v}"))?);
+            }
             "--interval" => {
                 let v = it.next().ok_or("--interval needs a value")?;
                 interval = v.parse().map_err(|_| format!("bad interval: {v}"))?;
@@ -62,6 +70,7 @@ fn parse_args() -> Result<Args, String> {
         host: host.ok_or("no host given")?,
         interval,
         plain,
+        frames,
     })
 }
 
@@ -91,10 +100,12 @@ async fn main() -> ExitCode {
         user,
         port: 22,
         beszel_url: None,
+        interval_secs: None,
     };
 
     let (tx, mut rx) = mpsc::channel(16);
-    let sampler = match SshSampler::start(cfg.clone(), args.interval, tx) {
+    let traffic = std::sync::Arc::new(tuxtop_core::TrafficCounter::new());
+    let sampler = match SshSampler::start(cfg.clone(), args.interval, tx, traffic.clone()) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("could not launch ssh: {e}");
@@ -107,6 +118,7 @@ async fn main() -> ExitCode {
 
     let mut first = true;
     let mut rendered_lines = 0usize;
+    let mut seen = 0u64;
 
     while let Some(item) = rx.recv().await {
         match item {
@@ -142,6 +154,11 @@ async fn main() -> ExitCode {
                     }
                     rendered_lines = render(&s);
                 }
+
+                seen += 1;
+                if args.frames.is_some_and(|n| seen >= n) {
+                    break;
+                }
             }
             Err(f) => {
                 if !args.plain && rendered_lines > 0 {
@@ -155,7 +172,25 @@ async fn main() -> ExitCode {
     }
 
     sampler.stop().await;
+    report_cost(&traffic, args.interval);
     ExitCode::SUCCESS
+}
+
+/// What this session actually cost, printed on exit.
+fn report_cost(t: &tuxtop_core::TrafficCounter, interval: u32) {
+    let s = t.snapshot();
+    if s.frames_total == 0 {
+        return;
+    }
+    let per_sec = s.bytes_per_sec_at(interval);
+    eprintln!(
+        "\n{} frames, {} mean/frame, {}/s at {}s -- {:.2} GB/day for this one host",
+        s.frames_total,
+        bytes(s.mean_frame_bytes() as u64),
+        bytes(per_sec as u64),
+        interval,
+        per_sec * 86400.0 / 1024.0 / 1024.0 / 1024.0,
+    );
 }
 
 /// Draw the core grid. Returns how many lines were printed, so the next

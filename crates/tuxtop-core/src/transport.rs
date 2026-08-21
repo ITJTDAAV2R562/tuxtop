@@ -17,8 +17,11 @@ use tokio::io::{AsyncReadExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::mpsc;
 
+use std::sync::Arc;
+
 use crate::model::{HostConfig, HostFault, Sample};
 use crate::sampler::{self, RateTracker};
+use crate::traffic::TrafficCounter;
 
 /// Build the argument list for the `ssh` invocation.
 ///
@@ -80,6 +83,7 @@ impl SshSampler {
         host: HostConfig,
         interval_secs: u32,
         tx: mpsc::Sender<Result<Sample, HostFault>>,
+        traffic: Arc<TrafficCounter>,
     ) -> std::io::Result<Self> {
         let cmd = sampler::sampler_command(interval_secs);
         let args = ssh_args(&host, &cmd);
@@ -106,7 +110,7 @@ impl SshSampler {
             let _ = etx.send(buf);
         });
 
-        tokio::spawn(pump(host, stdout, erx, tx));
+        tokio::spawn(pump(host, stdout, erx, tx, traffic));
 
         Ok(Self { child })
     }
@@ -123,6 +127,7 @@ async fn pump(
     stdout: tokio::process::ChildStdout,
     stderr: tokio::sync::oneshot::Receiver<String>,
     tx: mpsc::Sender<Result<Sample, HostFault>>,
+    traffic: Arc<TrafficCounter>,
 ) {
     let mut reader = BufReader::new(stdout);
     let mut buf = String::new();
@@ -145,12 +150,14 @@ async fn pump(
         // /proc is ASCII. Lossy conversion cannot corrupt a field, and a
         // hard error here would kill an otherwise healthy host over one
         // stray byte.
+        traffic.add_bytes(n as u64);
         buf.push_str(&String::from_utf8_lossy(&chunk[..n]));
 
         let (frames, rest) = sampler::split_frames(&buf);
         let mut emitted = Vec::new();
 
         for text in frames {
+            traffic.add_frame(text.len() as u64);
             let frame = sampler::parse_frame(text);
             let now = Instant::now();
             let elapsed = now.duration_since(last).as_secs_f64();
@@ -261,6 +268,7 @@ mod tests {
             user: "sam".into(),
             port: 22,
             beszel_url: None,
+            interval_secs: None,
         }
     }
 

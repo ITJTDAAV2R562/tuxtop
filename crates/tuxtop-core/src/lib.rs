@@ -17,6 +17,7 @@ pub mod hostlist;
 pub mod model;
 pub mod proc;
 pub mod sampler;
+pub mod traffic;
 pub mod transport;
 
 pub use hostlist::{
@@ -25,4 +26,5 @@ pub use hostlist::{
 pub use model::{GpuSample, HostConfig, HostFault, HostStatus, Sample};
 pub use proc::{busy_pct, core_pcts, parse_meminfo, parse_stat, CpuTimes, MemInfo, StatSnapshot};
 pub use sampler::{parse_frame, sampler_command, split_frames, Frame, RateTracker, Rates};
+pub use traffic::{fleet_bytes_per_sec_at, fleet_total, TrafficCounter, TrafficStats};
 pub use transport::{classify_ssh_error, ssh_args, SshSampler};

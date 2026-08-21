@@ -26,6 +26,11 @@ pub struct HostConfig {
     /// still works, there is just no history behind it.
     #[serde(default)]
     pub beszel_url: Option<String>,
+    /// Sample interval for this host alone. `None` follows the global
+    /// setting. Per-host because a fleet is not uniform: 1 Hz on the box being
+    /// watched, 10 s on the twelve that only need to be noticed going down.
+    #[serde(default)]
+    pub interval_secs: Option<u32>,
 }
 
 fn default_port() -> u16 {
