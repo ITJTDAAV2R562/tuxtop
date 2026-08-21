@@ -72,7 +72,9 @@
   <p class="cadence-note" id="cadNote">Sampling at the Beszel agent's cadence &mdash; the grid now refreshes once a minute. This is the lag the direct <code>/proc/stat</code> path removes.</p>
 
   <div class="histbar" id="histbar" hidden>
-    <span class="hist-title" data-hist-title></span>
+    <label class="hist-subject">
+      <select id="histSubject" aria-label="History subject"></select>
+    </label>
     <button class="btn ghost hist-swap" id="histSwap"></button>
     <span class="tb-grow"></span>
     <label class="hist-range">

@@ -173,7 +173,7 @@ throughput plus projections at other intervals for the configured fleet.
 
 ---
 
-## Phase 8 — History plane — **built; per-core charts outstanding**
+## Phase 8 — History plane — **built; cap enforcement outstanding**
 
 **Goal:** metrics over time, not only in the moment. Charts over a window, and
 retention that survives a restart.
@@ -188,8 +188,9 @@ Full spec: **[specs/history-plane.md](specs/history-plane.md)**.
       a minute to a week continuously.
 - [x] Contextual entry: from a host card or a fleet block, that host and its
       metrics; from the Fleet view, that metric across every host.
-- [ ] **Per-core charts** — the Task Manager small-multiples shape. The data
-      is stored (`core.N` series); only the view is missing.
+- [x] **Per-core charts** — the Task Manager small-multiples shape, one chart
+      per core at a fixed size, fetched for the whole host in a single call.
+- [x] **Subject picker** — change host or metric without leaving History.
 - [ ] **Cap enforcement.** The cap is configurable and displayed but nothing
       evicts on it yet. At ~24 MB for a 19-host fleet nothing has come close;
       it matters around 100 hosts.

@@ -770,3 +770,35 @@ body[data-bands="off"] .legend span:not(:last-child){display:none}
 
 .card-actions{display:flex;align-items:center;gap:14px;margin-top:auto}
 .card-hist{margin-left:auto}
+
+.hist-subject select{
+  font:inherit;font-family:var(--font-mono);font-size:13px;font-weight:600;
+  padding:4px 8px;border-radius:7px;color:var(--text);
+  border:1px solid var(--stroke-hi);background:var(--surface-hi);
+}
+.hist-subject select:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+
+/* Per-core small multiples: the Task Manager shape. One fixed size for every
+   core on every host, for the same reason the fleet tiles are fixed. */
+.cores-hist{margin-top:12px}
+.cores-hist-head{
+  display:flex;align-items:baseline;gap:8px;margin-bottom:7px;
+  font-size:10.5px;font-weight:700;letter-spacing:.7px;
+  text-transform:uppercase;color:var(--text-3);
+}
+.core-charts{display:grid;gap:5px;grid-template-columns:repeat(auto-fill,minmax(132px,1fr))}
+.core-chart{
+  background:var(--surface-sunk);border:1px solid var(--stroke);
+  border-radius:5px;padding:4px 5px 2px;position:relative;
+}
+.core-chart .idx{
+  position:absolute;top:3px;left:6px;z-index:1;
+  font-family:var(--font-mono);font-size:9px;color:var(--text-3);
+  text-shadow:0 0 3px var(--tile-halo);
+}
+.core-chart .pk{
+  position:absolute;top:3px;right:6px;z-index:1;
+  font-family:var(--font-mono);font-size:9px;font-weight:600;color:var(--text-2);
+  font-variant-numeric:tabular-nums;text-shadow:0 0 3px var(--tile-halo);
+}
+.core-chart canvas{width:100%;height:46px;display:block}

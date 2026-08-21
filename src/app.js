@@ -880,9 +880,7 @@
   // whatever host was last shown.
   $('#viewHist').addEventListener('click', () => {
     if (prefs.view === 'all') {
-      const m = metric();
-      // A vector metric has no single line per host, so carry the aggregate.
-      prefs.slice = { mode: 'metric', metric: m.shape === 'vector' ? 'cpu' : prefs.metric };
+      prefs.slice = { mode: 'metric', metric: scalarMetricId(prefs.metric) };
       savePrefs();
     }
     setView('history');
@@ -931,10 +929,21 @@
     setView('history');
   }
 
+  /// A metric that makes sense as one line per host.
+  ///
+  /// Vector metrics have no such line - "CPU cores" across the fleet is a
+  /// grid, not a chart - so any path into metric mode falls back to CPU.
+  function scalarMetricId(pref) {
+    const m = METRICS[pref];
+    return m && m.shape !== 'vector' ? pref : 'cpu';
+  }
+
   function currentSlice() {
     const s = prefs.slice;
     if (s && s.mode === 'host' && hosts.some(h => h.name === s.host)) return s;
-    if (s && s.mode === 'metric' && METRICS[s.metric]) return s;
+    if (s && s.mode === 'metric' && METRICS[s.metric]) {
+      return { mode: 'metric', metric: scalarMetricId(s.metric) };
+    }
     // Nothing remembered or the subject is gone: fall back to what is on
     // screen rather than an arbitrary choice.
     return hosts.length
@@ -961,16 +970,25 @@
     const wrap = document.createElement('div');
     wrap.className = 'charts-grid';
 
+    const sub = $('#histSubject');
+
     if (slice.mode === 'host') {
-      $('[data-hist-title]').textContent = slice.host;
+      // Pick a different host without leaving History.
+      sub.innerHTML = ordered()
+        .map(h => `<option value="${esc(h.name)}"${h.name === slice.host ? ' selected' : ''}>${esc(h.name)}</option>`)
+        .join('');
       $('#histSwap').textContent = 'Compare across fleet';
       for (const [id, m] of availableMetrics()) {
         if (m.shape === 'vector') continue;
         wrap.appendChild(chartEl(`${slice.host}::${id}`, m.label, id, slice.host));
       }
     } else {
-      const m = METRICS[slice.metric] || METRICS.cpu;
-      $('[data-hist-title]').textContent = m.label;
+      // Pick a different metric without leaving History. Vector metrics are
+      // excluded: there is no single line per host to compare.
+      sub.innerHTML = availableMetrics()
+        .filter(([, m]) => m.shape !== 'vector')
+        .map(([id, m]) => `<option value="${id}"${id === slice.metric ? ' selected' : ''}>${esc(m.label)}</option>`)
+        .join('');
       $('#histSwap').textContent = 'Show one host';
       for (const h of ordered()) {
         wrap.appendChild(chartEl(`${h.name}::${slice.metric}`, h.name, slice.metric, h.name));
@@ -978,6 +996,15 @@
     }
 
     grid.appendChild(wrap);
+
+    // Per-core small multiples, the Task Manager shape. Only in host mode:
+    // across the fleet there is no sensible way to line up core 7 of one box
+    // with core 7 of another.
+    if (slice.mode === 'host') {
+      const h = hosts.find(x => x.name === slice.host);
+      if (h && h.cores > 0) grid.appendChild(coreChartsEl(h));
+    }
+
     refreshHistory();
   }
 
@@ -995,6 +1022,63 @@
       </div>
       <canvas></canvas>`;
     return el;
+  }
+
+  /// The per-core grid: one small chart per core, all the same size.
+  function coreChartsEl(h) {
+    const sec = document.createElement('section');
+    sec.className = 'cores-hist';
+    sec.dataset.host = h.name;
+    sec.innerHTML = `
+      <div class="cores-hist-head">
+        <span>${h.cores} logical cores</span>
+        <span class="chart-peak" data-cores-peak></span>
+      </div>
+      <div class="core-charts"></div>`;
+
+    const wrap = sec.querySelector('.core-charts');
+    for (let i = 0; i < h.cores; i++) {
+      const el = document.createElement('div');
+      el.className = 'core-chart';
+      el.dataset.core = i;
+      el.innerHTML = `<span class="idx">${i}</span><span class="pk"></span><canvas></canvas>`;
+      wrap.appendChild(el);
+    }
+    return sec;
+  }
+
+  /// Draw the per-core grid, fetching every core in one call.
+  async function refreshCoreCharts(secs) {
+    const sec = grid.querySelector('.cores-hist');
+    if (!sec) return;
+    const host = sec.dataset.host;
+    const cells = [...sec.querySelectorAll('.core-chart')];
+    if (!cells.length) return;
+
+    const metrics = cells.map(c => `core.${c.dataset.core}`);
+    const budget = Math.max(40, Math.round(cells[0].querySelector('canvas').clientWidth || 130));
+
+    let data = {};
+    if (LIVE) {
+      try {
+        data = await TAURI.core.invoke('query_history_many', {
+          host, metrics, fromSecsAgo: secs, toSecsAgo: 0, maxPoints: budget,
+        });
+      } catch { data = {}; }
+    } else {
+      metrics.forEach((m, i) => { data[m] = simHistory(host, 'cpu', secs, budget); });
+    }
+
+    let fleetPeak = 0;
+    for (const c of cells) {
+      const pts = data[`core.${c.dataset.core}`] || [];
+      drawHistory(c.querySelector('canvas'), pts, METRICS.cpu);
+      const pk = pts.reduce((a, p) => Math.max(a, p.max), 0);
+      fleetPeak = Math.max(fleetPeak, pk);
+      c.querySelector('.pk').textContent = pts.length ? Math.round(pk) + '%' : '';
+    }
+    const head = sec.querySelector('[data-cores-peak]');
+    if (head) head.textContent = fleetPeak ? `busiest core peaked at ${Math.round(fleetPeak)}%` : '';
   }
 
   /// Fetch and draw every visible chart for the current window.
@@ -1032,6 +1116,8 @@
       el.querySelector('[data-peak]').textContent = pts.length
         ? 'peak ' + m.fmt(pts.reduce((a, p) => Math.max(a, p.max), 0)) : '';
     }
+
+    await refreshCoreCharts(secs);
   }
 
   /// Draw a min/max band with the mean over it.
@@ -1103,11 +1189,20 @@
     });
   }
 
+  $('#histSubject').addEventListener('change', e => {
+    const s = currentSlice();
+    prefs.slice = s.mode === 'host'
+      ? { mode: 'host', host: e.target.value }
+      : { mode: 'metric', metric: e.target.value };
+    savePrefs();
+    build();
+  });
+
   $('#histWindow').addEventListener('input', refreshHistory);
   $('#histSwap').addEventListener('click', () => {
     const s = currentSlice();
     prefs.slice = s.mode === 'host'
-      ? { mode: 'metric', metric: prefs.metric }
+      ? { mode: 'metric', metric: scalarMetricId(prefs.metric) }
       : { mode: 'host', host: ordered()[0]?.name };
     savePrefs();
     build();

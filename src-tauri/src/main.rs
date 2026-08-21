@@ -168,6 +168,34 @@ fn query_history(
     store.query(&host, &metric, from, to, max_points.clamp(1, 4096))
 }
 
+/// Several series for one host in a single call.
+///
+/// A 32-core host needs 32 series to draw its per-core grid; asking one at a
+/// time would be 32 round trips per redraw for data that all lives behind the
+/// same lock.
+#[tauri::command]
+fn query_history_many(
+    store: tauri::State<'_, HistoryStore>,
+    host: String,
+    metrics: Vec<String>,
+    from_secs_ago: u64,
+    to_secs_ago: u64,
+    max_points: usize,
+) -> std::collections::HashMap<String, Vec<tuxtop_core::history::Point>> {
+    let now = history_store::now_secs();
+    let from = now.saturating_sub(from_secs_ago);
+    let to = now.saturating_sub(to_secs_ago);
+    let budget = max_points.clamp(1, 4096);
+
+    metrics
+        .into_iter()
+        .map(|m| {
+            let pts = store.query(&host, &m, from, to, budget);
+            (m, pts)
+        })
+        .collect()
+}
+
 /// How much the history store is currently holding.
 #[tauri::command]
 fn history_usage(store: tauri::State<'_, HistoryStore>) -> HistoryUsage {
@@ -194,6 +222,7 @@ fn main() {
             set_host_interval,
             traffic_stats,
             query_history,
+            query_history_many,
             history_usage,
             active_hosts
         ])
