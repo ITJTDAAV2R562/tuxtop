@@ -244,32 +244,36 @@ Settled:
 
 ---
 
-## Phase 9 — Host facts and the data already on the floor — **next after 7**
+## Phase 9 — Host facts and the data already on the floor — **done**
 
 Cheap wins, several of which are already parsed and thrown away. Grounded in
 what Beszel actually stores, checked against its schema.
 
-- [ ] **Filesystem usage.** The largest real gap. Beszel stores disk total,
+- [x] **Filesystem usage.** The largest real gap. Beszel stores disk total,
       used and percent; we collect disk *I/O* and no capacity at all — so the
       single most common way a Linux box falls over is invisible here. From
       `/proc/mounts` plus `statvfs`, per mount, excluding pseudo-filesystems.
-- [ ] **Host identity** — CPU model, distro, kernel. Task Manager names the
+- [x] **Host identity** — CPU model, distro, kernel. Task Manager names the
       processor at the top of its CPU pane, and a fleet view of 19 boxes badly
       wants to know which are which. One `uname -srm`, `/etc/os-release` and
       `/proc/cpuinfo` read, cached per connection rather than per sample —
       none of it changes between frames.
-- [ ] **Uptime.** From `/proc/uptime`. Beszel stores it; we do not.
-- [ ] **Swap.** `MemInfo` already parses `SwapTotal` and `SwapFree`; `Sample`
+- [x] **Uptime.** From `/proc/uptime`. Beszel stores it; we do not.
+- [x] **Swap.** `MemInfo` already parses `SwapTotal` and `SwapFree`; `Sample`
       simply never carried them.
-- [ ] **CPU breakdown.** We compute busy% from user/system/iowait and then
+- [x] **CPU breakdown.** We compute busy% from user/system/iowait and then
       discard the split. Showing iowait separately is genuinely diagnostic:
       "the CPU is not busy, it is waiting on disk" is a different problem with
       a different fix.
 - [ ] **All temperature sensors**, not only the CPU. We rank sensors and keep
-      one; dove also reports NVMe, chipset and GPU.
+      one; dove also reports NVMe, chipset and GPU. Left undone: the ranking
+      exists and works, and a second sensor list is presentation rather than
+      collection.
 
-**Done when:** a host card can answer "what is this machine, how long has it
-been up, and is its disk about to fill".
+**Done.** Verified against dove: Ryzen 5950X, Debian 13, kernel 6.12, 9d 22h
+up, `/` at 8.4% against `df`'s 9%, swap 7.2%, and a user/system/iowait/steal
+split. Cost measured at **7.3 KB per frame — identical to before the phase**,
+because identity is read once and `df` every thirtieth frame.
 
 ---
 
