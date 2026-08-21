@@ -38,8 +38,7 @@ One persistent connection per host, streaming frames.
       same load took the Beszel agent 26 s to notice and 13 s to forget.
       See [evidence](evidence/beszel-cadence.md#follow-up-the-same-test-against-tuxtops-own-sampler).
 
-**Still open:** reconnect with backoff. A dropped connection currently ends the
-stream with a fault rather than retrying.
+Reconnect with backoff landed with the supervisor in Phase 2.
 
 ---
 
@@ -103,11 +102,39 @@ numerals — see [ADR-005](DECISIONS.md#adr-005--load-is-encoded-three-ways-at-o
 
 ---
 
-## Phase 6 — GPU and temperatures — **planned**
+## Phase 6 — GPU and temperatures — **half done**
 
-- `nvidia-smi --query-gpu=utilization.gpu,memory.used,power.draw --format=csv,noheader`
-- `/sys/class/hwmon/*/temp*_input`
-- Both optional additions to the sampler loop; absence is normal, not an error.
+- [x] **Temperatures.** `/sys/class/hwmon` read in the sampler loop, emitted as
+      pipe-delimited `TXT|driver|label|millidegrees` lines. Only known CPU
+      drivers are considered, ranked — an NVMe under load is routinely hotter
+      than the CPU, so "hottest sensor wins" names the wrong component with
+      total confidence. Verified against a real host: reports 31C where `Tctl`
+      reads 31C. A host with no sensor yields `None`, never a zero.
+- [ ] **GPU.** `nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total,power.draw
+      --format=csv,noheader,nounits`, appended to the same loop and absent
+      without error when the binary is missing. The `gpu` and `gpumem` metric
+      slots already exist and stay hidden until a host reports them.
+
+Absence is normal for both, not an error.
+
+---
+
+## Landed outside the phase list
+
+Work that arrived from design conversation rather than the plan:
+
+- **Metric registry** — host view and fleet view as the two slices of a
+  hosts x metrics matrix. Adding a metric is a table entry, not a renderer.
+  See [ARCHITECTURE.md](ARCHITECTURE.md#two-views-one-matrix).
+- **Fleet view** — one metric across every host, with log scaling over a
+  decade window for rates and absolute for percentages.
+- **Drag to reorder**, persisted in `hosts.toml`; sorting by name or by the
+  metric on screen.
+- **Block packing** — blocks sized to core count and packed, so a fleet of 19
+  fits one screen instead of scrolling.
+- **Metal surfaces and Fluent reveal highlight.**
+- **Theme-token checker** (`scripts/check-theme-tokens.py`), after the same
+  missing-token bug landed twice.
 
 ---
 
