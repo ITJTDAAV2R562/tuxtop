@@ -1,6 +1,6 @@
 # Spec — History plane (Phase 8)
 
-**Status:** draft, for discussion. No code yet.
+**Status:** settled. Ready to implement. No code yet.
 
 Metrics over time, not only in the moment. A third view alongside Hosts and
 Fleet, with charts over a scrubable window.
@@ -38,22 +38,25 @@ the next tier down.
 | T0 | 1 Hz | 1 hour | 3,600 | 4 B (raw) | 14.1 KB |
 | T1 | 10 s | 6 hours | 2,160 | 12 B (min/mean/max) | 25.3 KB |
 | T2 | 60 s | 24 hours | 1,440 | 12 B (min/mean/max) | 16.9 KB |
+| T3 | 5 min | 7 days | 2,016 | 12 B (min/mean/max) | 23.6 KB |
 
-**Measured against the real fleet** — 19 hosts, 148 cores, 8 scalar metrics:
+**Measured against the real fleet** — 19 hosts, 148 cores, 8 scalar metrics,
+with per-core carried through every tier:
 
 ```
-scalar series (19 x 8 = 152)   8.3 MB
-per-core          (148)        8.1 MB
-TOTAL                         16.5 MB
+scalar series (19 x 8 = 152)  11.9 MB
+per-core          (148)       11.5 MB
+TOTAL                         23.4 MB
 ```
 
-Keeping every 1 Hz sample for 24 h would be **99 MB**. The cascade is 6x
-smaller and, more importantly, bounded by construction: a series occupies
-56.2 KB whatever happens.
+Keeping every 1 Hz sample for 24 h would be **99 MB**, for a quarter of the
+span. A series occupies **79.9 KB, bounded by construction**, whatever
+happens.
 
-At 16.5 MB for the whole fleet, **memory is not a design constraint here**.
-The cap exists as a safety valve for a fleet ten times this size, not as a
-routine limit. That is worth saying plainly so the cap is not over-designed.
+At 23.4 MB the whole fleet costs less than a browser tab, so **memory is not a
+design constraint at this scale**. It becomes one around 100 hosts (~125 MB),
+which is what the cap is for. Worth stating plainly so the cap does not get
+over-designed for a limit nobody here will reach.
 
 ### Coarse tiers keep min and max, not just the mean
 
@@ -133,46 +136,54 @@ labour.
 
 ## UI
 
-The existing views stay exactly as they are. History is a third view.
+The existing views stay exactly as they are. History is a third view — but it
+does **not** have a default slice, because it inherits one.
 
-A time axis is a **third dimension** on the hosts x metrics matrix, so the
-history view has to pick a slice — the same orthogonal choice as before:
+### History inherits its slice from wherever you entered
 
-- **One host, many metrics** — CPU, memory, disk, network stacked over time.
-  This is the Task Manager shape.
-- **One metric, many hosts** — CPU across the fleet over time, lines
-  overlaid or small-multiples.
+A time axis is a third dimension on the hosts x metrics matrix, so the history
+view has to pick a slice. Rather than making that a control the user sets, it
+comes from context:
 
-Plus the per-core case from the Task Manager screenshot: **one host, one
-vector metric, a small chart per core**.
+| entered from | history shows |
+| --- | --- |
+| **Hosts** view, clicking a host | that host, many metrics — the Task Manager shape |
+| **Fleet** view, with a metric selected | that metric, every host |
+| **Fleet** view, clicking one host's block | that host, many metrics |
+| the History tab directly | whatever slice was last shown |
 
-Chart treatment reuses what already exists: min/max band as a translucent
-gradient fill, mean as a crisp line, the same accent tokens, the same
-three-band colouring where a metric is a percentage.
+The user is already looking at a host or a metric when they ask for history,
+so the slice they want is the one already on screen. Making them re-pick it
+would be asking a question the app can already answer.
+
+The slice remains **switchable once inside** — inheriting a default is not the
+same as being locked to it — but it should rarely need touching.
+
+### Window
+
+**Shared across every chart on screen.** Scrubbing one moves them all, which
+is the entire point when correlating a spike: seeing that the CPU jump and the
+disk jump are the same second is the question being asked. A per-chart window
+would make that comparison manual and error-prone.
+
+### Chart treatment
+
+Reuses what exists: min/max band as a translucent gradient fill, mean as a
+crisp line over it, the same accent tokens, and the same three-band colouring
+where a metric is a percentage.
+
+The per-core case gets the Task Manager shape — one small chart per core, in
+the same packed-block layout the fleet view already uses, so a 32-core host
+and a 2-core host stay comparable.
 
 ---
 
 ## Open questions
 
-1. **Per-core history at every tier, or only T0?** Full cascade costs 8.1 MB
-   and gives 24 h of per-core detail. T0-only costs 2 MB and gives one hour.
-   The Task Manager per-core view only ever shows 60 seconds, which suggests
-   an hour is already generous.
+1. **Cap units.** A memory budget in MB is honest and directly displayable;
+   a retention span in hours is easier to reason about. Leaning MB, shown
+   beside live usage, since the tiers already express the span.
 
-2. **Which slice does the history view default to?** One host with many
-   metrics is the familiar Task Manager shape; one metric across hosts is the
-   more useful thing for a fleet, and matches the Fleet view's logic.
-
-3. **A fourth tier — 5 min x 7 days, +6.9 MB?** Cheap, but "restart clears
-   it" means a week of history is unlikely to ever accumulate on a desktop app
-   that gets closed.
-
-4. **What is the cap actually expressed in?** A memory budget in MB is honest
-   and easy to display; a retention span in hours is easier to reason about.
-   Given 16.5 MB for a 19-host fleet, this may be a setting nobody ever
-   touches.
-
-5. **Should the window be shared across charts, or per chart?** A shared
-   window means scrubbing one chart moves them all, which is right for
-   correlating a spike across metrics — and is what the stock-chart model
-   implies.
+2. **Eviction order when the cap is hit.** Dropping the coarsest tier first
+   loses the most span for the least memory; dropping per-core first keeps
+   whole-host history intact. Probably per-core T3 first, then T3, then T2.

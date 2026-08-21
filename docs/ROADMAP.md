@@ -121,51 +121,81 @@ Absence is normal for both, not an error.
 
 ---
 
-## Phase 7 — Configurable sample interval — **next**
+## Phase 7 — Configurable sample interval, with a live traffic meter — **next**
 
-**Goal:** the interval stops being hardcoded at 1 Hz.
+**Goal:** the interval stops being hardcoded at 1 Hz, and the app shows what
+its own sampling costs.
 
-Measured across the live fleet, 19 hosts at 1 Hz is **132 KB/s, 10.8 GB/day**
-— see [evidence/sampling-cost.md](evidence/sampling-cost.md). That is not a
-reason to sample more slowly by default; 1 Hz is the entire point of the fast
-plane. It is a reason for the interval to be a choice.
+### The interval
 
-- A global interval in settings, persisted alongside the host list.
-- A per-host override: 1 Hz on the box you are watching, 10 s on the twelve
-  you only want to notice going down.
-- Changing it must restart that host's sampler without disturbing the others.
-- Surface the cost in the UI, so the tool measures itself rather than
-  lecturing about measurement.
+- A global interval, persisted alongside the host list.
+- A per-host override: 1 Hz on the box being watched, 10 s on the twelve that
+  only need to be noticed going down.
+- Changing it restarts that host's sampler without disturbing the others.
+- The history cap setting lands here too, since Phase 8 depends on it.
 
-**Done when:** the interval can be changed per host from the window, survives
-a restart, and the fleet's current sampling cost is visible somewhere.
+### The traffic meter
+
+Not an estimate. `SshSampler` already reads every byte off the pipe, so it can
+count them: bytes received per host, and the size of the last frame.
+
+That turns the projection into arithmetic rather than guesswork. Frame size is
+effectively constant for a given host — it tracks disk and interface count,
+not load — so at interval *I* the rate is exactly `frame_bytes / I`. The
+settings panel can therefore show, for **the hosts actually configured**:
+
+```
+current            19 hosts, 1 s      132 KB/s     10.8 GB/day
+    at  2 s                            66 KB/s      5.4 GB/day
+    at  5 s                            26 KB/s      2.2 GB/day
+    at 10 s                            13 KB/s      1.1 GB/day
+    at 30 s                           4.4 KB/s     0.36 GB/day
+```
+
+Measured, per-fleet, updating as hosts are added or removed — rather than the
+table of extrapolations in
+[evidence/sampling-cost.md](evidence/sampling-cost.md), which was computed by
+hand against three hosts.
+
+Per-host rows matter too: a 32-core box with many disks costs roughly twice a
+4-core VM, so the meter shows where the traffic actually goes and which host
+is worth slowing down.
+
+**Design note.** A monitoring tool that has never measured itself is in a poor
+position to lecture anyone, and this is the first number the app reports about
+its own behaviour rather than someone else's. It should be exactly as honest
+as the rest: measured, attributed per host, and never rounded into a
+reassuring shape.
+
+**Done when:** the interval can be changed globally and per host from the
+window, survives a restart, and the settings panel shows measured current
+throughput plus projections at other intervals for the configured fleet.
 
 ---
 
-## Phase 8 — History plane — **needs a spec first**
+## Phase 8 — History plane — **specced, ready to build**
 
 **Goal:** metrics over time, not only in the moment. Charts over a window, and
 retention that survives a restart.
 
-Deliberately unspecified. It is the largest remaining piece and touches
-storage, retention policy, aggregation, and the chart layer at once — the
-kind of work that goes wrong when it is started rather than designed. Open
-questions before any code:
+Full spec: **[specs/history-plane.md](specs/history-plane.md)**. Settled:
 
-- **Where does history live?** Beszel already stores 1-minute history and the
-  hub is already running (ADR-002). Reading from it is far less work than
-  building our own store — but it only covers hosts that run a Beszel agent,
-  and only at 1-minute resolution. Our own store would cover every host at
-  full resolution and duplicate something that exists.
-- **What resolution, for how long?** 1 Hz for an hour is 3,600 points per
-  metric per host; across 19 hosts and 8 metrics that is not free. Rolling
-  aggregation is the usual answer, and is exactly what Beszel already does.
-- **In-memory or on disk?** The app currently keeps a 60-point ring buffer per
-  host and nothing survives a restart.
-- **What does the UI become?** A time axis is a third dimension on the
-  hosts x metrics matrix, and the fleet view has no obvious place for it.
+- **Our own store, memory only.** A restart starts clean, like Task Manager.
+  History is low-value data; losing it costs nothing, which removes
+  persistence, durability and migration from the design entirely.
+- **Four-tier cascade** — 1 Hz/1 h, 10 s/6 h, 60 s/24 h, 5 min/7 days. 23.4 MB
+  for the whole fleet, bounded by construction at 79.9 KB per series.
+- **Coarse tiers keep min/mean/max**, never just the mean. A 60 s bucket
+  averaging a 100% spike down to 7% is the exact failure this project exists
+  to prevent — and the min/max band is where the translucent fill goes.
+- **Stored in Rust**, queried with a window and a point budget, so continuous
+  zoom crosses tiers invisibly and needs no preset buttons.
+- **History inherits its slice** from wherever it was entered: from a host,
+  one host and many metrics; from the fleet, one metric and many hosts.
+- **Beszel drops to optional enrichment** beyond 24 h, superseding its role as
+  the slow plane in ADR-002.
 
-This phase should produce a written spec before an implementation.
+
 
 ---
 
