@@ -89,3 +89,44 @@ fn every_core_lands_in_range() {
         assert!((0.0..=100.0).contains(p), "cpu{i} = {p}, outside 0..=100");
     }
 }
+
+/// Real process output from dove, captured from the command this crate
+/// generates. Locks the wire format against the shell that produces it: a
+/// change to either that breaks the other should fail here rather than in the
+/// window.
+#[test]
+fn parses_a_real_process_frame() {
+    use tuxtop_core::procs::parse_processes;
+
+    const PROCS: &str = include_str!("fixtures/dove-procs.txt");
+    let procs = parse_processes("dove", PROCS);
+
+    assert!(!procs.is_empty(), "dove reports processes");
+    assert!(procs.iter().all(|p| p.host == "dove"));
+
+    // Percent of the whole box: no single process may exceed 100%, which is
+    // exactly what the other convention would allow on a 32-core host.
+    for p in &procs {
+        assert!(
+            (0.0..=100.0).contains(&p.cpu_pct),
+            "{} at {}% is outside percent-of-box",
+            p.comm,
+            p.cpu_pct
+        );
+    }
+
+    // Users resolved on the far side, not shipped as bare uids.
+    assert!(
+        procs.iter().any(|p| p.user.parse::<u32>().is_err()),
+        "expected at least one resolved user name, got {:?}",
+        procs.iter().map(|p| &p.user).collect::<Vec<_>>()
+    );
+
+    // The union of both rankings means an idle box still returns a useful
+    // list: CPU alone would return almost nothing.
+    assert!(
+        procs.len() >= 5,
+        "idle hosts must still list processes, got {}",
+        procs.len()
+    );
+}

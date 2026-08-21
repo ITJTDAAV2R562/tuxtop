@@ -18,6 +18,7 @@ pub mod history;
 pub mod hostlist;
 pub mod model;
 pub mod proc;
+pub mod procs;
 pub mod sampler;
 pub mod traffic;
 pub mod transport;
