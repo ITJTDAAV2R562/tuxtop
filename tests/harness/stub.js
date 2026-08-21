@@ -64,27 +64,6 @@
           return structuredClone(hosts);
         }
         if (cmd === 'query_history') return invokeHistory(args);
-        if (false) {
-          // Shaped like the real store: a min/max band around a mean, with
-          // occasional spikes so the band has something to show.
-          const { metric, fromSecsAgo, maxPoints } = args;
-          const now = Math.floor(Date.now() / 1000);
-          const n = Math.min(maxPoints || 200, 240);
-          const pct = ['cpu','mem','temp','gpu','gpumem'].includes(metric);
-          const load = metric === 'load';
-          const base = load ? 0.6 : pct ? 18 : 4e6;
-          return Array.from({ length: n }, (_, i) => {
-            const wob = Math.sin(i / 9) * (load ? 0.3 : pct ? 9 : 1.6e6);
-            const mean = Math.max(0, base + wob + Math.random() * (load ? 0.2 : pct ? 5 : 8e5));
-            const spike = (i % 37 === 0) ? (load ? 2.5 : pct ? 60 : 9e6) : 0;
-            return {
-              t: now - fromSecsAgo + Math.round(i * fromSecsAgo / n),
-              min: Math.max(0, mean * 0.7),
-              mean,
-              max: pct ? Math.min(100, mean * 1.25 + spike) : mean * 1.25 + spike,
-            };
-          });
-        }
         if (cmd === 'query_history_many') {
           const out = {};
           for (const m of args.metrics) {

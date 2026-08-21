@@ -818,3 +818,32 @@ body[data-bands="off"] .legend span:not(:last-child){display:none}
   display:flex;flex-direction:column;max-width:100%;flex-shrink:0;
 }
 .cores-hist.packed .core-charts{justify-content:start}
+
+/* ============ reveal on the history panels ============ */
+/* Same treatment as the cards: a broad wash under the cursor, a rim light
+   tracing the edge, and content above both. */
+.chart, .cores-hist, .core-chart{position:relative}
+
+.chart::after, .cores-hist::after, .core-chart::after{
+  content:"";position:absolute;inset:0;z-index:1;border-radius:inherit;
+  pointer-events:none;opacity:0;transition:opacity .28s ease;
+  background:radial-gradient(circle 460px at var(--mx,50%) var(--my,50%),
+    var(--reveal-face) 0%,
+    color-mix(in srgb,var(--reveal-face) 45%,transparent) 38%,
+    transparent 88%);
+}
+.chart:hover::after, .cores-hist:hover::after, .core-chart:hover::after{opacity:1}
+.chart:hover .reveal-edge, .cores-hist:hover .reveal-edge{opacity:1}
+
+/* A small chart gets a tighter light; the card radius would swamp it. */
+.core-chart::after{
+  background:radial-gradient(circle 150px at var(--mx,50%) var(--my,50%),
+    color-mix(in srgb,var(--reveal-face) 160%,transparent) 0%,
+    transparent 82%);
+}
+.core-chart:hover{border-color:var(--stroke-hi)}
+
+/* Content above the glow, or the wash paints over the numbers and the line. */
+.chart > .chart-head, .chart > canvas,
+.cores-hist > .cores-hist-head, .cores-hist > .core-charts,
+.core-chart > canvas{position:relative;z-index:2}

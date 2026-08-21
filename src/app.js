@@ -1040,7 +1040,8 @@
         <span class="chart-peak" data-peak></span>
         <span class="chart-latest" data-latest></span>
       </div>
-      <canvas></canvas>`;
+      <canvas></canvas>
+      <span class="reveal-edge" aria-hidden="true"></span>`;
     return el;
   }
 
@@ -1060,7 +1061,8 @@
         <span class="ch-count">${h.cores}c</span>
         <span class="chart-peak" data-cores-peak></span>
       </div>
-      <div class="core-charts"></div>`;
+      <div class="core-charts"></div>
+      <span class="reveal-edge" aria-hidden="true"></span>`;
 
     const wrap = sec.querySelector('.core-charts');
     if (packed) {
@@ -1522,7 +1524,10 @@
   // Reveal highlight. Windows' own Fluent surfaces light up under the
   // cursor; matching that makes the app read as more native, not less.
   grid.addEventListener('pointermove', e => {
-    const panel = e.target.closest('.card, .hostblock');
+    // Every panel type, not just the live views. The reveal was scoped to
+    // .card and .hostblock, so History - which uses .chart, .cores-hist and
+    // .core-chart - had no lighting at all.
+    const panel = e.target.closest('.card, .hostblock, .chart, .cores-hist, .core-chart');
     if (!panel) return;
     const r = panel.getBoundingClientRect();
     panel.style.setProperty('--mx', (e.clientX - r.left) + 'px');
