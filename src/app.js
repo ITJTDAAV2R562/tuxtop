@@ -39,7 +39,7 @@
   // View preferences, remembered between launches.
   const PREFS = 'tuxtop.prefs';
   const prefs = Object.assign(
-    { view: 'hosts', sort: 'manual', metric: 'cores', slice: null },
+    { view: 'hosts', sort: 'manual', metric: 'cores', slice: null, procKernel: false },
     JSON.parse(localStorage.getItem(PREFS) || '{}')
   );
   const savePrefs = () => localStorage.setItem(PREFS, JSON.stringify(prefs));
@@ -539,9 +539,12 @@
 
   function build() {
     $('#histbar').hidden = prefs.view !== 'history';
+    $('#procbar').hidden = prefs.view !== 'procs';
+    if (prefs.view !== 'procs') { stopProcs(); grid.classList.remove('proc-mode'); }
     if (prefs.view === 'history') return buildHistory();
     stopHistoryTimer();
     grid.classList.remove('hist-mode');
+    if (prefs.view === 'procs') return buildProcs();
     if (prefs.view === 'all') return buildFleet();
     document.body.dataset.bands = 'on';
     grid.classList.remove('all-mode');
@@ -715,7 +718,7 @@
     if (frozen) return;   // a rebuild mid-drag would drop the dragged card
     // History redraws on its own cadence, not on every 1 Hz sample: refetching
     // a week of buckets once a second would be absurd.
-    if (prefs.view === 'history') return;
+    if (prefs.view === 'history' || prefs.view === 'procs') return;
     if (prefs.view === 'all') return paintFleet();
     const A = css('--accent'), MEM = css('--viz-mem'),
           DSK = css('--viz-disk'), NET = css('--viz-net'), GPU = css('--viz-gpu');
@@ -913,8 +916,11 @@
     $('#viewHosts').setAttribute('aria-pressed', String(v === 'hosts'));
     $('#viewAll').setAttribute('aria-pressed', String(v === 'all'));
     $('#viewHist').setAttribute('aria-pressed', String(v === 'history'));
+    $('#viewProcs').setAttribute('aria-pressed', String(v === 'procs'));
     $('#metricWrap').hidden = v !== 'all';
     $('#histWrap').hidden = v !== 'history';
+    // Card ordering means nothing to a process table, which sorts itself.
+    $('#sortSel').closest('.sortwrap').hidden = v === 'procs';
     build(); paint();
   }
 
@@ -927,6 +933,7 @@
   // The tab is contextual too: coming from the Fleet view means "this metric,
   // everywhere", which is the slice already on screen. From Hosts it keeps
   // whatever host was last shown.
+  $('#viewProcs').addEventListener('click', () => setView('procs'));
   $('#viewHist').addEventListener('click', () => {
     if (prefs.view === 'all') {
       // Vector metrics are valid in history now - "CPU cores across the
@@ -948,8 +955,10 @@
   $('#viewHosts').setAttribute('aria-pressed', String(prefs.view === 'hosts'));
   $('#viewAll').setAttribute('aria-pressed', String(prefs.view === 'all'));
   $('#viewHist').setAttribute('aria-pressed', String(prefs.view === 'history'));
+  $('#viewProcs').setAttribute('aria-pressed', String(prefs.view === 'procs'));
   $('#metricWrap').hidden = prefs.view !== 'all';
   $('#histWrap').hidden = prefs.view !== 'history';
+  $('#sortSel').closest('.sortwrap').hidden = prefs.view === 'procs';
   $('#histbar').hidden = prefs.view !== 'history';
 
   // Tile sizing in all-cores mode depends on window width.
@@ -1450,6 +1459,116 @@
       : { mode: 'host', host: ordered()[0]?.name };
     savePrefs();
     build();
+  });
+
+  // ---- processes ---------------------------------------------------------
+  //
+  // One list, every host, sorted by CPU then memory. The question this answers
+  // is "what is the busiest process anywhere", which needs no host chosen
+  // first - that is the part Task Manager cannot do.
+
+  const PROC_REFRESH_MS = 2000;
+  let procTimer = null, procBusy = false;
+
+  function startProcs() {
+    if (LIVE) TAURI.core.invoke('set_processes_enabled', { enabled: true })
+      .catch(err => showError(String(err)));
+    clearInterval(procTimer);
+    procTimer = setInterval(tickProcs, PROC_REFRESH_MS);
+  }
+
+  function stopProcs() {
+    clearInterval(procTimer);
+    procTimer = null;
+    // Sampling costs a second of remote wall clock per host per cycle, so a
+    // view nobody is looking at must cost nothing at all.
+    if (LIVE) TAURI.core.invoke('set_processes_enabled', { enabled: false }).catch(() => {});
+  }
+
+  async function tickProcs() {
+    if (procBusy || prefs.view !== 'procs' || document.hidden) return;
+    procBusy = true;
+    try { await refreshProcs(); } catch (e) { console.error('processes', e); }
+    finally { procBusy = false; }
+  }
+
+  function buildProcs() {
+    startProcs();
+    grid.innerHTML = '';
+    grid.classList.remove('all-mode', 'hist-mode');
+    grid.classList.add('proc-mode');
+    $('#procbar').hidden = false;
+    $('#procKernel').checked = !!prefs.procKernel;
+
+    grid.innerHTML = `
+      <table class="proctable">
+        <thead><tr>
+          <th>Host</th><th class="num">CPU</th><th class="num">Memory</th>
+          <th class="num">PID</th><th>User</th><th class="cmd">Command</th>
+        </tr></thead>
+        <tbody data-proc-rows></tbody>
+      </table>`;
+    refreshProcs();
+  }
+
+  async function refreshProcs() {
+    if (prefs.view !== 'procs') return;
+    let list = [];
+    if (LIVE) {
+      try { list = await TAURI.core.invoke('process_list'); } catch { list = []; }
+    } else {
+      list = simProcs();
+    }
+
+    if (!prefs.procKernel) list = list.filter(p => !p.kernel);
+
+    const body = $('[data-proc-rows]');
+    if (!body) return;
+
+    if (!list.length) {
+      body.innerHTML = `<tr><td colspan="6">Sampling — first results take a
+        few seconds, since each host measures CPU over a one-second window.</td></tr>`;
+      $('[data-proc-note]').textContent = '';
+      return;
+    }
+
+    body.innerHTML = list.map(p => `
+      <tr class="${p.kernel ? 'kernel' : ''}">
+        <td class="host">${esc(p.host)}</td>
+        <td class="num" data-band="${band(p.cpu_pct)}">${p.cpu_pct.toFixed(1)}%</td>
+        <td class="num">${fmtKb(p.rss_kb)}</td>
+        <td class="num">${p.pid}</td>
+        <td>${esc(p.user)}</td>
+        <td class="cmd">${esc(p.comm)}</td>
+      </tr>`).join('');
+
+    const hosts_seen = new Set(list.map(p => p.host)).size;
+    // Saying which convention is in use matters: top would call the same
+    // process 3200% on a 32-core box.
+    $('[data-proc-note]').textContent =
+      `${list.length} processes across ${hosts_seen} host${hosts_seen === 1 ? '' : 's'} ` +
+      `\u00b7 CPU is % of the whole machine`;
+  }
+
+  function fmtKb(kb) {
+    return kb >= 1048576 ? `${(kb / 1048576).toFixed(1)} GB`
+         : kb >= 1024 ? `${(kb / 1024).toFixed(0)} MB`
+         : `${kb} KB`;
+  }
+
+  /// Browser-mode processes, so the page still demonstrates itself.
+  function simProcs() {
+    const names = ['tailscaled', 'searchd', 'python', 'node', 'postgres',
+                   'kworker/3:1', 'dockerd', 'nginx', 'redis-server', 'java'];
+    return hosts.flatMap(h => names.slice(0, 6).map((n, i) => ({
+      host: h.name, pid: 1000 + i * 37, cpu_pct: Math.max(0, 40 - i * 7 + Math.random() * 6),
+      rss_kb: (900 - i * 120) * 1024, user: i % 3 ? 'root' : 'sam', comm: n,
+      kernel: n.startsWith('kworker'),
+    }))).sort((a, b) => b.cpu_pct - a.cpu_pct || b.rss_kb - a.rss_kb);
+  }
+
+  $('#procKernel').addEventListener('change', e => {
+    prefs.procKernel = e.target.checked; savePrefs(); refreshProcs();
   });
 
   // ---- settings ----------------------------------------------------------

@@ -47,6 +47,7 @@
       <button id="viewHosts" aria-pressed="true">Hosts</button>
       <button id="viewAll" aria-pressed="false">Fleet</button>
       <button id="viewHist" aria-pressed="false">History</button>
+      <button id="viewProcs" aria-pressed="false">Processes</button>
     </div>
     <label class="sortwrap" id="metricWrap" hidden>
       <span>Metric</span>
@@ -83,6 +84,16 @@
       <input type="range" id="histWindow" min="0" max="1000" value="450"
              aria-label="History window">
     </label>
+  </div>
+
+  <div class="histbar" id="procbar" hidden>
+    <span class="hist-title" data-proc-title>Fleet processes</span>
+    <label class="checkinline">
+      <input type="checkbox" id="procKernel">
+      <span>Show kernel threads</span>
+    </label>
+    <span class="tb-grow"></span>
+    <span class="proc-note" data-proc-note></span>
   </div>
 
   <div class="grid" id="grid"></div>

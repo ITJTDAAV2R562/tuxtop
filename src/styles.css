@@ -860,3 +860,31 @@ body[data-bands="off"] .legend span:not(:last-child){display:none}
 /* Disk capacity carries the load bands: a full disk is a red condition. */
 .m .v[data-band="warn"]{color:var(--warn)}
 .m .v[data-band="crit"]{color:var(--crit)}
+
+/* ============ processes ============ */
+.checkinline{display:flex;align-items:center;gap:6px;cursor:pointer;font-size:11.5px;color:var(--text-2)}
+.checkinline input{accent-color:var(--accent);cursor:pointer}
+.proc-note{font-size:11px;color:var(--text-3);font-family:var(--font-mono)}
+
+.grid.proc-mode{grid-template-columns:1fr;padding:14px}
+.proctable{width:100%;border-collapse:collapse;font-size:12px}
+.proctable thead th{
+  position:sticky;top:0;z-index:2;
+  text-align:left;padding:6px 10px;
+  font-size:10px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;
+  color:var(--text-3);background:var(--surface);
+  border-bottom:1px solid var(--stroke-hi);
+}
+.proctable td{
+  padding:5px 10px;font-family:var(--font-mono);
+  font-variant-numeric:tabular-nums;color:var(--text-2);
+  border-bottom:1px solid var(--stroke);
+}
+.proctable tbody tr:hover td{background:var(--surface-sunk)}
+.proctable .num{text-align:right}
+.proctable .host{color:var(--accent-ink);font-weight:600}
+.proctable .cmd{color:var(--text);width:40%}
+.proctable tr.kernel td{opacity:.55;font-style:italic}
+/* CPU carries the load bands, as everywhere else. */
+.proctable td[data-band="warn"]{color:var(--warn);font-weight:600}
+.proctable td[data-band="crit"]{color:var(--crit);font-weight:600}
