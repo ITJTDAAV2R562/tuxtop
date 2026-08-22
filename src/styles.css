@@ -1036,8 +1036,15 @@ body[data-bands="off"] .legend span:not(:last-child){display:none}
 }
 
 /* ============ host filter ============ */
-.hostfilterwrap{display:flex;align-items:center}
-.hostfilterwrap .procfilter{min-width:150px}
+/* Takes the slack when the toolbar has room and gives it back first when it
+   does not. Before this it was a fixed block, so on an 18-host toolbar it
+   pushed "Add host" onto a second row - the filter is the one control here
+   that is happy at any width, so it should be the one that flexes. */
+.hostfilterwrap{display:flex;align-items:center;flex:1 1 150px;min-width:104px;max-width:300px}
+.hostfilterwrap .procfilter{width:100%;min-width:0}
+/* Selects have intrinsic widths that resist shrinking; letting them give a
+   little keeps the row intact one breakpoint longer. */
+.toolbar .sortwrap select{min-width:0}
 
 /* How much is hidden.
    Loud in the Fleet view, because that is the one glanced at to confirm the

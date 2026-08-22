@@ -1521,6 +1521,26 @@
   /// bigger than a core on a 32-core box.
   const CORE_CHART_W = 126;
 
+  /// How many core charts to put in a row.
+  ///
+  /// "As many as fit" lands on whatever the window happens to allow - 9 on a
+  /// typical screen - and 9 divides none of the counts real machines have.
+  /// Core counts are 2, 4, 8, 16, 24, 32, so rows of 8 leave a clean
+  /// rectangle where rows of 9 leave a ragged tail: 32 cores is 9+9+9+5
+  /// against 8+8+8+8.
+  ///
+  /// Small hosts keep a single row - a 6-core box reads better as one row of
+  /// six than as 4+2 - and above that the count snaps down to a multiple of
+  /// eight, so a wide window gives 16 per row rather than 19.
+  function niceCols(n, maxCols) {
+    const fit = Math.max(1, Math.min(n || 1, maxCols));
+    if (n <= 8 && n <= maxCols) return n;
+    if (fit >= 8) return Math.floor(fit / 8) * 8;
+    if (fit >= 4) return 4;
+    if (fit >= 2) return 2;
+    return 1;
+  }
+
   function coreChartsEl(h, packed) {
     const sec = document.createElement('section');
     sec.className = 'cores-hist' + (packed ? ' packed' : '');
@@ -1541,7 +1561,7 @@
       const GAP = 5, CHROME = 26;
       const avail = Math.max(240, grid.clientWidth - 28);
       const maxCols = Math.max(1, Math.floor((avail - CHROME + GAP) / (CORE_CHART_W + GAP)));
-      const cols = Math.max(1, Math.min(h.cores, maxCols));
+      const cols = niceCols(h.cores, maxCols);
       wrap.style.gridTemplateColumns = `repeat(${cols}, ${CORE_CHART_W}px)`;
       const natural = cols * CORE_CHART_W + (cols - 1) * GAP + CHROME;
       if (h.cores >= maxCols) {
@@ -1552,6 +1572,16 @@
         sec.style.maxWidth = Math.round(natural * 1.6) + 'px';
       }
     }
+    if (!packed) {
+      // Host mode stretches its charts to fill, but the column *count* should
+      // still snap - auto-fill picks the same arbitrary 9 the packed layout
+      // used to.
+      const GAP = 5, MIN_W = 132;
+      const avail = Math.max(240, grid.clientWidth - 40);
+      const maxCols = Math.max(1, Math.floor((avail + GAP) / (MIN_W + GAP)));
+      wrap.style.gridTemplateColumns = `repeat(${niceCols(h.cores, maxCols)}, minmax(0, 1fr))`;
+    }
+
     for (let i = 0; i < h.cores; i++) {
       const el = document.createElement('div');
       el.className = 'core-chart';
