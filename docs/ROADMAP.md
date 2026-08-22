@@ -289,7 +289,7 @@ and a runaway process are the same question asked twice.
 
 ---
 
-## Phase 11 — Grouping hosts into clusters — **specced, next**
+## Phase 11 — Grouping hosts into clusters — **in progress**
 
 Group hosts by role, site or cluster and aggregate per group, so a fleet of
 nineteen reads as five things.
@@ -313,6 +313,20 @@ listed here previously are answered there; the short version:
 This is the first feature that shows a number *Tuxtop computed* rather than one
 a machine reported, which is a different risk class from everything built so
 far — hence a spec before code, as Phase 8 had.
+
+- [x] **11a — aggregation core.** `src/agg.js`, 14 tests under `node --test`,
+      every metric in the registry declaring its rule, and
+      `scripts/check-agg-declared.py` failing the commit if one does not.
+      Both ADR-008 rules verified by mutation, not just by passing.
+- [ ] **11b — group blocks in the UI.** Collapsible, severity from the worst
+      member, spread whiskers, composition stated in the header.
+- [ ] **11c — group history**, aggregated on read, marking spans where a
+      member was silent.
+
+It lives in JS rather than Rust because the frontend must also run standalone
+as a browser mockup with no Tauri backend, so the rules would otherwise need
+two implementations — and two implementations of ADR-008 is one more than can
+be kept honest.
 
 ---
 

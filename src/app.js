@@ -177,6 +177,7 @@
   const METRICS = {
     cores: {
       label: 'CPU cores', shape: 'vector', scale: 'absolute', max: 100,
+      agg: 'concat',
       vector: h => h.core || [],
       scalar: h => last(h.hist.cpu),
       fmt: v => Math.round(v) + '%',
@@ -184,11 +185,14 @@
     },
     cpu: {
       label: 'CPU', shape: 'scalar', scale: 'absolute', max: 100,
+      // Busy core-time over total core-time. A 32-core host is not one vote.
+      agg: 'ratio', parts: h => [last(h.hist.cpu) * (h.cores || 0), h.cores || 0],
       scalar: h => last(h.hist.cpu),
       fmt: v => Math.round(v) + '%',
     },
     mem: {
       label: 'Memory', shape: 'scalar', scale: 'absolute', max: 100,
+      agg: 'ratio', parts: h => [(h.ram || 0) * 100, h.ramGB || 0],
       scalar: h => (h.ramGB ? h.ram / h.ramGB * 100 : 0),
       fmt: v => Math.round(v) + '%',
       sub: h => `${gb(h.ram)} / ${gb(h.ramGB)} GB`,
@@ -198,12 +202,16 @@
       // scale. 100C is the conventional throttle point, so the bar reads as
       // "fraction of the way to too hot".
       label: 'CPU temp', shape: 'scalar', scale: 'absolute', max: 100,
+      // Max, never a mean: four cool hosts must not cool a throttling one.
+      agg: 'max',
       scalar: h => (h.temp ?? null),
       fmt: v => Math.round(v) + '\u00b0C',
       has: h => h.temp !== null && h.temp !== undefined,
     },
     fs: {
       label: 'Disk usage', shape: 'scalar', scale: 'absolute', max: 100,
+      // One full disk is the problem, not the group's mean fullness.
+      agg: 'max',
       scalar: h => fsPct(h),
       fmt: v => Math.round(v) + '%',
       sub: h => {
@@ -214,6 +222,7 @@
     },
     swap: {
       label: 'Swap', shape: 'scalar', scale: 'absolute', max: 100,
+      agg: 'max',
       scalar: h => (h.swapTotal ? h.swapUsed / h.swapTotal * 100 : null),
       fmt: v => Math.round(v) + '%',
       sub: h => (h.swapTotal ? `${gb(h.swapUsed / 1048576)}/${gb(h.swapTotal / 1048576)}G` : ''),
@@ -222,14 +231,18 @@
     },
     disk: {
       label: 'Disk I/O', shape: 'scalar', scale: 'log', floor: 1e6, decades: 4,
+      agg: 'sum',
       scalar: h => h.dio || 0, fmt: bps,
     },
     net: {
       label: 'Network', shape: 'scalar', scale: 'log', floor: 1e6, decades: 4,
+      agg: 'sum',
       scalar: h => h.net || 0, fmt: bps,
     },
     load: {
       label: 'Load avg', shape: 'scalar', scale: 'log', floor: 1, decades: 3,
+      // Runnable processes add. Log scale already carries the magnitude.
+      agg: 'sum',
       scalar: h => (h.load ? h.load[0] : 0), fmt: v => v.toFixed(2),
     },
     // GPU needs nvidia-smi in the sampler loop, which is Phase 6. Until a
@@ -238,11 +251,14 @@
     // confidently wrong number, which is the one thing this app must not do.
     gpu: {
       label: 'GPU load', shape: 'scalar', scale: 'absolute', max: 100,
+      // Weighted by GPU count, which is one per host today.
+      agg: 'ratio', parts: h => [(h.gpu ? h.gpuU || 0 : 0), 1],
       scalar: h => (h.gpu ? h.gpuU || 0 : null), fmt: v => Math.round(v) + '%',
       has: h => !!h.gpu,
     },
     gpumem: {
       label: 'GPU memory', shape: 'scalar', scale: 'absolute', max: 100,
+      agg: 'ratio', parts: h => [(h.gpuUsed || 0) * 100, h.gpuTotal || 0],
       scalar: h => (h.gpu && h.gpuTotal ? h.gpuUsed / h.gpuTotal * 100 : null),
       fmt: v => Math.round(v) + '%',
       sub: h => (h.gpuTotal ? `${Math.round(h.gpuUsed)} / ${Math.round(h.gpuTotal)} MB` : ''),

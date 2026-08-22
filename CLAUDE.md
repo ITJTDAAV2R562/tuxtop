@@ -122,14 +122,27 @@ dark only is unverified.
 cargo test        # 136 tests, no GUI toolchain needed, runs anywhere
 cargo clippy --all-targets
 cargo fmt
+node --test 'tests/*.test.js'           # group aggregation rules (ADR-008)
 python3 scripts/check-theme-tokens.py   # CSS tokens in all three theme states
+python3 scripts/check-agg-declared.py   # every metric declares how it aggregates
 ```
 
 **Tests are the memory this project does not otherwise have.** Each test name
 states the invariant it protects — `iowait_counts_as_idle`,
-`partitions_are_not_double_counted`, `identical_samples_report_zero_not_nan`.
-Write names that way: a future session should learn the rule from the failure
-message alone.
+`partitions_are_not_double_counted`, `identical_samples_report_zero_not_nan`,
+`mean_of_ratios_is_not_the_group_percentage`. Write names that way: a future
+session should learn the rule from the failure message alone.
+
+**JS tests use node's built-in runner** (`node --test`), which needs no npm,
+no package.json and no bundler — matching how the frontend is already built.
+Pure logic that can produce a wrong number belongs in a UMD module beside
+`src/agg.js` and gets tested there, not left to E2E.
+
+**When a rule matters, check that breaking it fails the test.** A test written
+against already-correct code can pass for the wrong reason. Both aggregation
+rules in ADR-008 were verified by mutation: turning the ratio into a mean, and
+taking severity from the aggregate, each failed exactly the tests named after
+those rules.
 
 `crates/tuxtop-core/tests/real_host.rs` checks parsing against captured
 `/proc/stat` from a real 32-core host and cross-checks the computed percentage
