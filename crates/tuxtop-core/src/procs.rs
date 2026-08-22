@@ -4,6 +4,8 @@
 //! wire: a 479-process box is 85 KB of raw `/proc/*/stat` and about 800 bytes
 //! once ranked. See `docs/specs/process-list.md`.
 
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 
 /// One process, as the UI sees it.
@@ -19,11 +21,23 @@ pub struct ProcInfo {
     pub user: String,
     /// Truncated to 15 characters by the kernel.
     pub comm: String,
+    /// Full command line, truncated remotely. Empty when the process exited
+    /// between ranking and reading it, or for a kernel thread, which has none.
+    pub cmd: String,
     /// Kernel threads dominate a list sorted by tiny deltas on an idle fleet.
     /// Flagged rather than dropped, so the view can de-emphasise them without
     /// pretending they are absent.
     pub kernel: bool,
 }
+
+/// How much of a command line crosses the wire, in characters.
+///
+/// Truncated on the far side rather than here, so the bytes are never spent.
+/// Java and Chrome routinely produce multi-kilobyte command lines; at twenty
+/// processes a host that would dominate a frame that is otherwise ~650 bytes.
+/// Long enough to carry the script or jar that identifies the process, which
+/// is the whole reason for shipping it.
+pub const CMD_MAX_CHARS: usize = 200;
 
 /// The remote command: snapshot, wait, snapshot, delta, sort, emit the top N.
 ///
@@ -31,6 +45,7 @@ pub struct ProcInfo {
 /// live in shell variables, so the "nothing but reads" property holds.
 pub fn process_command(top_n: usize, window_ms: u32) -> String {
     let secs = (window_ms as f64 / 1000.0).max(0.2);
+    let cmd_chars = CMD_MAX_CHARS;
     // Fields from /proc/[pid]/stat: 1 pid, 22 starttime, 14+15 cpu jiffies,
     // 24 rss in pages. Taking rss from the same snapshot avoids reading
     // /proc/[pid]/status for all 479 processes merely to rank them.
@@ -62,6 +77,8 @@ pub fn process_command(top_n: usize, window_ms: u32) -> String {
              u=$(awk '/^Uid:/{{print $2; exit}}' /proc/$p/status 2>/dev/null); \
              n=$(awk -F: -v U=\"$u\" '$3==U{{print $1; exit}}' /etc/passwd 2>/dev/null); \
              echo \"TXP|$p|$d|$(( ${{r:-0}} * PG / 1024 ))|${{n:-$u}}|${{c:-?}}\"; \
+             l=$(tr '\\0' ' ' < /proc/$p/cmdline 2>/dev/null | cut -c1-{cmd_chars}); \
+             [ -n \"$l\" ] && echo \"TXC|$p|$l\"; \
            done"
     )
 }
@@ -72,7 +89,14 @@ pub fn process_command(top_n: usize, window_ms: u32) -> String {
 /// ```text
 /// TXPT|total_jiffy_delta|window_ms|page_size
 /// TXP|pid|jiffy_delta|rss_kb|user|comm
+/// TXC|pid|full command line
 /// ```
+///
+/// The command line rides on its own line rather than as another `TXP` field
+/// because both it and `comm` may contain a pipe, and only one of them can be
+/// the field that rejoins the tail. Keyed by pid, so an absent `TXC` - a
+/// kernel thread, or a process that exited mid-sample - simply leaves the
+/// command empty instead of shifting every field after it.
 ///
 /// `host` is stamped on each row so a fleet-wide list can say *where*, which
 /// is half the answer.
@@ -94,6 +118,24 @@ pub fn parse_processes(host: &str, text: &str) -> Vec<ProcInfo> {
     // nothing rather than something plausible.
     if total_delta == 0 {
         return out;
+    }
+
+    // Command lines first, so each process can collect its own. A pid absent
+    // here keeps an empty command rather than borrowing a neighbour's.
+    let mut cmds: HashMap<u32, String> = HashMap::new();
+    for line in text.lines() {
+        let Some(rest) = line.strip_prefix("TXC|") else {
+            continue;
+        };
+        let Some((pid, cmd)) = rest.split_once('|') else {
+            continue;
+        };
+        let Ok(pid) = pid.trim().parse::<u32>() else {
+            continue;
+        };
+        // The command line is the whole tail: it may contain pipes, and
+        // splitting on them would truncate at the first argument that has one.
+        cmds.insert(pid, cmd.trim().to_string());
     }
 
     for line in text.lines() {
@@ -119,6 +161,7 @@ pub fn parse_processes(host: &str, text: &str) -> Vec<ProcInfo> {
             rss_kb,
             user: f[3].trim().to_string(),
             kernel: rss_kb == 0 && looks_like_kernel_thread(&comm),
+            cmd: cmds.remove(&pid).unwrap_or_default(),
             comm,
         });
     }
@@ -304,5 +347,71 @@ TXP|4|50|100|root|middling
     #[test]
     fn a_zero_interval_is_clamped_not_obeyed() {
         assert!(process_loop_command(20, 1000, 0).contains("sleep 1"));
+    }
+}
+
+#[cfg(test)]
+mod cmd_tests {
+    use super::*;
+
+    const FRAME: &str = "\
+TXPT|4000|1000|4096
+TXP|1024|320|199112|root|tailscaled
+TXC|1024|/usr/sbin/tailscaled --state=/var/lib/tailscale/tailscaled.state
+TXP|1141|64|840388|sam|python3
+TXC|1141|python3 /home/sam/app/manage.py runserver --noreload
+TXP|68|32|0|root|migration/8
+";
+
+    #[test]
+    fn a_command_line_is_matched_to_its_own_process() {
+        let p = parse_processes("dove", FRAME);
+        let py = p.iter().find(|x| x.pid == 1141).unwrap();
+        assert!(py.cmd.contains("manage.py runserver"), "got {:?}", py.cmd);
+        // The whole point: comm is capped at 15 characters, so five hosts
+        // running "python3" are indistinguishable without this.
+        assert_eq!(py.comm, "python3");
+    }
+
+    #[test]
+    fn a_process_with_no_command_line_does_not_borrow_a_neighbours() {
+        // Kernel threads have an empty /proc/pid/cmdline, so no TXC line is
+        // emitted at all. Shifting fields would attribute someone else's.
+        let p = parse_processes("dove", FRAME);
+        let k = p.iter().find(|x| x.pid == 68).unwrap();
+        assert_eq!(k.cmd, "");
+        assert!(k.kernel);
+    }
+
+    #[test]
+    fn a_command_line_containing_a_pipe_survives_intact() {
+        // Rides on its own line precisely so the tail can rejoin without
+        // competing with comm for that privilege.
+        let frame = "TXPT|4000|1000|4096\n\
+                     TXP|7|40|1024|sam|sh\n\
+                     TXC|7|/bin/sh -c cat /var/log/x | grep -i err | wc -l\n";
+        let p = parse_processes("dove", frame);
+        assert_eq!(p[0].cmd, "/bin/sh -c cat /var/log/x | grep -i err | wc -l");
+    }
+
+    #[test]
+    fn a_frame_from_before_command_lines_existed_still_parses() {
+        // The remote command is whatever the running app sent; a reconnect
+        // mid-upgrade can hand the parser an older frame.
+        let old = "TXPT|4000|1000|4096\nTXP|1024|320|199112|root|tailscaled\n";
+        let p = parse_processes("dove", old);
+        assert_eq!(p.len(), 1);
+        assert_eq!(p[0].cmd, "");
+    }
+
+    #[test]
+    fn the_remote_command_truncates_before_sending() {
+        // Truncation must happen on the far side or the bytes are already
+        // spent by the time we decide not to want them.
+        let cmd = process_command(20, 1000);
+        assert!(
+            cmd.contains(&format!("cut -c1-{CMD_MAX_CHARS}")),
+            "no remote truncation"
+        );
     }
 }

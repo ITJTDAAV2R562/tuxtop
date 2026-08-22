@@ -111,11 +111,27 @@
                          'kworker/3:1','dockerd','nginx','redis-server','java'];
           const out = [];
           for (const h of hosts) {
+            // Deliberately repetitive names: the real fleet has six
+            // processes all called Runner.Listener, and the command line is
+            // the only thing that tells them apart.
+            const CMDS = {
+              tailscaled: '/usr/sbin/tailscaled --state=/var/lib/tailscale/tailscaled.state --socket=/run/tailscale/tailscaled.sock',
+              searchd: '/usr/bin/searchd --config /etc/sphinxsearch/sphinx.conf --nodetach',
+              python: '/opt/venvs/transcribe/bin/python /home/sam/app/worker.py --queue default',
+              node: '/usr/bin/node /srv/app/dist/server.js --port 3000',
+              postgres: '/usr/lib/postgresql/16/bin/postgres -D /var/lib/postgresql/16/main',
+              dockerd: '/usr/bin/dockerd -H fd:// --containerd=/run/containerd/containerd.sock',
+              nginx: 'nginx: worker process',
+              'redis-server': '/usr/bin/redis-server 127.0.0.1:6379',
+              java: '/usr/lib/jvm/java-21/bin/java -Xmx4g -jar /srv/indexer/indexer.jar',
+            };
             names.forEach((n, i) => out.push({
               host: h.name, pid: 1000 + i * 37 + h.name.length,
               cpu_pct: Math.max(0, 45 - i * 5 + Math.random() * 6),
               rss_kb: (950 - i * 90) * 1024,
               user: i % 3 ? 'root' : 'sam', comm: n,
+              // Kernel threads have no command line at all.
+              cmd: n.startsWith('kworker') ? '' : `${CMDS[n] || n} --host=${h.name}`,
               kernel: n.startsWith('kworker'),
             }));
           }

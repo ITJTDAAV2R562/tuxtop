@@ -128,7 +128,15 @@ Full spec: **[specs/process-list.md](specs/process-list.md)**.
       against 85 KB for shipping `/proc/*/stat` raw.
 - [x] Own SSH channel at its own cadence, started only while the view is open.
 - [x] Kernel threads flagged and hidden behind a toggle.
-- [ ] **Per-host drill-down** with full command lines.
+- [x] **Full command lines**, as an expandable row in the fleet list rather
+      than a separate per-host view — that list already carries the host
+      column, the filter and the sort, and a second view would duplicate all
+      three. Measured on dove: 635 → 2,083 bytes per sample, about 290 B/s per
+      host at the 5 s process cadence against 7.3 KB/s for metrics. Truncated
+      remotely at 200 characters, because a multi-kilobyte Java command line
+      would otherwise dominate a frame. The filter searches the arguments too:
+      six processes all called `Runner.Listener` are only tellable apart by
+      theirs.
 - [ ] **Kill and renice** - see the spec on why the framing is mistakes, not
       privilege.
 - Per-process CPU from `/proc/[pid]/stat` `utime + stime` deltas over

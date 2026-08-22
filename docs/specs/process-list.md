@@ -10,7 +10,10 @@ from seeing a spike.
 
 ## Decisions taken
 
-- **Fleet-wide first**, per-host as the drill-down.
+- **Fleet-wide first**, with the command line as an expandable row rather
+  than a separate per-host view *(revised when built: the fleet list already
+  has the host column, filter and sort, so a second view would have
+  duplicated them for no gain)*.
 - **CPU as a percentage of the whole box**, not of one core.
 - **Read-only first.** No kill, no renice in this phase.
 
@@ -116,3 +119,26 @@ framing is not privilege — Tuxtop connects with the user's own SSH credentials
 and grants no capability they lack — but **mistakes**: killing PID 1 on the
 wrong host because two cards look alike. The work is confirmation and context,
 not a permission model.
+
+---
+
+## Why the command line rides on its own line
+
+The wire gained `TXC|pid|command line` beside `TXP`, rather than another field
+on `TXP`.
+
+Both `comm` and the command line may contain a pipe, and only one field can be
+the one that rejoins the tail. Keying by pid also means an absent command line
+— a kernel thread has none, and a process can exit between being ranked and
+being read — simply leaves the field empty instead of shifting every field
+after it.
+
+`comm` is capped at 15 characters by the kernel, so the two are genuinely
+different information rather than the same string abbreviated. On dove that is
+the difference between six rows reading `Runner.Listener` and six distinct
+GitHub Actions runners.
+
+**Cost, measured on dove (474 processes):** 635 → 2,083 bytes per sample.
+Truncated to `CMD_MAX_CHARS` (200) on the far side, so the bytes are never
+spent — Java and Chrome routinely produce multi-kilobyte command lines, and at
+twenty processes those alone would dwarf the rest of the frame.

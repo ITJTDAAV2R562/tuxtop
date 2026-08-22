@@ -1796,10 +1796,22 @@
     }, null);
   }
 
-  const fsPct = h => {
+  /// Percentage of the fullest mount, or null if the host reports none.
+  ///
+  /// A function declaration, not a `const` arrow, and deliberately so: the
+  /// metric registry closes over this and `availableMetrics()` runs during
+  /// startup, before this point in the file is reached. As a `const` it sat in
+  /// the temporal dead zone and threw `Cannot access 'fsPct' before
+  /// initialization` — which happened at module scope, so the *entire* UI came
+  /// up inert with one console line explaining it.
+  ///
+  /// It only fired when a host object already existed as the metric list was
+  /// first built, which is why it survived so long: with an empty fleet the
+  /// `.some()` never reaches `has`, and the bug hides.
+  function fsPct(h) {
     const f = fullestFs(h);
     return f && f.total_kb ? f.used_kb / f.total_kb * 100 : null;
-  };
+  }
 
   function humanUptime(secs) {
     if (secs == null) return '';
@@ -1940,9 +1952,20 @@
   /// reason.
   let procFilter = '';
 
+  /// Which rows are showing their command line, keyed by host:pid.
+  ///
+  /// Also transient, and keyed by pid rather than by row index because the
+  /// table re-sorts every few seconds - an index would expand whichever
+  /// process happened to land in that position next.
+  const procOpen = new Set();
+
   function matchesFilter(p, q) {
     if (!q) return true;
-    return `${p.host} ${p.user} ${p.comm} ${p.pid}`.toLowerCase().includes(q);
+    // The command line is included: it is where the distinguishing detail
+    // lives. Five processes all called "Runner.Listener" are only tellable
+    // apart by their arguments, so filtering on "pdr-3" has to reach them.
+    return `${p.host} ${p.user} ${p.comm} ${p.pid} ${p.cmd || ''}`
+      .toLowerCase().includes(q);
   }
 
   function sortProcs(list) {
@@ -1993,15 +2016,28 @@
       return;
     }
 
-    body.innerHTML = list.map(p => `
-      <tr class="${p.kernel ? 'kernel' : ''}">
+    body.innerHTML = list.map(p => {
+      const key = `${p.host}:${p.pid}`;
+      const open = procOpen.has(key);
+      // comm is capped at 15 characters by the kernel, so the short name and
+      // the command line are genuinely different information - the row shows
+      // the name, expanding shows what it actually is.
+      const detail = open ? `
+        <tr class="proc-detail">
+          <td colspan="6"><code>${esc(p.cmd || 'no command line — kernel threads have none')}</code></td>
+        </tr>` : '';
+      return `
+      <tr class="${p.kernel ? 'kernel' : ''}${p.cmd ? ' has-cmd' : ''}${open ? ' open' : ''}"
+          ${p.cmd ? `data-proc="${esc(key)}" tabindex="0" role="button"
+             aria-expanded="${open}" title="Show the full command line"` : ''}>
         <td class="host">${esc(p.host)}</td>
         <td class="num" data-band="${band(p.cpu_pct)}">${p.cpu_pct.toFixed(1)}%</td>
         <td class="num">${fmtKb(p.rss_kb)}</td>
         <td class="num">${p.pid}</td>
         <td>${esc(p.user)}</td>
         <td class="cmd">${esc(p.comm)}</td>
-      </tr>`).join('');
+      </tr>${detail}`;
+    }).join('');
 
     const hosts_seen = new Set(list.map(p => p.host)).size;
     // Saying which convention is in use matters: top would call the same
@@ -2029,6 +2065,26 @@
       rss_kb: (900 - i * 120) * 1024, user: i % 3 ? 'root' : 'sam', comm: n,
       kernel: n.startsWith('kworker'),
     }))).sort((a, b) => b.cpu_pct - a.cpu_pct || b.rss_kb - a.rss_kb);
+  }
+
+  // Delegated, because the table is rebuilt on every refresh.
+  grid.addEventListener('click', e => {
+    const row = e.target.closest('tr[data-proc]');
+    if (!row) return;
+    toggleProc(row.dataset.proc);
+  });
+  grid.addEventListener('keydown', e => {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    const row = e.target.closest('tr[data-proc]');
+    if (!row) return;
+    e.preventDefault();          // Space would otherwise scroll the table
+    toggleProc(row.dataset.proc);
+  });
+
+  function toggleProc(key) {
+    if (procOpen.has(key)) procOpen.delete(key);
+    else procOpen.add(key);
+    refreshProcs();
   }
 
   $('#procFilter').addEventListener('input', e => {

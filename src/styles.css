@@ -1003,3 +1003,34 @@ body[data-bands="off"] .legend span:not(:last-child){display:none}
   text-transform:uppercase;letter-spacing:.06em;color:var(--text-3);
   text-align:left;padding-bottom:4px;
 }
+
+/* ============ process command lines ============
+   `comm` is capped at 15 characters by the kernel, so the name in the table
+   and the command line behind it are different information, not the same
+   thing abbreviated. The row shows the name; expanding shows what it is. */
+.proctable tr.has-cmd{cursor:pointer}
+.proctable tr.has-cmd:hover{background:var(--surface-hi)}
+.proctable tr.has-cmd:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+.proctable tr.has-cmd .cmd::after{
+  content:"›";
+  display:inline-block;margin-left:6px;color:var(--text-3);
+  transition:transform .15s ease;
+}
+.proctable tr.has-cmd.open .cmd::after{transform:rotate(90deg)}
+@media (prefers-reduced-motion:reduce){.proctable tr.has-cmd .cmd::after{transition:none}}
+
+.proctable tr.proc-detail td{
+  padding:2px 12px 9px 12px;
+  border-bottom:1px solid var(--stroke);
+}
+.proctable tr.proc-detail code{
+  display:block;
+  font-family:var(--font-mono);font-size:11px;line-height:1.55;
+  color:var(--text-2);
+  background:var(--surface-sunk);
+  border:1px solid var(--stroke);border-radius:6px;
+  padding:6px 9px;
+  /* Long command lines wrap rather than widening the table: a horizontal
+     scrollbar on the whole process list to read one argument is a poor trade. */
+  overflow-wrap:anywhere;white-space:pre-wrap;
+}
