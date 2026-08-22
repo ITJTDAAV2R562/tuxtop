@@ -101,6 +101,7 @@ async fn main() -> ExitCode {
         port: 22,
         beszel_url: None,
         interval_secs: None,
+        group: None,
     };
 
     let (tx, mut rx) = mpsc::channel(16);

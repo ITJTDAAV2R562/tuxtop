@@ -903,3 +903,78 @@ body[data-bands="off"] .legend span:not(:last-child){display:none}
 .proctable thead th[aria-sort]{color:var(--accent-ink)}
 .proctable thead th .arrow{opacity:.85;font-size:9px;margin-left:3px}
 .proctable thead th:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+
+/* ============ groups ============
+   A group row shows an aggregate, which is a number no machine reported.
+   It therefore has to carry two things a host row does not: where its members
+   sit relative to each other, and how many of them answered. See ADR-008. */
+
+/* Disclosure control, shared by both fleet shapes. */
+.ftoggle{
+  display:grid;place-items:center;
+  width:20px;height:20px;padding:0;
+  background:none;border:0;border-radius:5px;cursor:pointer;color:var(--text-3);
+}
+.ftoggle:hover{background:var(--surface-hi);color:var(--text)}
+.ftoggle:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.chev{
+  width:0;height:0;
+  border-left:5px solid currentColor;
+  border-top:4px solid transparent;border-bottom:4px solid transparent;
+  transition:transform .18s ease;
+}
+.ftoggle[aria-expanded="true"] .chev{transform:rotate(90deg)}
+@media (prefers-reduced-motion:reduce){.chev{transition:none}}
+
+/* The group row itself: heavier than a host row, so the eye reads the
+   hierarchy without needing the indent to carry it alone. */
+.fbar.fgroup{background:var(--surface-hi)}
+.fbar.fgroup .fbar-name{font-weight:700;letter-spacing:.01em}
+.fbar.fgroup .fbar-val{font-weight:700}
+/* Beats the :nth-child(odd) striping, which would otherwise repaint some
+   group rows as ordinary ones depending on where they landed. */
+.fleetbars .fbar.fgroup:nth-child(odd){background:var(--surface-hi)}
+
+/* Members sit under their group, indented and quieter. */
+.fbar.member{margin-left:22px}
+.fbar.member .fbar-name{font-weight:400;color:var(--text-2)}
+
+/* The spread: where the members actually are. A bar showing only the
+   aggregate cannot tell a calm group from one tearing itself apart, so the
+   whisker spans min to max with a tick at each end. */
+.fbar-whisk{
+  position:absolute;top:0;bottom:0;z-index:2;pointer-events:auto;
+  border-left:2px solid var(--text-3);
+  border-right:2px solid var(--text-3);
+  background:color-mix(in srgb,var(--text-3) 12%,transparent);
+}
+.fbar-whisk::after{
+  content:"";position:absolute;top:50%;left:0;right:0;
+  border-top:1px dashed var(--text-3);opacity:.7;
+}
+/* A group not all of whose members answered says so in its sub-line; this
+   makes the row itself look provisional too. */
+.fbar.partial .fbar-val{color:var(--warn)}
+
+/* Vector view: the label above an expanded group's member blocks. */
+.ghead{
+  flex:1 1 100%;
+  display:flex;align-items:center;gap:8px;
+  margin:6px 2px 0;padding:2px 0;
+}
+.ghead-name{
+  font-family:var(--font-mono);font-size:13px;font-weight:700;color:var(--text);
+}
+.ghead-meta{font-family:var(--font-mono);font-size:11px;color:var(--text-3)}
+
+/* A collapsed group block holds several hosts' cores end to end. */
+.hostblock.gblock{border-color:var(--stroke-hi)}
+.hostblock.gblock .hb-head{gap:6px}
+.hostblock.gblock .hname{font-weight:700}
+
+/* "optional" marker on a dialog label. */
+.opt{
+  font-family:var(--font-mono);font-size:10px;font-weight:400;
+  color:var(--text-3);text-transform:uppercase;letter-spacing:.06em;
+  margin-left:6px;
+}

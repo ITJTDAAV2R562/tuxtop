@@ -31,6 +31,15 @@ pub struct HostConfig {
     /// watched, 10 s on the twelve that only need to be noticed going down.
     #[serde(default)]
     pub interval_secs: Option<u32>,
+    /// Which group this host belongs to, if any.
+    ///
+    /// One optional label rather than several, or a tree: both are widenings
+    /// a single label stays file-compatible with, and neither earns its
+    /// complexity until a host genuinely belongs in two places at once.
+    /// `None` means ungrouped, which renders exactly as a fleet with no
+    /// groups configured at all — never a synthetic "Other".
+    #[serde(default)]
+    pub group: Option<String>,
 }
 
 fn default_port() -> u16 {

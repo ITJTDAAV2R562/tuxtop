@@ -127,6 +127,7 @@ async fn main() -> ExitCode {
             port: 22,
             beszel_url: None,
             interval_secs: None,
+            group: None,
         };
         state.insert(cfg.name.clone(), HostState::default());
         tokio::spawn(watch_host(

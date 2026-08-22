@@ -363,6 +363,7 @@ mod tests {
             port: 22,
             beszel_url: None,
             interval_secs: None,
+            group: None,
         }
     }
 

@@ -66,6 +66,7 @@ mod tests {
             port: 22,
             beszel_url: None,
             interval_secs: None,
+            group: None,
         }
     }
 
@@ -263,6 +264,7 @@ addr = "dove"
                 port: 22,
                 beszel_url: None,
                 interval_secs: None,
+                group: None,
             },
         )
         .unwrap();
@@ -292,6 +294,7 @@ addr = "dove"
                     port: 22,
                     beszel_url: None,
                     interval_secs: None,
+                    group: None,
                 },
             )
             .unwrap();
@@ -312,6 +315,7 @@ addr = "dove"
                 port: 22,
                 beszel_url: Some("https://dove.example".into()),
                 interval_secs: None,
+                group: None,
             },
             HostConfig {
                 name: "heron".into(),
@@ -320,6 +324,7 @@ addr = "dove"
                 port: 22,
                 beszel_url: None,
                 interval_secs: None,
+                group: None,
             },
         ];
         let text = render(&list).unwrap();
@@ -327,6 +332,40 @@ addr = "dove"
         assert_eq!(back.len(), 2, "wrote:\n{text}");
         assert_eq!(back, list);
     }
+}
+
+/// Set or clear one host's group. Returns whether the host was found.
+///
+/// An empty or whitespace-only label clears the group rather than creating one
+/// named `""` — a group with a blank name would be unselectable, unnameable
+/// and indistinguishable on screen from ungrouped, while still splitting the
+/// fleet in two.
+pub fn set_group(list: &mut [HostConfig], name: &str, group: Option<&str>) -> bool {
+    let Some(h) = list.iter_mut().find(|h| h.name == name) else {
+        return false;
+    };
+    h.group = group
+        .map(str::trim)
+        .filter(|g| !g.is_empty())
+        .map(str::to_string);
+    true
+}
+
+/// Every group name currently in use, in the order hosts first mention them.
+///
+/// Order follows the host list rather than the alphabet because host order is
+/// drag-to-reorder state the user set deliberately, and groups inheriting it
+/// keeps the fleet looking the way it was arranged.
+pub fn group_names(list: &[HostConfig]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for h in list {
+        if let Some(g) = h.group.as_deref().map(str::trim).filter(|g| !g.is_empty()) {
+            if !out.iter().any(|e| e == g) {
+                out.push(g.to_string());
+            }
+        }
+    }
+    out
 }
 
 /// Reorder `list` to match `names`, which is the order the user dragged cards
@@ -362,6 +401,7 @@ mod reorder_tests {
                 port: 22,
                 beszel_url: None,
                 interval_secs: None,
+                group: None,
             })
             .collect()
     }
@@ -413,6 +453,7 @@ mod settings_tests {
             port: 22,
             beszel_url: None,
             interval_secs: iv,
+            group: None,
         }
     }
 
@@ -498,5 +539,69 @@ mod settings_tests {
         };
         assert_eq!(effective_interval(&host("dove", Some(0)), &s), 1);
         assert_eq!(effective_interval(&host("dove", Some(999_999)), &s), 3600);
+    }
+}
+
+#[cfg(test)]
+mod group_tests {
+    use super::*;
+
+    fn host(name: &str, group: Option<&str>) -> HostConfig {
+        HostConfig {
+            name: name.into(),
+            addr: name.into(),
+            user: String::new(),
+            port: 22,
+            beszel_url: None,
+            interval_secs: None,
+            group: group.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn a_blank_group_label_clears_rather_than_creating_one() {
+        // A group named "" is unselectable and looks ungrouped on screen while
+        // still splitting the fleet in two.
+        let mut list = vec![host("dove", Some("workstations"))];
+        assert!(set_group(&mut list, "dove", Some("   ")));
+        assert_eq!(list[0].group, None);
+    }
+
+    #[test]
+    fn group_names_follow_host_order_not_the_alphabet() {
+        // Host order is drag-to-reorder state the user set deliberately.
+        let list = vec![
+            host("a", Some("zulu")),
+            host("b", Some("alpha")),
+            host("c", Some("zulu")),
+            host("d", None),
+        ];
+        assert_eq!(group_names(&list), vec!["zulu", "alpha"]);
+    }
+
+    #[test]
+    fn setting_a_group_on_a_missing_host_reports_it() {
+        // Silently succeeding would let the UI show a group that does not
+        // exist on disk until the next reload contradicts it.
+        let mut list = vec![host("dove", None)];
+        assert!(!set_group(&mut list, "ghost", Some("x")));
+    }
+
+    #[test]
+    fn a_group_survives_a_toml_round_trip() {
+        let list = vec![host("dove", Some("workstations")), host("heron", None)];
+        let text = render(&list).unwrap();
+        let back = parse(&text).unwrap();
+        assert_eq!(back[0].group.as_deref(), Some("workstations"));
+        assert_eq!(back[1].group, None, "ungrouped must stay absent, not empty");
+    }
+
+    #[test]
+    fn a_file_written_before_groups_existed_still_parses() {
+        // hosts.toml is hand-editable and long-lived; a missing field is a
+        // normal older file, not a corrupt one.
+        let old = "[[host]]\nname = \"dove\"\naddr = \"dove\"\n";
+        let back = parse(old).expect("pre-group files must still load");
+        assert_eq!(back[0].group, None);
     }
 }

@@ -14,6 +14,7 @@
   // ---- model: real hosts from the tailnet, real core counts ----
   let seq = 0;
   const mk = (name, distro, cores, ramGB, gpu, base) => ({
+    group: null,
     id: ++seq, name, distro, cores, ramGB, gpu, base,
     core: Array.from({length: cores}, () => Math.random() * 4),
     burst: 0, burstSet: [],
@@ -121,6 +122,72 @@
 
   const band = v => v >= 90 ? 'crit' : v >= 75 ? 'warn' : 'cool';
   const gb = v => v.toFixed(1);
+
+  // ---- groups -------------------------------------------------------------
+  //
+  // Aggregation itself lives in agg.js under ADR-008. This is only the part
+  // that turns hosts into the shape it expects and rows into DOM.
+
+  const groupOpen = name => !!(prefs.groupOpen && prefs.groupOpen[name]);
+
+  function toggleGroup(name) {
+    prefs.groupOpen = prefs.groupOpen || {};
+    prefs.groupOpen[name] = !prefs.groupOpen[name];
+    savePrefs();
+    build();
+    paint();
+  }
+
+  /// The fleet as a flat list of rows: each group, its members if it is
+  /// expanded, then the hosts that belong to no group.
+  ///
+  /// With no groups configured this returns exactly `ordered()`, so a fleet
+  /// that has never used the feature renders precisely as it did before it
+  /// existed.
+  function fleetRows() {
+    const { groups, ungrouped } = TuxAgg.groupHosts(ordered());
+    const rows = [];
+    for (const g of groups) {
+      rows.push({ kind: 'group', name: g.name, hosts: g.hosts });
+      if (groupOpen(g.name)) {
+        for (const h of g.hosts) rows.push({ kind: 'host', host: h, member: true });
+      }
+    }
+    for (const h of ungrouped) rows.push({ kind: 'host', host: h });
+    return rows;
+  }
+
+  /// A group's hosts in the flat shape `aggregateGroup` expects.
+  ///
+  /// A faulted host, or one that does not report this metric at all,
+  /// contributes `null` rather than a zero. Zero would be a reading; silence
+  /// is not, and the difference is the whole point of the contributing count.
+  function members(m, list) {
+    return list.map(h => {
+      const silent = !!h.fault || (m.has && !m.has(h));
+      const v = silent ? null : m.scalar(h);
+      return {
+        host: h.name,
+        value: v === undefined ? null : v,
+        parts: !silent && m.parts ? m.parts(h) : null,
+        vector: !silent && m.vector ? m.vector(h) : null,
+      };
+    });
+  }
+
+  /// What a group's row says about itself under the value.
+  ///
+  /// States composition always, and states partiality whenever it exists: a
+  /// group summarising four hosts while appearing to summarise five is the
+  /// averaged-away spike one level up.
+  function groupSub(g, hosts) {
+    const cores = hosts.reduce((a, h) => a + (h.cores || 0), 0);
+    const n = hosts.length;
+    const parts = [`${n} host${n === 1 ? '' : 's'}`];
+    if (cores) parts.push(`${cores} cores`);
+    if (g && g.partial) parts.push(`${g.contributing} of ${g.total} reporting`);
+    return parts.join(' · ');
+  }
 
   // ---- render skeleton ----
   /// Hosts in display order. 'manual' is whatever order the backend holds,
@@ -399,13 +466,30 @@
     grid.style.setProperty('--tile', px + 'px');
     grid.style.setProperty('--tile-h', Math.max(18, Math.round(px * 0.82)) + 'px');
 
-    ordered().forEach(h => {
-      const n = m.vector(h).length || h.cores || 0;
-      const cols = Math.max(1, Math.min(n || 1, maxCols));
-      const sec = hostBlock(h, n ? `${n} ${n === 1 ? 'core' : 'cores'}` : '? cores');
+    // Blocks to draw: a collapsed group is one block holding every member's
+    // cores end to end, which is the 'concat' rule made visible. Expanding it
+    // swaps in a label and the members' own blocks.
+    const items = [];
+    {
+      const { groups, ungrouped } = TuxAgg.groupHosts(ordered());
+      for (const g of groups) {
+        if (groupOpen(g.name)) {
+          items.push({ kind: 'ghead', name: g.name, hosts: g.hosts });
+          for (const h of g.hosts) items.push({ kind: 'host', host: h });
+        } else {
+          items.push({ kind: 'gblock', name: g.name, hosts: g.hosts });
+        }
+      }
+      for (const h of ungrouped) items.push({ kind: 'host', host: h });
+    }
 
-      // Fixed tracks, not 1fr: stretching tiles to fill a block wider than
-      // its cores need would break the one-size rule the whole view rests on.
+    /// Size a block to its core count and fill it with tiles.
+    ///
+    /// `labelAt` names each tile. In a group block the cores of several hosts
+    /// sit side by side, and a hot tile you cannot attribute to a machine is
+    /// not information - so the title says which host and which core.
+    const layout = (sec, n, labelAt) => {
+      const cols = Math.max(1, Math.min(n || 1, maxCols));
       sec.style.setProperty('--cols', cols);
       const natural = cols * px + (cols - 1) * GAP + CHROME;
       if (n >= maxCols) {
@@ -419,17 +503,68 @@
         sec.style.flexGrow = '1';
         sec.style.maxWidth = Math.round(base * 1.7) + 'px';
       }
-
       const wrap = sec.querySelector('.hb-body');
       wrap.className = 'hb-body cores all';
       for (let i = 0; i < n; i++) {
         const t = document.createElement('div');
         t.className = 'core';
-        t.title = `${h.name} core ${i}`;
+        t.title = labelAt(i);
         if (px >= 30) t.innerHTML = '<span class="pc"></span>';
         wrap.appendChild(t);
       }
       grid.appendChild(sec);
+    };
+
+    items.forEach(it => {
+      if (it.kind === 'ghead') {
+        const head = document.createElement('div');
+        head.className = 'ghead';
+        head.dataset.group = it.name;
+        const cores = it.hosts.reduce((a, h) => a + (h.cores || 0), 0);
+        head.innerHTML = `
+          <button class="ftoggle" type="button" aria-expanded="true"
+                  title="Collapse ${esc(it.name)}"><span class="chev" aria-hidden="true"></span></button>
+          <span class="ghead-name">${esc(it.name)}</span>
+          <span class="ghead-meta">${it.hosts.length} hosts · ${cores} cores</span>`;
+        head.querySelector('.ftoggle').addEventListener('click', () => toggleGroup(it.name));
+        grid.appendChild(head);
+        return;
+      }
+
+      if (it.kind === 'gblock') {
+        const n = it.hosts.reduce((a, h) => a + (m.vector(h).length || h.cores || 0), 0);
+        const sec = document.createElement('section');
+        sec.className = 'hostblock gblock';
+        sec.dataset.group = it.name;
+        sec.innerHTML = `
+          <header class="hb-head">
+            <button class="ftoggle" type="button" aria-expanded="false"
+                    title="Show the hosts in ${esc(it.name)}"><span class="chev" aria-hidden="true"></span></button>
+            <h2 class="hname">${esc(it.name)}</h2>
+            <span class="hb-cpu" data-hb-cpu></span>
+            <span class="hb-cores">${it.hosts.length} hosts · ${n} cores</span>
+          </header>
+          <div class="hb-body"></div>
+          <span class="reveal-edge" aria-hidden="true"></span>`;
+        sec.querySelector('.ftoggle').addEventListener('click', e => {
+          e.stopPropagation();
+          toggleGroup(it.name);
+        });
+        // Flat tile index back to the host that owns it, in the same order
+        // the vectors were concatenated.
+        const owners = [];
+        it.hosts.forEach(mh => {
+          const c = m.vector(mh).length || mh.cores || 0;
+          for (let i = 0; i < c; i++) owners.push(`${mh.name} core ${i}`);
+        });
+        layout(sec, n, i => owners[i] || it.name);
+        return;
+      }
+
+      const h = it.host;
+      const n = m.vector(h).length || h.cores || 0;
+      const sec = hostBlock(h, n ? `${n} ${n === 1 ? 'core' : 'cores'}` : '? cores');
+      layout(sec, n, i => `${h.name} core ${i}`);
     });
   }
 
@@ -437,18 +572,36 @@
   function buildScalar(m) {
     const wrap = document.createElement('div');
     wrap.className = 'fleetbars';
-    ordered().forEach(h => {
+
+    fleetRows().forEach(r => {
       const row = document.createElement('div');
-      row.className = 'fbar';
-      row.dataset.name = h.name;
-      row.innerHTML = `
-        <span class="dot"></span>
-        <span class="fbar-name">${esc(h.name)}</span>
-        <span class="fbar-track"><span class="fbar-fill"></span></span>
-        <span class="fbar-val" data-val></span>
-        <span class="fbar-sub" data-sub></span>`;
+      if (r.kind === 'group') {
+        row.className = 'fbar fgroup';
+        row.dataset.group = r.name;
+        // The whisker spans the members' range; the fill marks the aggregate.
+        // Both are needed - see ADR-008. A bar that shows only the aggregate
+        // cannot distinguish a calm group from one tearing itself apart.
+        row.innerHTML = `
+          <button class="ftoggle" type="button" aria-expanded="${groupOpen(r.name)}"
+                  title="Show the hosts in ${esc(r.name)}"><span class="chev" aria-hidden="true"></span></button>
+          <span class="fbar-name">${esc(r.name)}</span>
+          <span class="fbar-track"><span class="fbar-whisk" hidden></span><span class="fbar-fill"></span></span>
+          <span class="fbar-val" data-val></span>
+          <span class="fbar-sub" data-sub></span>`;
+        row.querySelector('.ftoggle').addEventListener('click', () => toggleGroup(r.name));
+      } else {
+        row.className = 'fbar' + (r.member ? ' member' : '');
+        row.dataset.name = r.host.name;
+        row.innerHTML = `
+          <span class="dot"></span>
+          <span class="fbar-name">${esc(r.host.name)}</span>
+          <span class="fbar-track"><span class="fbar-fill"></span></span>
+          <span class="fbar-val" data-val></span>
+          <span class="fbar-sub" data-sub></span>`;
+      }
       wrap.appendChild(row);
     });
+
     grid.appendChild(wrap);
 
     // The axis needs saying out loud, with its actual range: a log bar is not
@@ -488,6 +641,30 @@
   }
 
   function paintVector(m) {
+    // Group blocks hold several hosts' cores end to end, in the order they
+    // were concatenated - so they repaint from the same concatenation rather
+    // than from any one host.
+    grid.querySelectorAll('.gblock').forEach(sec => {
+      const name = sec.dataset.group;
+      const list = hosts.filter(h => h.group === name);
+      const g = TuxAgg.aggregateGroup(m, members(m, list));
+      const vals = (g && g.vector) || [];
+      const tiles = sec.querySelectorAll('.core');
+      if (tiles.length !== vals.length) { build(); return; }
+
+      for (let i = 0; i < tiles.length; i++) {
+        const v = vals[i] || 0;
+        tiles[i].style.setProperty('--l', normalise(m, v, 100).toFixed(3));
+        tiles[i].dataset.band = band(v);
+        const pc = tiles[i].firstElementChild;
+        if (pc) pc.textContent = Math.round(v);
+      }
+      // The header states the busiest core in the group, not a mean: the
+      // whole reason to look at a core grid is to find the hot one.
+      const cpu = sec.querySelector('[data-hb-cpu]');
+      if (cpu) cpu.textContent = g && g.value !== null ? m.fmt(g.value) : '—';
+    });
+
     hosts.forEach(h => {
       const sec = grid.querySelector(`.hostblock[data-name="${CSS.escape(h.name)}"]`);
       if (!sec) return;
@@ -513,7 +690,61 @@
   function paintScalar(m) {
     // Peak across the fleet, so every bar shares one axis.
     // Hosts that do not report the metric must not drag the peak to zero.
-    const peak = hosts.reduce((a, h) => Math.max(a, m.scalar(h) ?? 0), 0);
+    // One axis for everything on screen, anchored at whatever is largest -
+    // group or host.
+    //
+    // The spec originally called for separate axes, on the grounds that a
+    // group total and a single host are not comparable. Building it proved
+    // that wrong in the worst way: dove's 1.1 MB/s bar rendered *longer* than
+    // the 2.3 MB/s total of the group it belongs to. A footnote explaining
+    // the discrepancy does not repair a picture that is lying.
+    //
+    // A shared axis is in fact honest here, because a 'sum' aggregate is
+    // always at least as large as its biggest member, so lengths stay
+    // correctly ordered - longer really does mean more bytes. 'ratio' and
+    // 'max' aggregates sit on an absolute scale that ignores the peak
+    // entirely. What must not happen is a group being *mistaken* for a host,
+    // and that is the row styling's job, not the axis's.
+    const aggs = new Map();
+    let peak = hosts.reduce((a, h) => Math.max(a, m.scalar(h) ?? 0), 0);
+    grid.querySelectorAll('.fgroup').forEach(row => {
+      const name = row.dataset.group;
+      const list = hosts.filter(h => h.group === name);
+      const g = TuxAgg.aggregateGroup(m, members(m, list));
+      aggs.set(name, { g, list });
+      if (g && g.value !== null) peak = Math.max(peak, g.value);
+    });
+
+    aggs.forEach(({ g, list }, name) => {
+      const row = grid.querySelector(`.fgroup[data-group="${CSS.escape(name)}"]`);
+      if (!row) return;
+      const fill = row.querySelector('.fbar-fill');
+      const whisk = row.querySelector('.fbar-whisk');
+      const dead = !g || g.value === null;
+
+      row.classList.toggle('nodata', dead);
+      fill.style.width = dead ? '0%' : (normalise(m, g.value, peak) * 100).toFixed(1) + '%';
+      // Severity is the worst member, never the aggregate. A group averaging
+      // 40% that contains a host at 97% must not render calm.
+      fill.dataset.band =
+        m.scale === 'absolute' && !dead ? band(g.severity) : 'cool';
+
+      // The spread. Hidden when a single host reports, where a whisker would
+      // draw a range that does not exist.
+      if (!dead && g.contributing > 1 && g.max > g.min) {
+        const lo = normalise(m, g.min, peak), hi = normalise(m, g.max, peak);
+        whisk.hidden = false;
+        whisk.style.left = (lo * 100).toFixed(1) + '%';
+        whisk.style.width = ((hi - lo) * 100).toFixed(1) + '%';
+        whisk.title = `${m.fmt(g.min)} to ${m.fmt(g.max)} across members`;
+      } else {
+        whisk.hidden = true;
+      }
+
+      row.querySelector('[data-val]').textContent = dead ? '—' : m.fmt(g.value);
+      row.querySelector('[data-sub]').textContent = groupSub(g, list);
+      row.classList.toggle('partial', !!(g && g.partial));
+    });
 
     hosts.forEach(h => {
       const row = grid.querySelector(`.fbar[data-name="${CSS.escape(h.name)}"]`);
@@ -547,6 +778,16 @@
           `Quieter than ${m.fmt(bottom)} reads as empty.`;
       } else {
         note.textContent = 'Linear axis, 0\u2013100%. Directly comparable across hosts.';
+      }
+      // What a group's bar means differs by metric, and the reader cannot
+      // infer it from the picture: 2.3 MB/s is a total, 62°C is the hottest
+      // member, 56% is a weighted share. Say which.
+      if (grid.querySelector('.fgroup')) {
+        const how = { sum: 'the total across its hosts',
+                      max: 'its highest host',
+                      ratio: 'a share weighted by size',
+                      concat: 'every host\u2019s cores together' }[m.agg];
+        note.textContent += ` A group row shows ${how}, banded by its worst host.`;
       }
     }
   }
@@ -1820,6 +2061,17 @@
     // previous host's details - submit again and you get a duplicate-name
     // rejection for a host you thought you were adding fresh.
     $('#addForm').reset();
+    // Offer the groups that already exist. Typing a new one is still allowed -
+    // a datalist suggests, it does not constrain - but suggesting the existing
+    // spelling is what stops "workstations" and "Workstations" becoming two
+    // groups that look like one.
+    const dl = $('#groupList');
+    dl.innerHTML = '';
+    [...new Set(hosts.map(h => h.group).filter(Boolean))].forEach(g => {
+      const o = document.createElement('option');
+      o.value = g;
+      dl.appendChild(o);
+    });
     dlg.showModal();
     $('#f-name').focus();
     $('#f-name').select();
@@ -1907,15 +2159,22 @@
     });
 
     await listen('tuxtop://hosts-changed', ({ payload: list }) => {
-      // Remember each host's interval override so the meter can honour it.
-      const iv = new Map(list.map(c => [c.name, c.interval_secs ?? null]));
-      hosts.forEach(h => { h.intervalOverride = iv.get(h.name) ?? null; });
+      // Remember each host's interval override so the meter can honour it,
+      // and its group so the fleet view can arrange by it.
+      const cfgs = new Map(list.map(c => [c.name, c]));
+      const apply = h => {
+        const c = cfgs.get(h.name);
+        h.intervalOverride = c ? c.interval_secs ?? null : null;
+        h.group = c ? c.group ?? null : null;
+      };
+      hosts.forEach(apply);
       // Reconcile both ways. Filtering alone only ever removed, so a newly
       // added host got no card until its first sample arrived - and an
       // unreachable host never sends one, so it stayed invisible for the
       // full ssh connect timeout or forever. Order follows the backend list.
       const byName = new Map(hosts.map(h => [h.name, h]));
       hosts = list.map(c => byName.get(c.name) || mk(c.name, '', 0, 0, null, 0));
+      hosts.forEach(apply);
       build(); paint(); tally();
     });
 
@@ -1923,7 +2182,9 @@
     // lands -- otherwise the window is empty for a second on every launch.
     try {
       for (const cfg of await invoke('list_hosts')) {
-        ensure(cfg.name, 0).intervalOverride = cfg.interval_secs ?? null;
+        const h = ensure(cfg.name, 0);
+        h.intervalOverride = cfg.interval_secs ?? null;
+        h.group = cfg.group ?? null;
       }
     } catch (e) {
       showError(`Could not read hosts.toml: ${e}`);
@@ -1937,10 +2198,13 @@
       if (e.submitter && e.submitter.value !== 'add') return;
       const f = new FormData(e.target);
       try {
+        const group = (f.get('group') || '').toString().trim();
         await invoke('add_host', { cfg: {
           name: (f.get('name') || '').toString().trim(),
           addr: (f.get('addr') || '').toString().trim(),
           user: '', port: 22, beszel_url: null,
+          // Empty means ungrouped, never a group literally named "".
+          group: group || null,
         }});
       } catch (err) { showError(String(err)); }
     });

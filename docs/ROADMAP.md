@@ -318,8 +318,14 @@ far — hence a spec before code, as Phase 8 had.
       every metric in the registry declaring its rule, and
       `scripts/check-agg-declared.py` failing the commit if one does not.
       Both ADR-008 rules verified by mutation, not just by passing.
-- [ ] **11b — group blocks in the UI.** Collapsible, severity from the worst
-      member, spread whiskers, composition stated in the header.
+- [x] **11b — group blocks in the UI.** Collapsible in both fleet shapes:
+      scalar metrics get a group row with a member-range whisker, vector
+      metrics get one block holding every member's cores with each tile
+      attributed to its host. Severity from the worst member, composition and
+      partial reporting stated. `group` is a field on `HostConfig`, set from
+      the Add host dialog or by hand in `hosts.toml`.
+      Testing revised two spec decisions — see the notes marked *revised
+      during 11b* in the spec, and ADR-008's consequences.
 - [ ] **11c — group history**, aggregated on read, marking spans where a
       member was silent.
 

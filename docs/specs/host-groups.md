@@ -163,13 +163,32 @@ the same bug as a 60-second bucket averaging away a spike.
 ## Rendering
 
 - A group is a **collapsible block**: one row when collapsed, its member cards
-  when expanded. Collapse state persists per group in `hosts.toml`.
+  when expanded. Collapse state persists in `localStorage` alongside the other
+  view preferences, not in `hosts.toml` — *(revised during 11b)*. It is view
+  state of exactly the same kind as the current view, sort order and selected
+  metric; putting one such preference in the config file and the rest in
+  `localStorage` would split one concept across two stores for no gain.
 - Groups are the natural boundary for the fleet view's block packing, which
   should **simplify** the current layout rather than complicate it — the packer
   gains a real grouping key instead of inferring one from core counts.
-- **Groups and individual hosts never share a comparison axis.** A group's
-  summed network rate against a single host's is not a comparison, it is a
-  category error. The fleet view shows either groups or hosts, and says which.
+- **One axis, and the row says what its bar means.** *(Revised during 11b —
+  the original rule was wrong.)* This spec first called for separate axes for
+  groups and hosts, on the grounds that a group total and a single host are
+  not comparable. Building it disproved that: with two axes, dove's 1.1 MB/s
+  bar rendered **longer** than the 2.3 MB/s total of the group it belongs to.
+  A footnote explaining the discrepancy does not repair a picture that lies.
+
+  A shared axis is in fact the honest one, because a `sum` aggregate is always
+  at least as large as its largest member, so lengths stay correctly ordered —
+  longer really does mean more bytes. `ratio` and `max` sit on an absolute
+  0–100 scale that ignores the peak entirely. The real hazard was never the
+  axis but a group being *mistaken* for a host, which row styling and the
+  stated composition prevent.
+
+  What the scale note must still do is say what a group's bar means, since it
+  differs per metric and cannot be read off the picture: "a group row shows the
+  total across its hosts / its highest host / a share weighted by size, banded
+  by its worst host."
 - A group's header states its composition: `workstations · 3 hosts · 68 cores`.
   A card that will not say what it is made of cannot be checked.
 

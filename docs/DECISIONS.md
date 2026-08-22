@@ -386,8 +386,15 @@ Group history is aggregated on read and records how many members contributed to
 each point, so a host going silent cannot move a group's line — the same
 requirement as the history plane's explicit gaps, applied one level up.
 
-Groups and individual hosts must not share a comparison axis: a group's summed
-network rate against one host's is a category error, not a comparison.
+A group's bar and a host's bar do share one axis, and the scale note states
+what the group's bar means for the metric on screen. The first draft of this
+ADR forbade a shared axis as a category error; implementing it showed the
+opposite — with separate axes a host's bar rendered longer than the total of
+the group containing it, which is a lie the axis note cannot repair. A `sum`
+aggregate is always at least its largest member, so one axis keeps lengths
+correctly ordered, and `ratio`/`max` never consult the peak at all. The hazard
+to guard against is a group being mistaken for a host, which is the row
+styling's job.
 
 ---
 

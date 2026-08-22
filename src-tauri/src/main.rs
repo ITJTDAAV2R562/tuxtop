@@ -144,6 +144,28 @@ fn set_host_interval(
     Ok(f.hosts.clone())
 }
 
+/// Set or clear one host's group.
+///
+/// Unlike the interval, this changes nothing about how the host is sampled, so
+/// no sampler is restarted — only the arrangement on screen and the file on
+/// disk.
+#[tauri::command]
+fn set_host_group(
+    app: AppHandle,
+    name: String,
+    group: Option<String>,
+) -> Result<Vec<HostConfig>, String> {
+    let mut f = hosts::load_file(&app)?;
+
+    if !tuxtop_core::hostlist::set_group(&mut f.hosts, &name, group.as_deref()) {
+        return Err(format!("no host named {name}"));
+    }
+
+    hosts::save_file(&app, &f)?;
+    let _ = app.emit(supervisor::EVENT_HOSTS, &f.hosts);
+    Ok(f.hosts.clone())
+}
+
 /// Measured cost per host, for the settings meter.
 #[tauri::command]
 fn traffic_stats(sup: tauri::State<'_, Supervisor>) -> Vec<supervisor::HostTraffic> {
@@ -249,6 +271,7 @@ fn main() {
             get_settings,
             set_settings,
             set_host_interval,
+            set_host_group,
             traffic_stats,
             set_processes_enabled,
             process_list,

@@ -2,7 +2,13 @@
 // so the real app.js live path can be driven in a browser.
 (() => {
   const listeners = {};
-  let hosts = [{ name: 'dove', addr: 'dove', user: '', port: 22, beszel_url: null }];
+  let hosts = [
+    { name: 'dove',  addr: 'dove',  user: '', port: 22, beszel_url: null, group: 'workstations' },
+    { name: 'coot',  addr: 'coot',  user: '', port: 22, beszel_url: null, group: 'workstations' },
+    { name: 'heron', addr: 'heron', user: '', port: 22, beszel_url: null, group: 'servers' },
+    { name: 'wader', addr: 'wader', user: '', port: 22, beszel_url: null, group: 'servers' },
+    { name: 'owl',   addr: 'owl',   user: '', port: 22, beszel_url: null, group: null },
+  ];
   const emit = (ev, payload) => (listeners[ev] || []).forEach(f => f({ payload }));
 
   const sample = (name, nCores) => ({
@@ -71,6 +77,13 @@
           }
           return out;
         }
+        if (cmd === 'set_host_group') {
+          const h = hosts.find(x => x.name === args.name);
+          if (!h) throw `no host named ${args.name}`;
+          h.group = (args.group || '').trim() || null;
+          emit('tuxtop://hosts-changed', structuredClone(hosts));
+          return structuredClone(hosts);
+        }
         if (cmd === 'set_processes_enabled') return null;
         if (cmd === 'process_list') {
           const names = ['tailscaled','searchd','python','node','postgres',
@@ -97,6 +110,17 @@
     },
   };
   // dove reports continuously, like a healthy host.
-  setInterval(() => { if (hosts.some(h => h.name === 'dove')) emit('tuxtop://sample', sample('dove', 32)); }, 400);
+  const CORES = { dove: 32, coot: 32, heron: 4, wader: 24, owl: 16 };
+  // dove is pinned so the group aggregate and its worst member disagree - the
+  // case the whole feature exists to render correctly.
+  setInterval(() => {
+    for (const h of hosts) {
+      const s = sample(h.name, CORES[h.name] || 8);
+      if (h.name === 'dove') {
+        s.cpu = 97; s.cores = s.cores.map(() => 90 + Math.random() * 10);
+      }
+      emit('tuxtop://sample', s);
+    }
+  }, 400);
   window.__STUB__ = { hosts: () => hosts };
 })();

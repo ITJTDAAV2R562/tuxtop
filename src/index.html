@@ -179,6 +179,13 @@
       <input id="f-addr" name="addr" value="macaw.example.ts.net" autocomplete="off">
     </div>
     <div class="field">
+      <label for="f-group">Group <span class="opt">optional</span></label>
+      <input id="f-group" name="group" list="groupList" autocomplete="off"
+             placeholder="e.g. workstations">
+      <datalist id="groupList"></datalist>
+      <p class="hint">Hosts sharing a group are summarised as one row in the fleet view.</p>
+    </div>
+    <div class="field">
       <label for="f-cores">Logical cores</label>
       <select id="f-cores" name="cores">
         <option>4</option><option selected>8</option><option>16</option><option>32</option><option>64</option>
