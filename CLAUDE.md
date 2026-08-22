@@ -84,6 +84,42 @@ One Tokio task per host. A host that hangs must degrade only its own card.
 
 ---
 
+## A feature is not done until you can name the click path
+
+Say, in one sentence, what a user clicks to reach the thing you built. If you
+cannot, it is not finished — however green the tests are.
+
+```sh
+python3 scripts/check-commands-reachable.py
+```
+
+Three commands had shipped with no caller before anyone noticed:
+
+- `set_host_group` — host grouping was reachable only from the Add host
+  dialog, so it worked for a host that did not exist yet and for no other.
+  Every host already in the fleet had no path to the feature at all.
+- `history_usage` — the settings panel multiplied a hardcoded 79.9 KB by a
+  series count and reported the product as fact, while the measured figure sat
+  in the backend unused.
+- `active_hosts` — dead outright.
+
+Each was individually invisible: the Rust compiled and was tested, the JS ran,
+and neither side can see that the other never calls it. This is the failure
+mode of building a backend and a frontend in the same sitting, and it is worth
+a check rather than care.
+
+Two related habits:
+
+- **Prefer a measurement to an estimate whenever one exists.** This project was
+  built in response to a confident wrong number; computing a plausible figure
+  in the frontend while the real one is a command away is the same sin in
+  miniature.
+- **When a stub command is missing, fix the stub.** Twice now a gap in
+  `tests/harness/stub.js` has presented as an application bug. The stub is test
+  infrastructure — an error there costs debugging time and teaches nothing.
+
+---
+
 ## Frontend rules
 
 **All colours come from CSS custom properties.** No literal hex, `rgb()` or
@@ -125,6 +161,7 @@ cargo fmt
 node --test 'tests/*.test.js'           # group aggregation rules (ADR-008)
 python3 scripts/check-theme-tokens.py   # CSS tokens in all three theme states
 python3 scripts/check-agg-declared.py   # every metric declares how it aggregates
+python3 scripts/check-commands-reachable.py   # no command shipped unreachable
 ```
 
 **Tests are the memory this project does not otherwise have.** Each test name

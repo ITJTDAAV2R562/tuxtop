@@ -22,6 +22,25 @@ pub const TIERS: &[(u32, u32)] = &[
     (300, 604_800), // 5 min, 7 days
 ];
 
+/// Bytes one series occupies once every tier has filled.
+///
+/// Derived from `TIERS` rather than written down, so changing the cascade
+/// cannot leave a stale figure being reported to the user as fact. The raw
+/// tier stores only the mean — min and max equal it — so it costs one lane
+/// where the coarse tiers cost three.
+pub fn full_series_bytes() -> usize {
+    const LANE: usize = std::mem::size_of::<f32>();
+    TIERS
+        .iter()
+        .enumerate()
+        .map(|(i, &(interval, span))| {
+            let buckets = (span / interval) as usize;
+            let lanes = if i == 0 { 1 } else { 3 };
+            buckets * lanes * LANE
+        })
+        .sum()
+}
+
 /// One point of history. `min` and `max` equal `mean` on the raw tier.
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Point {
@@ -219,6 +238,9 @@ impl Tier {
 #[derive(Debug)]
 pub struct Series {
     tiers: Vec<Tier>,
+    /// Index of the finest tier still held. Raised when the store is over its
+    /// memory cap: the 1 Hz detail goes first, the 7-day shape goes last.
+    floor: usize,
 }
 
 impl Default for Series {
@@ -235,13 +257,38 @@ impl Series {
                 .enumerate()
                 .map(|(i, &(iv, span))| Tier::new(iv, span, i == 0))
                 .collect(),
+            floor: 0,
         }
     }
 
     pub fn push(&mut self, t: u64, v: f32) {
-        for tier in &mut self.tiers {
+        for tier in self.tiers.iter_mut().skip(self.floor) {
             tier.push(t, v);
         }
+    }
+
+    /// Release the finest tier still held. Returns whether anything went.
+    ///
+    /// Its buffers are freed rather than merely ignored, since the whole
+    /// point is to give the memory back.
+    pub fn shed_finest(&mut self) -> bool {
+        // Never shed the last tier: a series with no tiers is a host that
+        // silently stopped having history, which is worse than a coarse one.
+        if self.floor + 1 >= self.tiers.len() {
+            return false;
+        }
+        let t = &mut self.tiers[self.floor];
+        t.mean = Vec::new();
+        t.min = Vec::new();
+        t.max = Vec::new();
+        t.len = 0;
+        self.floor += 1;
+        true
+    }
+
+    /// The finest interval this series still holds, in seconds.
+    pub fn finest_interval(&self) -> u32 {
+        self.tiers[self.floor].interval
     }
 
     pub fn bytes(&self) -> usize {
@@ -257,6 +304,7 @@ impl Series {
         let tier = self
             .tiers
             .iter()
+            .skip(self.floor)
             .find(|t| t.len > 0 && t.oldest() <= from)
             .unwrap_or_else(|| self.tiers.last().expect("TIERS is never empty"));
 
@@ -331,6 +379,48 @@ impl History {
     /// Drop every series for a host that is no longer watched.
     pub fn forget_host(&mut self, host: &str) {
         self.series.retain(|(h, _), _| h != host);
+    }
+
+    /// Keep the store under `cap_bytes` by shedding resolution.
+    ///
+    /// Returns the finest interval still held anywhere, in seconds — 1 while
+    /// nothing has been shed.
+    ///
+    /// **Resolution is degraded uniformly; coverage never is.** Every host
+    /// keeps its history and simply gets a coarser one. Dropping whole hosts
+    /// instead would leave a fleet where some cards have charts and others do
+    /// not, which is the exact failure that disqualified Beszel as the history
+    /// plane ([ADR-009]) — a partial history view is worse than a coarse one,
+    /// because you cannot tell a host that was idle from a host nobody
+    /// recorded.
+    ///
+    /// Shedding is one-way within a run. Re-densifying would mean inventing
+    /// detail that was never kept.
+    pub fn enforce_cap(&mut self, cap_bytes: usize) -> u32 {
+        // Bounded by the tier count: each pass sheds one tier from every
+        // series, and the last tier is never shed.
+        for _ in 0..TIERS.len() {
+            if self.bytes() <= cap_bytes {
+                break;
+            }
+            let mut shed = false;
+            for s in self.series.values_mut() {
+                shed |= s.shed_finest();
+            }
+            if !shed {
+                break; // nothing left to give
+            }
+        }
+        self.finest_interval()
+    }
+
+    /// The finest interval held by any series, in seconds.
+    pub fn finest_interval(&self) -> u32 {
+        self.series
+            .values()
+            .map(|s| s.finest_interval())
+            .min()
+            .unwrap_or(TIERS[0].0)
     }
 }
 
@@ -521,5 +611,87 @@ mod tests {
             pts.iter().all(|p| p.t <= 60 || p.t >= 660),
             "no points invented across the gap"
         );
+    }
+}
+
+#[cfg(test)]
+mod cap_tests {
+    use super::*;
+
+    fn fill(h: &mut History, hosts: usize, seconds: u64) {
+        for i in 0..hosts {
+            for t in 0..seconds {
+                h.push(&format!("h{i}"), "cpu", t, (t % 100) as f32);
+            }
+        }
+    }
+
+    #[test]
+    fn full_series_bytes_matches_the_tier_cascade() {
+        // 3600 raw means at 4B, plus three lanes each for 2160, 1440 and 2016
+        // coarse buckets. If TIERS changes this figure must move with it -
+        // that is the whole reason it is computed rather than written down.
+        let expect = 3600 * 4 + (2160 + 1440 + 2016) * 3 * 4;
+        assert_eq!(full_series_bytes(), expect);
+        assert_eq!(full_series_bytes(), 81_792);
+    }
+
+    #[test]
+    fn a_cap_that_is_not_reached_sheds_nothing() {
+        let mut h = History::new();
+        fill(&mut h, 2, 400);
+        let before = h.bytes();
+        assert_eq!(h.enforce_cap(usize::MAX), 1, "still holding 1 Hz detail");
+        assert_eq!(h.bytes(), before, "nothing shed when there is room");
+    }
+
+    #[test]
+    fn over_cap_sheds_resolution_and_keeps_every_host() {
+        let mut h = History::new();
+        fill(&mut h, 4, 400);
+        let hosts_before = h.series_count();
+
+        let finest = h.enforce_cap(1_000);
+        assert!(finest > 1, "the 1 Hz tier must have gone, got {finest}s");
+        assert_eq!(
+            h.series_count(),
+            hosts_before,
+            "coverage must never be traded for memory - every host keeps history"
+        );
+    }
+
+    #[test]
+    fn every_host_still_answers_after_shedding() {
+        // The point of degrading uniformly: a fleet where some cards have
+        // charts and others do not is the failure ADR-009 rejected.
+        let mut h = History::new();
+        fill(&mut h, 4, 400);
+        h.enforce_cap(1_000);
+        for i in 0..4 {
+            assert!(
+                !h.query(&format!("h{i}"), "cpu", 0, 400, 100).is_empty(),
+                "h{i} lost its history entirely"
+            );
+        }
+    }
+
+    #[test]
+    fn shedding_stops_before_the_last_tier() {
+        // A series with no tiers is a host that silently stopped having
+        // history, which is worse than a coarse one.
+        let mut h = History::new();
+        fill(&mut h, 2, 400);
+        let finest = h.enforce_cap(0);
+        assert_eq!(finest, TIERS.last().unwrap().0, "coarsest tier is kept");
+        assert!(h.bytes() > 0, "the store must not shed itself to nothing");
+    }
+
+    #[test]
+    fn enforce_cap_terminates_when_it_cannot_comply() {
+        // A cap of zero is unreachable. It must stop, not spin.
+        let mut h = History::new();
+        fill(&mut h, 1, 200);
+        h.enforce_cap(0);
+        h.enforce_cap(0);
     }
 }

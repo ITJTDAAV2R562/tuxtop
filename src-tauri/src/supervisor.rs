@@ -89,11 +89,6 @@ impl Supervisor {
         }
     }
 
-    /// Names currently being watched.
-    pub fn active(&self) -> Vec<String> {
-        self.tasks.lock().unwrap().keys().cloned().collect()
-    }
-
     /// What each host has cost so far, and at what interval.
     pub fn traffic(&self) -> Vec<HostTraffic> {
         let counters = self.traffic.lock().unwrap();

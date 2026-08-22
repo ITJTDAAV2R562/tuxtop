@@ -96,6 +96,7 @@ fn get_settings(app: AppHandle) -> Result<Settings, String> {
 fn set_settings(
     app: AppHandle,
     sup: tauri::State<'_, Supervisor>,
+    store: tauri::State<'_, HistoryStore>,
     settings: Settings,
 ) -> Result<Settings, String> {
     let mut f = hosts::load_file(&app)?;
@@ -108,6 +109,7 @@ fn set_settings(
     hosts::save_file(&app, &f)?;
 
     apply_always_on_top(&app, f.settings.always_on_top);
+    store.set_cap_mb(f.settings.history_cap_mb);
 
     for h in &f.hosts {
         if effective_interval(h, &before) != effective_interval(h, &f.settings) {
@@ -253,12 +255,6 @@ fn process_list(sup: tauri::State<'_, Supervisor>) -> Vec<tuxtop_core::procs::Pr
     sup.fleet_procs()
 }
 
-/// Which hosts currently have a live sampler task.
-#[tauri::command]
-fn active_hosts(sup: tauri::State<'_, Supervisor>) -> Vec<String> {
-    sup.active()
-}
-
 fn main() {
     tauri::Builder::default()
         .manage(Supervisor::default())
@@ -277,8 +273,7 @@ fn main() {
             process_list,
             query_history,
             query_history_many,
-            history_usage,
-            active_hosts
+            history_usage
         ])
         .setup(|app| {
             let handle = app.handle().clone();
@@ -291,6 +286,9 @@ fn main() {
             // not visibly jump to the front a moment after appearing.
             if let Ok(s) = hosts::load_settings(&handle) {
                 apply_always_on_top(&handle, s.always_on_top);
+                // Before any sampling starts, so the store is never briefly
+                // uncapped on a fleet large enough to need the limit.
+                handle.state::<HistoryStore>().set_cap_mb(s.history_cap_mb);
             }
 
             // Start a sampler for every configured host.

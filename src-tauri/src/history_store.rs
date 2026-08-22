@@ -4,20 +4,54 @@
 //! the webview does not carry tens of MB of numbers. Only a process restart
 //! clears it, which is the intended behaviour.
 
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use tuxtop_core::history::{History, Point};
 use tuxtop_core::Sample;
 
+/// How many recorded samples pass between cap checks.
+///
+/// `bytes()` walks every series, so doing it on every frame would be a
+/// measurable cost to stay under a limit that moves slowly — a fleet gains
+/// memory a few kilobytes at a time. Roughly once a minute at 1 Hz with a
+/// handful of hosts.
+const CAP_CHECK_EVERY: u64 = 64;
+
 #[derive(Default)]
 pub struct HistoryStore {
     inner: Mutex<History>,
+    /// Memory ceiling in bytes. Zero means unset, which is treated as
+    /// unlimited rather than as "shed everything" — a cap that has not been
+    /// read from disk yet must not throw history away.
+    cap_bytes: AtomicU64,
+    /// Finest interval still held, in seconds, for the settings panel.
+    finest_secs: AtomicU32,
+    writes: AtomicU64,
 }
 
 impl HistoryStore {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            finest_secs: AtomicU32::new(1),
+            ..Default::default()
+        }
+    }
+
+    /// Set the ceiling, and apply it immediately.
+    ///
+    /// Applied at once rather than at the next check so that lowering the cap
+    /// in Settings has a visible effect while the panel is still open —
+    /// a limit that appears to do nothing is indistinguishable from a broken
+    /// one.
+    pub fn set_cap_mb(&self, mb: u32) {
+        let bytes = mb as u64 * 1024 * 1024;
+        self.cap_bytes.store(bytes, Ordering::Relaxed);
+        if bytes > 0 {
+            let finest = self.inner.lock().unwrap().enforce_cap(bytes as usize);
+            self.finest_secs.store(finest, Ordering::Relaxed);
+        }
     }
 
     /// Record one sample against the wall clock.
@@ -64,6 +98,14 @@ impl HistoryStore {
         for (i, v) in s.cores.iter().enumerate() {
             h.push(&s.host, &format!("core.{i}"), t, *v);
         }
+
+        // Enforce on a subsample. Held under the same lock as the writes it
+        // is bounding, so the check can never see a partly-written frame.
+        let cap = self.cap_bytes.load(Ordering::Relaxed);
+        if cap > 0 && self.writes.fetch_add(1, Ordering::Relaxed) % CAP_CHECK_EVERY == 0 {
+            let finest = h.enforce_cap(cap as usize);
+            self.finest_secs.store(finest, Ordering::Relaxed);
+        }
     }
 
     pub fn query(
@@ -82,6 +124,8 @@ impl HistoryStore {
         HistoryUsage {
             bytes: h.bytes() as u64,
             series: h.series_count() as u64,
+            full_series_bytes: tuxtop_core::history::full_series_bytes() as u64,
+            finest_secs: self.finest_secs.load(Ordering::Relaxed),
         }
     }
 
@@ -92,8 +136,15 @@ impl HistoryStore {
 
 #[derive(Debug, Clone, Copy, serde::Serialize)]
 pub struct HistoryUsage {
+    /// Measured, not projected: what the store is holding right now.
     pub bytes: u64,
     pub series: u64,
+    /// What one series costs once every tier has filled, derived from the
+    /// tier cascade. Multiplying gives the steady state a fleet grows into.
+    pub full_series_bytes: u64,
+    /// Finest interval still held anywhere, in seconds. Above 1 means the cap
+    /// has shed resolution, and the panel must say so.
+    pub finest_secs: u32,
 }
 
 /// Wall-clock seconds. History is anchored to real time rather than uptime so

@@ -198,7 +198,7 @@ extrapolated by hand from three hosts.
 
 ---
 
-## Phase 8 — History plane — **built; cap enforcement outstanding**
+## Phase 8 — History plane — **done**
 
 **Goal:** metrics over time, not only in the moment. Charts over a window, and
 retention that survives a restart.
@@ -220,9 +220,15 @@ Full spec: **[specs/history-plane.md](specs/history-plane.md)**.
 - [x] **Per-core charts** — the Task Manager small-multiples shape, one chart
       per core at a fixed size, fetched for the whole host in a single call.
 - [x] **Subject picker** — change host or metric without leaving History.
-- [ ] **Cap enforcement.** The cap is configurable and displayed but nothing
-      evicts on it yet. At ~24 MB for a 19-host fleet nothing has come close;
-      it matters around 100 hosts.
+- [x] **Cap enforcement.** `History::enforce_cap` sheds the finest tier from
+      every series until the store fits, applied at startup and whenever the
+      setting changes. **Resolution degrades uniformly; coverage never does** —
+      every host keeps history and simply gets a coarser one, because a fleet
+      where some cards have charts and others do not is the failure that
+      disqualified Beszel as the history plane ([ADR-009](DECISIONS.md#adr-009--we-own-history-beszel-is-optional-enrichment)).
+      The last tier is never shed. The settings panel reports **measured**
+      usage rather than the projection it used to assert as fact, and says so
+      when detail has been dropped.
 - [x] **Superseding ADR for Beszel.** [ADR-009](DECISIONS.md#adr-009--we-own-history-beszel-is-optional-enrichment)
       supersedes ADR-002; Phase 4 is closed.
 

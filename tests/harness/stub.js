@@ -121,8 +121,15 @@
           }
           return out.sort((a, b) => b.cpu_pct - a.cpu_pct || b.rss_kb - a.rss_kb);
         }
-        if (cmd === 'history_usage') return { bytes: 24 * 1024 * 1024, series: 300 };
-        if (cmd === 'active_hosts') return hosts.map(h => h.name);
+        if (cmd === 'history_usage') {
+          const series = hosts.reduce((a, h) => a + 8 + (CORES[h.name] || 8), 0);
+          return {
+            bytes: series * 81792 * 0.31,      // partway through filling
+            series,
+            full_series_bytes: 81792,
+            finest_secs: settings.history_cap_mb < 32 ? 10 : 1,
+          };
+        }
         throw `unknown command ${cmd}`;
       },
     },

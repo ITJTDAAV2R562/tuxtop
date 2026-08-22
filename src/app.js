@@ -2094,17 +2094,46 @@
       `Measured across ${reporting.length} reporting host${reporting.length === 1 ? '' : 's'}` +
       (overridden ? `, ${overridden} with an override the global rate will not change.` : '.');
 
-    // What the memory budget actually buys, since the cap is set in MB.
+    // What the memory budget actually buys.
+    //
+    // Measured, not estimated. This panel used to multiply a series count by a
+    // hardcoded 79.9 KB and report the product as fact, while `history_usage`
+    // sat in the backend returning the real figure and was never called. An
+    // app that exists because an agent reported a plausible wrong number has
+    // no business doing the same about itself - and the traffic meter directly
+    // above says "measured" in earnest.
     const cap = +$('#s-cap').value;
-    const series = hosts.reduce((a, h) => a + 8 + (h.cores || 0), 0);
-    const perSeriesKB = 79.9;
-    const needMB = series * perSeriesKB / 1024;
-    $('[data-cap-hint]').textContent = series
-      ? `Full history for ${hosts.length} host${hosts.length === 1 ? '' : 's'} ` +
-        `needs about ${needMB.toFixed(0)} MB` +
-        (needMB <= cap ? ' - within the limit, so nothing is dropped.'
-                       : ' - over the limit, so the oldest detail is dropped first.')
-      : 'Held in memory only; a restart starts clean.';
+    let usage = null;
+    if (LIVE) {
+      try { usage = await TAURI.core.invoke('history_usage'); } catch { usage = null; }
+    }
+
+    const hint = $('[data-cap-hint]');
+    if (!usage || !usage.series) {
+      hint.textContent = 'Held in memory only; a restart starts clean.';
+    } else {
+      const mb = b => b / 1048576;
+      const held = mb(usage.bytes);
+      // Where a full fleet lands, since every series is bounded by
+      // construction. This one is a projection and is worded as one.
+      const full = mb(usage.series * usage.full_series_bytes);
+      const parts = [
+        `Holding ${held < 1 ? held.toFixed(1) : held.toFixed(0)} MB across ` +
+        `${usage.series} series; full, that becomes about ${full.toFixed(0)} MB.`,
+      ];
+      if (usage.finest_secs > 1) {
+        // The cap is doing something. Saying so matters more than the number:
+        // charts quietly getting coarser with no explanation is the kind of
+        // silent degradation this app is supposed to make impossible.
+        parts.push(`Over the limit, so detail was dropped - the finest history ` +
+                   `now kept is ${usage.finest_secs}s, not 1s. Raise the limit to keep more.`);
+      } else {
+        parts.push(full <= cap
+          ? 'Within the limit, so nothing is dropped.'
+          : 'Projected to exceed the limit, at which point the finest detail is dropped first.');
+      }
+      hint.textContent = parts.join(' ');
+    }
   }
 
   function perHostRows() {
