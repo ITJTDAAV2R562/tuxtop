@@ -119,7 +119,7 @@ dark only is unverified.
 ## Testing
 
 ```sh
-cargo test        # 53 tests, no GUI toolchain needed, runs anywhere
+cargo test        # 136 tests, no GUI toolchain needed, runs anywhere
 cargo clippy --all-targets
 cargo fmt
 python3 scripts/check-theme-tokens.py   # CSS tokens in all three theme states

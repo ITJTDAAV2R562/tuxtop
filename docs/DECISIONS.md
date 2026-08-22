@@ -322,3 +322,63 @@ process per host, and reads framed `/proc` output from its stdout.
 An `ssh` binary cannot be assumed — e.g. shipping to a locked-down environment
 without OpenSSH. Then `russh` returns, and `transport.rs` grows a second
 implementation behind the same interface.
+
+---
+
+## ADR-008 — Aggregates must not be able to hide a member
+
+**Date:** 2026-08-22 · **Status:** accepted
+
+### Context
+
+Phase 11 groups hosts and shows per-group metrics. Every feature before it
+displayed a number some machine reported; this is the first that displays a
+number Tuxtop derived, and derivation is where a monitoring tool gets to be
+confidently wrong on its own account rather than by repeating someone else.
+
+A group card reading "40% CPU" can mean five hosts evenly at 40%, or one host
+pinned at 100% and four idle. A mean renders both identically.
+
+### Decision
+
+Three rules, binding on any aggregate this app ever displays.
+
+**1. Recombine parts; never average ratios.** A group percentage is the sum of
+the numerators over the sum of the denominators, computed once at the end:
+`Σ(cpu_i × cores_i) / Σ(cores_i)`, `Σused / Σtotal`. Mean-of-ratios is banned.
+
+**2. Severity is max; magnitude is aggregate.** The value shown comes from the
+aggregate, the colour band from the worst member. A group containing a critical
+host is never drawn calm.
+
+**3. No default aggregation.** Each metric declares `sum`, `max`, or a
+ratio-of-sums explicitly. A metric with no declaration is *excluded* from group
+views rather than averaged, because an absent rule is a missing decision and
+the honest rendering of a missing decision is nothing.
+
+An aggregate additionally carries the spread of its members and the count that
+contributed, and states both.
+
+### Rationale
+
+dove at 100% of 32 cores beside heron at 0% of 4 is 88.9% of the group's
+compute, not 50%. The mean is not an approximation of the right answer, it is a
+different quantity that happens to share its units — the sort of error that
+survives review because the output looks reasonable.
+
+Rule 3 exists because rules 1 and 2 will otherwise decay: the next person to
+add a metric will get a plausible number from a default they never chose. A
+metric silently absent from a group view is a bug someone reports; a metric
+silently averaged wrongly is a bug nobody catches.
+
+### Consequences
+
+The metric registry gains an `agg` field. Adding a metric stays a table entry,
+but the table entry now has one more mandatory column.
+
+Group history is aggregated on read and records how many members contributed to
+each point, so a host going silent cannot move a group's line — the same
+requirement as the history plane's explicit gaps, applied one level up.
+
+Groups and individual hosts must not share a comparison axis: a group's summed
+network rate against one host's is a category error, not a comparison.

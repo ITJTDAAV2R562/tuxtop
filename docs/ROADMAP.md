@@ -283,29 +283,30 @@ and a runaway process are the same question asked twice.
 
 ---
 
-## Phase 11 — Grouping hosts into clusters — **needs a spec**
+## Phase 11 — Grouping hosts into clusters — **specced, next**
 
-The next large design question, and deliberately unspecified.
+Group hosts by role, site or cluster and aggregate per group, so a fleet of
+nineteen reads as five things.
 
-Group hosts — by role, by site, by cluster — and aggregate metrics per group,
-so a fleet of nineteen reads as five things rather than nineteen. Open
-questions before any code:
+Full spec: **[specs/host-groups.md](specs/host-groups.md)**. The open questions
+listed here previously are answered there; the short version:
 
-- **What is a group, mechanically?** A label on a host, several labels, or a
-  tree? Labels compose and a tree does not, but a tree matches how people
-  describe infrastructure out loud.
-- **How does a metric aggregate?** Sum for cores and bytes; mean for
-  percentages; max for temperature. That is per-metric behaviour the registry
-  does not carry yet, and getting it wrong produces a confident wrong number —
-  a group "at 40% CPU" that is really one box at 100% and four idle.
-- **Does a group get its own card, or does it replace its hosts?** Probably
-  collapsible: the group as one row, expanding to its members.
-- **Does history follow?** A group series could be aggregated on read from
-  member series, or stored separately. On read is cheaper and cannot drift.
-- **What does it do to the fleet view's packing?** Groups are the natural
-  block boundary, which may simplify the layout rather than complicate it.
+- **A group is one optional label per host.** Not multi-label, not a tree —
+  both are widenings a single label stays compatible with, and neither earns
+  its complexity yet.
+- **Percentages aggregate by recombining their parts, never by averaging the
+  ratio.** dove at 100% of 32 cores and heron at 0% of 4 is 88.9%, not 50%.
+  See [ADR-008](DECISIONS.md#adr-008--aggregates-must-not-be-able-to-hide-a-member).
+- **Severity is max, magnitude is aggregate.** A group averaging 40% that
+  contains a host at 97% renders red.
+- **Every group shows its spread**, so a tight group and one tearing itself
+  apart are distinguishable without expanding it.
+- **History aggregates on read**, and marks any span where a member was silent
+  rather than quietly summarising fewer hosts than it claims.
 
-This phase should produce a written spec first, as Phase 8 did.
+This is the first feature that shows a number *Tuxtop computed* rather than one
+a machine reported, which is a different risk class from everything built so
+far — hence a spec before code, as Phase 8 had.
 
 ---
 
