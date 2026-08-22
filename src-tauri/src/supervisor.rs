@@ -217,7 +217,9 @@ pub struct HostTraffic {
 /// `kill_on_drop` — so a closed window does not leave an ssh process running
 /// against every host in the fleet.
 async fn watch(app: AppHandle, cfg: HostConfig, interval_secs: u32, traffic: Arc<TrafficCounter>) {
-    let (tx, mut rx) = mpsc::channel(16);
+    // Annotated: inference otherwise picks `str` for the name, because the
+    // only use of it is a `&str` argument.
+    let (tx, mut rx) = mpsc::channel::<(String, HostEvent)>(16);
 
     let forward = async {
         while let Some((host, event)) = rx.recv().await {
