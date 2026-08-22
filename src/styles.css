@@ -1034,3 +1034,25 @@ body[data-bands="off"] .legend span:not(:last-child){display:none}
      scrollbar on the whole process list to read one argument is a poor trade. */
   overflow-wrap:anywhere;white-space:pre-wrap;
 }
+
+/* ============ host filter ============ */
+.hostfilterwrap{display:flex;align-items:center}
+.hostfilterwrap .procfilter{min-width:150px}
+
+/* How much is hidden.
+   Loud in the Fleet view, because that is the one glanced at to confirm the
+   fleet is fine - a filtered fleet must not read as a calm one. Quiet
+   elsewhere, where a filtered list obviously is a search result. */
+.filter-note{
+  margin:0 0 8px;padding:5px 11px;border-radius:7px;
+  font-family:var(--font-mono);font-size:11px;
+}
+.filter-note[data-tone="quiet"]{
+  color:var(--text-3);background:var(--surface-sunk);border:1px solid var(--stroke);
+}
+.filter-note[data-tone="loud"]{
+  color:var(--warn);
+  background:color-mix(in srgb,var(--warn) 12%,transparent);
+  border:1px solid color-mix(in srgb,var(--warn) 40%,transparent);
+  font-weight:600;
+}

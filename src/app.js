@@ -183,7 +183,7 @@
   /// that has never used the feature renders precisely as it did before it
   /// existed.
   function fleetRows() {
-    const { groups, ungrouped } = TuxAgg.groupHosts(ordered());
+    const { groups, ungrouped } = TuxAgg.groupHosts(visible());
     const rows = [];
     for (const g of groups) {
       rows.push({ kind: 'group', name: g.name, hosts: g.hosts });
@@ -255,6 +255,59 @@
       return list.sort((a, b) => a.name.localeCompare(b.name));
     }
     return list;
+  }
+
+  /// Ad-hoc "show me these hosts", shared by the Hosts, Fleet and History
+  /// views. Groups are the durable structure; this is the transient question.
+  ///
+  /// Deliberately not persisted, and for a sharper reason than the process
+  /// filter. The Fleet view is what you glance at to confirm the fleet is
+  /// fine. A filter restored on Monday morning would show eight calm bars
+  /// while eleven hidden hosts were on fire - a filtered view that looks like
+  /// a complete one, which is the failure this whole project guards against.
+  let hostFilter = '';
+
+  /// Matches name, group and distro, so typing a group name narrows to it.
+  /// That composes with Phase 11 rather than duplicating it.
+  function matchesHost(h, q) {
+    if (!q) return true;
+    return `${h.name} ${h.group || ''} ${h.distro || ''}`.toLowerCase().includes(q);
+  }
+
+  /// Hosts to draw: ordered, then filtered.
+  ///
+  /// Separate from `ordered()` on purpose. That one feeds drag-reorder
+  /// persistence and the default history subject, and filtering it would drop
+  /// hidden hosts from the saved order and hand an empty list to code that
+  /// assumes at least one host exists.
+  function visible() {
+    const q = hostFilter.trim().toLowerCase();
+    return q ? ordered().filter(h => matchesHost(h, q)) : ordered();
+  }
+
+  /// "showing 3 of 19 hosts", or nothing when everything is shown.
+  function filterNote() {
+    const q = hostFilter.trim().toLowerCase();
+    if (!q) return '';
+    const n = visible().length;
+    return n
+      ? `showing ${n} of ${hosts.length} hosts`
+      : `no host matches \u201c${hostFilter.trim()}\u201d`;
+  }
+
+  /// State how much is hidden, and shout about it in the Fleet view.
+  ///
+  /// Everywhere else a filtered view is obviously a search result. The Fleet
+  /// view is the one you glance at to confirm nothing is wrong, so a filtered
+  /// one must not read as a healthy one - hence a warning tone there and a
+  /// quiet one elsewhere. Same information, different urgency.
+  function showFilterNote() {
+    const el = $('#filterNote');
+    if (!el) return;
+    const text = filterNote();
+    el.hidden = !text || prefs.view === 'procs';
+    el.textContent = text;
+    el.dataset.tone = prefs.view === 'all' ? 'loud' : 'quiet';
   }
 
   const last = a => (a.length ? a[a.length - 1] : 0);
@@ -533,7 +586,7 @@
     // swaps in a label and the members' own blocks.
     const items = [];
     {
-      const { groups, ungrouped } = TuxAgg.groupHosts(ordered());
+      const { groups, ungrouped } = TuxAgg.groupHosts(visible());
       for (const g of groups) {
         if (groupOpen(g.name)) {
           items.push({ kind: 'ghead', name: g.name, hosts: g.hosts });
@@ -860,6 +913,8 @@
   function build() {
     $('#histbar').hidden = prefs.view !== 'history';
     $('#procbar').hidden = prefs.view !== 'procs';
+    $('#hostFilterWrap').hidden = prefs.view === 'procs';
+    showFilterNote();
     if (prefs.view !== 'procs') { stopProcs(); grid.classList.remove('proc-mode'); }
     if (prefs.view === 'history') return buildHistory();
     stopHistoryTimer();
@@ -879,7 +934,7 @@
       grid.innerHTML = '<div class="empty">No hosts. Add one to start watching.</div>';
       return;
     }
-    ordered().forEach(h => {
+    visible().forEach(h => {
       const el = document.createElement('article');
       el.className = 'card';
       el.dataset.id = h.id;
@@ -1283,6 +1338,9 @@
   $('#viewAll').setAttribute('aria-pressed', String(prefs.view === 'all'));
   $('#viewHist').setAttribute('aria-pressed', String(prefs.view === 'history'));
   $('#viewProcs').setAttribute('aria-pressed', String(prefs.view === 'procs'));
+  // The filter belongs to the views that draw hosts. Processes has its own,
+  // which searches different things.
+  $('#hostFilterWrap').hidden = prefs.view === 'procs';
   $('#metricWrap').hidden = prefs.view !== 'all';
   $('#histWrap').hidden = prefs.view !== 'history';
   $('#sortSel').closest('.sortwrap').hidden = prefs.view === 'procs';
@@ -1363,7 +1421,7 @@
     if (slice.mode === 'host') {
       // Pick a different host without leaving History.
       $('[data-hist-label]').textContent = 'Host';
-      sub.innerHTML = ordered()
+      sub.innerHTML = visible()
         .map(h => `<option value="${esc(h.name)}"${h.name === slice.host ? ' selected' : ''}>${esc(h.name)}</option>`)
         .join('');
       $('#histSwap').textContent = 'Compare across fleet';
@@ -1395,7 +1453,7 @@
         // grouped by host. There is no single line to overlay.
         const pack = document.createElement('div');
         pack.className = 'cores-pack';
-        for (const h of ordered()) {
+        for (const h of visible()) {
           if (h.cores > 0) pack.appendChild(coreChartsEl(h, true));
         }
         grid.appendChild(pack);
@@ -1405,7 +1463,7 @@
       // Groups first, then every host. The group charts are added rather
       // than substituted: a summary that costs you the ability to see which
       // member caused a spike is a worse trade than a longer page.
-      const { groups } = TuxAgg.groupHosts(ordered());
+      const { groups } = TuxAgg.groupHosts(visible());
       for (const g of groups) {
         const el = chartEl(`group:${g.name}::${slice.metric}`,
                            `${g.name} · ${g.hosts.length} hosts`, slice.metric, '');
@@ -1413,7 +1471,7 @@
         el.dataset.group = g.name;
         wrap.appendChild(el);
       }
-      for (const h of ordered()) {
+      for (const h of visible()) {
         wrap.appendChild(chartEl(`${h.name}::${slice.metric}`, h.name, slice.metric, h.name));
       }
     }
@@ -2181,6 +2239,23 @@
     else procOpen.add(key);
     refreshProcs();
   }
+
+  $('#hostFilter').addEventListener('input', e => {
+    hostFilter = e.target.value;
+    build();
+    paint();
+  });
+  // Escape clears rather than merely blurring, so getting back to the whole
+  // fleet is one key and never a hunt for the right end of the text.
+  $('#hostFilter').addEventListener('keydown', e => {
+    if (e.key !== 'Escape') return;
+    e.stopPropagation();
+    if (!e.target.value) return;
+    e.target.value = '';
+    hostFilter = '';
+    build();
+    paint();
+  });
 
   $('#procFilter').addEventListener('input', e => {
     procFilter = e.target.value;

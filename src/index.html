@@ -57,6 +57,10 @@
       <span data-hist-label>Metric</span>
       <select id="histSubject" aria-label="History subject"></select>
     </label>
+    <label class="hostfilterwrap" id="hostFilterWrap" hidden>
+      <input type="search" id="hostFilter" class="procfilter" spellcheck="false"
+             placeholder="Filter hosts" aria-label="Filter hosts">
+    </label>
     <label class="sortwrap">
       <span>Sort</span>
       <select id="sortSel" aria-label="Card order">
@@ -73,6 +77,8 @@
     <button class="btn" id="themeBtn">Theme</button>
     <button class="btn primary" id="addBtn">Add host</button>
   </div>
+
+  <p class="filter-note" id="filterNote" hidden></p>
 
   <p class="cadence-note" id="cadNote">Sampling at the Beszel agent's cadence &mdash; the grid now refreshes once a minute. This is the lag the direct <code>/proc/stat</code> path removes.</p>
 
