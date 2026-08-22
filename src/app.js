@@ -41,7 +41,13 @@
   const PREFS = 'tuxtop.prefs';
   const prefs = Object.assign(
     { view: 'hosts', sort: 'manual', metric: 'cores', slice: null,
-      procKernel: false, procSort: 'cpu_pct', procDesc: true },
+      procKernel: false, procSort: 'cpu_pct', procDesc: true,
+      // Slider position, not seconds: the mapping is log-spaced, and storing
+      // the position keeps a restored window identical to the one that was
+      // set rather than the nearest step to a rounded number of seconds.
+      // 0 is the minimum, 60 s - the live end, which is where someone opening
+      // History from a card they are watching almost always wants to be.
+      histWin: 0 },
     JSON.parse(localStorage.getItem(PREFS) || '{}')
   );
   const savePrefs = () => localStorage.setItem(PREFS, JSON.stringify(prefs));
@@ -1926,7 +1932,15 @@
     build();
   });
 
+  $('#histWindow').value = String(prefs.histWin ?? 0);
   $('#histWindow').addEventListener('input', refreshHistory);
+  // Saved on `change`, not `input`: dragging fires input per pixel, and
+  // writing localStorage on every one of those to record a position the user
+  // is still choosing is pure waste.
+  $('#histWindow').addEventListener('change', e => {
+    prefs.histWin = +e.target.value;
+    savePrefs();
+  });
   $('#histSwap').addEventListener('click', () => {
     const s = currentSlice();
     prefs.slice = s.mode === 'host'
