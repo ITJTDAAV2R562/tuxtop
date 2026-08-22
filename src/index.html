@@ -154,9 +154,15 @@
       </span>
     </label>
 
-    <details class="perhost">
-      <summary>Per-host intervals</summary>
-      <table class="meter-table"><tbody data-perhost-rows></tbody></table>
+    <details class="perhost" open>
+      <summary>Per-host interval and group</summary>
+      <table class="meter-table">
+        <thead><tr><th>Host</th><th>Interval</th><th>Group</th></tr></thead>
+        <tbody data-perhost-rows></tbody>
+      </table>
+      <datalist id="phGroups"></datalist>
+      <p class="hint">Hosts sharing a group are summarised as one row in the
+        fleet view and one chart in history. Leave blank for none.</p>
     </details>
 
     <div class="dlg-actions">

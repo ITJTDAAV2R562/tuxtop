@@ -9,6 +9,7 @@
     { name: 'wader', addr: 'wader', user: '', port: 22, beszel_url: null, group: 'servers' },
     { name: 'owl',   addr: 'owl',   user: '', port: 22, beszel_url: null, group: null },
   ];
+  const settings = { interval_secs: 1, history_cap_mb: 256, always_on_top: false };
   const emit = (ev, payload) => (listeners[ev] || []).forEach(f => f({ payload }));
 
   const sample = (name, nCores) => ({
@@ -80,6 +81,22 @@
             out[m] = invokeHistory({ ...args, metric: m });
           }
           return out;
+        }
+        // The settings dialog reads these on open; without them the whole
+        // dialog errored in the harness while working fine in the app.
+        if (cmd === 'get_settings') return { ...settings };
+        if (cmd === 'set_settings') { Object.assign(settings, args.settings); return { ...settings }; }
+        if (cmd === 'set_host_interval') {
+          const h = hosts.find(x => x.name === args.name);
+          if (h) h.interval_secs = args.intervalSecs ?? null;
+          emit('tuxtop://hosts-changed', structuredClone(hosts));
+          return structuredClone(hosts);
+        }
+        if (cmd === 'traffic_stats') {
+          return hosts.map(h => ({
+            host: h.name, interval_secs: h.interval_secs ?? settings.interval_secs,
+            bytes_total: 7300 * 60, frames_total: 60, last_frame_bytes: 7300,
+          }));
         }
         if (cmd === 'set_host_group') {
           const h = hosts.find(x => x.name === args.name);

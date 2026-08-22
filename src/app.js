@@ -2108,6 +2108,11 @@
   }
 
   function perHostRows() {
+    // Existing groups offered as suggestions, so "servers" and "Servers" do
+    // not silently become two groups that look like one.
+    const known = [...new Set(hosts.map(h => h.group).filter(Boolean))].sort();
+    $('#phGroups').innerHTML = known.map(g => `<option value="${esc(g)}">`).join('');
+
     $('[data-perhost-rows]').innerHTML = hosts.map(h => `
       <tr><td>${esc(h.name)}</td><td>
         <select data-host-iv="${esc(h.name)}">
@@ -2115,7 +2120,11 @@
           ${INTERVALS.map(iv =>
             `<option value="${iv}"${h.intervalOverride === iv ? ' selected' : ''}>${iv}s</option>`
           ).join('')}
-        </select></td></tr>`).join('');
+        </select></td><td>
+        <input class="ph-group" list="phGroups" data-host-group="${esc(h.name)}"
+               value="${esc(h.group || '')}" placeholder="none" autocomplete="off"
+               aria-label="Group for ${esc(h.name)}">
+        </td></tr>`).join('');
   }
 
   const setDlg = $('#setDlg');
@@ -2177,6 +2186,23 @@
       await TAURI.core.invoke('set_host_interval', { name, intervalSecs: v });
     } catch (err) { showError(String(err)); }
     refreshMeter();
+  });
+
+  // Committed on blur or Enter rather than per keystroke: every change
+  // rewrites hosts.toml and re-renders the fleet, and doing that once per
+  // typed letter would rearrange the view under the cursor.
+  setDlg.addEventListener('change', async e => {
+    const inp = e.target.closest('[data-host-group]');
+    if (!inp || !LIVE) return;
+    const name = inp.dataset.hostGroup;
+    const group = inp.value.trim() || null;
+    try {
+      await TAURI.core.invoke('set_host_group', { name, group });
+      const h = hosts.find(x => x.name === name);
+      if (h) h.group = group;
+      perHostRows();          // refresh the suggestion list with any new group
+      build(); paint();
+    } catch (err) { showError(String(err)); }
   });
 
   const dlg = $('#addDlg');

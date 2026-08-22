@@ -198,6 +198,12 @@ the same bug as a 60-second bucket averaging away a spike.
   by its worst host."
 - A group's header states its composition: `workstations · 3 hosts · 68 cores`.
   A card that will not say what it is made of cannot be checked.
+- **Groups are assigned in Settings**, in the per-host table beside the
+  interval override, and offered as suggestions from the groups already in
+  use. The Add host dialog carries the same field for a host being created.
+  *(Added after 11c: the first cut shipped the field on the Add host dialog
+  only, which made it reachable for a host that does not exist yet and for no
+  other — every host already in the fleet had no path to it at all.)*
 
 ---
 
