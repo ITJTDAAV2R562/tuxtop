@@ -168,6 +168,7 @@ async fn pump(
             let mem = frame.mem;
             let load = frame.load;
             let cpu_temp_c = frame.cpu_temp_c;
+            let temps = frame.temps.clone();
             let gpu = frame.gpu.clone();
             let uptime_secs = frame.uptime_secs;
             let facts = frame.facts.clone();
@@ -203,6 +204,7 @@ async fn pump(
                 gpu,
                 load,
                 cpu_temp_c,
+                temps,
                 swap_used_kb,
                 swap_total_kb,
                 uptime_secs,

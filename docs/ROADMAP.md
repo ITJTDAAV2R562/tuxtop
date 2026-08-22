@@ -282,10 +282,22 @@ what Beszel actually stores, checked against its schema.
       discard the split. Showing iowait separately is genuinely diagnostic:
       "the CPU is not busy, it is waiting on disk" is a different problem with
       a different fix.
-- [ ] **All temperature sensors**, not only the CPU. We rank sensors and keep
-      one; dove also reports NVMe, chipset and GPU. Left undone: the ranking
-      exists and works, and a second sensor list is presentation rather than
-      collection.
+- [x] **All temperature sensors**, not only the CPU. Every hwmon reading
+      always crossed the wire; only the presentation discarded them. Kept as a
+      named list on the `Sample`, with each sensor classified (cpu / drive /
+      wireless / board) because **the number is not actionable without its
+      subject** — 72 °C is alarming for a CPU and unremarkable for an NVMe.
+      Unlabelled sensors are numbered within their driver: dove's board
+      exposes four `gigabyte_wmi` inputs, and naming them all alike would show
+      one and hide three.
+
+      Three surfaces: the host card's temperature chip keeps showing the CPU
+      (the reading the ranking vouches for) and lists every sensor in its
+      tooltip; a new **Hottest sensor** fleet metric that always names the
+      component; and one history series per sensor, so an NVMe warming up over
+      an hour is finally visible. On dove the hottest sensor is an NVMe at
+      71.9 °C while the CPU reads 31.6 °C — a 40-degree spike the app could
+      not previously show.
 
 **Done.** Verified against dove: Ryzen 5950X, Debian 13, kernel 6.12, 9d 22h
 up, `/` at 8.4% against `df`'s 9%, swap 7.2%, and a user/system/iowait/steal

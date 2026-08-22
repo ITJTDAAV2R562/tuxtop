@@ -123,6 +123,38 @@
   const band = v => v >= 90 ? 'crit' : v >= 75 ? 'warn' : 'cool';
   const gb = v => v.toFixed(1);
 
+  /// Name one sensor. Mirrors `TempSensor::name` in the sampler.
+  ///
+  /// Unlabelled sensors are numbered within their driver: dove's board exposes
+  /// four `gigabyte_wmi` inputs, and calling them all "gigabyte_wmi" would
+  /// silently show one reading and hide three.
+  function sensorName(t, indexWithinDriver) {
+    if (!t.label) {
+      return indexWithinDriver > 0 ? `${t.driver} ${indexWithinDriver + 1}` : t.driver;
+    }
+    return `${t.driver} ${t.label}`;
+  }
+
+  /// History series key for one sensor. Mirrors `sensor_key` in
+  /// `history_store.rs`; the two must agree or a chart asks for a series
+  /// nothing writes and renders "no history yet" forever.
+  function sensorMetric(t) {
+    return t.label
+      ? `temp.${t.driver}.${t.label.replace(/ /g, '_')}`
+      : `temp.${t.driver}.${t.idx || 0}`;
+  }
+
+  /// The hottest sensor on a host, whatever it is attached to.
+  ///
+  /// Always returned with its name. "72C" is alarming for a CPU and
+  /// unremarkable for an NVMe under load, so the number alone is not
+  /// actionable - and on dove the hottest sensor really is an NVMe, 40 degrees
+  /// above the CPU.
+  function hottestSensor(h) {
+    if (!h.temps || !h.temps.length) return null;
+    return h.temps.reduce((a, b) => (b.celsius > a.celsius ? b : a));
+  }
+
   // ---- groups -------------------------------------------------------------
   //
   // Aggregation itself lives in agg.js under ADR-008. This is only the part
@@ -180,11 +212,24 @@
   /// States composition always, and states partiality whenever it exists: a
   /// group summarising four hosts while appearing to summarise five is the
   /// averaged-away spike one level up.
-  function groupSub(g, hosts) {
-    const cores = hosts.reduce((a, h) => a + (h.cores || 0), 0);
-    const n = hosts.length;
-    const parts = [`${n} host${n === 1 ? '' : 's'}`];
-    if (cores) parts.push(`${cores} cores`);
+  function groupSub(g, hosts, m) {
+    const parts = [];
+
+    // For a 'max' aggregate the group's value *is* one member's reading, so
+    // that member is named. A group reading 71C while declining to say which
+    // host - or which component - is the aggregate hiding a member, which
+    // ADR-008 exists to forbid.
+    if (m && m.agg === 'max' && g && g.top) {
+      const h = hosts.find(x => x.name === g.top.host);
+      const detail = h && m.sub ? m.sub(h) : '';
+      parts.push(detail ? `${g.top.host} · ${detail}` : g.top.host);
+    } else {
+      const cores = hosts.reduce((a, h) => a + (h.cores || 0), 0);
+      const n = hosts.length;
+      parts.push(`${n} host${n === 1 ? '' : 's'}`);
+      if (cores) parts.push(`${cores} cores`);
+    }
+
     if (g && g.partial) parts.push(`${g.contributing} of ${g.total} reporting`);
     return parts.join(' · ');
   }
@@ -274,6 +319,17 @@
       scalar: h => (h.temp ?? null),
       fmt: v => Math.round(v) + '\u00b0C',
       has: h => h.temp !== null && h.temp !== undefined,
+    },
+    hottest: {
+      // Separate from 'CPU temp' on purpose. Merging them would mean either
+      // reporting an NVMe as the CPU, or hiding the hottest thing in the box.
+      label: 'Hottest sensor', shape: 'scalar', scale: 'absolute', max: 100,
+      agg: 'max',
+      scalar: h => { const t = hottestSensor(h); return t ? t.celsius : null; },
+      fmt: v => Math.round(v) + '\u00b0C',
+      // Always names the component: the number is not actionable without it.
+      sub: h => { const t = hottestSensor(h); return t ? t.name : ''; },
+      has: h => !!hottestSensor(h),
     },
     fs: {
       label: 'Disk usage', shape: 'scalar', scale: 'absolute', max: 100,
@@ -742,7 +798,7 @@
       }
 
       row.querySelector('[data-val]').textContent = dead ? '—' : m.fmt(g.value);
-      row.querySelector('[data-sub]').textContent = groupSub(g, list);
+      row.querySelector('[data-sub]').textContent = groupSub(g, list, m);
       row.classList.toggle('partial', !!(g && g.partial));
     });
 
@@ -1069,6 +1125,13 @@
         tchip.classList.toggle('nodata', !hasTemp);
         el.querySelector('[data-temp]').textContent =
           hasTemp ? Math.round(h.temp) + '\u00b0C' : '\u2014';
+        // The chip shows the CPU, which is the reading the ranking vouches
+        // for. Every other sensor is here, because the hottest thing in the
+        // box is often an NVMe and the chip must not be read as the maximum.
+        tchip.title = (h.temps && h.temps.length)
+          ? 'All sensors\n' + h.temps
+              .map(t => `${t.name}  ${Math.round(t.celsius)}\u00b0C`).join('\n')
+          : 'No temperature sensors on this host';
       }
       if (h.gpu) el.querySelector('[data-gpu]').textContent = Math.round(h.gpuU) + '%';
 
@@ -1302,6 +1365,15 @@
         if (m.shape === 'vector') continue;
         wrap.appendChild(chartEl(`${slice.host}::${id}`, m.label, id, slice.host));
       }
+      // One chart per sensor. These are not registry metrics - the set differs
+      // per host, and a fleet-wide list would offer an NVMe that only one box
+      // has. An NVMe warming up over an hour is the shape worth seeing, and it
+      // was collected and discarded until now.
+      const sh = hosts.find(x => x.name === slice.host);
+      for (const t of (sh && sh.temps) || []) {
+        wrap.appendChild(chartEl(`${slice.host}::${sensorMetric(t)}`,
+                                 t.name, sensorMetric(t), slice.host));
+      }
     } else {
       // Pick a different metric without leaving History. Vector metrics are
       // excluded: there is no single line per host to compare.
@@ -1351,6 +1423,15 @@
     }
 
     refreshHistory();
+  }
+
+  /// A metric definition for a chart, including per-sensor series that are
+  /// not registry entries. They all render as degrees on the same 0-100 scale
+  /// as the CPU, so an NVMe chart is directly comparable to it.
+  function metricFor(id) {
+    if (METRICS[id]) return METRICS[id];
+    if (String(id).startsWith('temp.')) return METRICS.temp;
+    return null;
   }
 
   function chartEl(key, label, metric, host) {
@@ -1550,7 +1631,7 @@
 
     const charts = [...grid.querySelectorAll('.chart:not([data-group])')];
     await Promise.all(charts.map(async el => {
-      const m = METRICS[el.dataset.metric];
+      const m = metricFor(el.dataset.metric);
       if (!m) return;
       const cv = el.querySelector('canvas');
       const budget = Math.max(60, Math.round(cv.clientWidth || 320));
@@ -2362,6 +2443,13 @@
       h.dio = s.disk_read_bps + s.disk_write_bps; // bytes/sec
       h.load = s.load;
       h.temp = (typeof s.cpu_temp_c === 'number') ? s.cpu_temp_c : null;
+      // Every sensor, named. Kept separate from h.temp because that one is
+      // the reading the CPU ranking vouches for; the hottest thing in the box
+      // is frequently an NVMe and must not be confused with it.
+      h.temps = Array.isArray(s.temps) ? s.temps.map((t, i, all) => {
+        const idx = all.slice(0, i).filter(x => x.driver === t.driver).length;
+        return { ...t, idx, name: sensorName(t, idx) };
+      }) : [];
       h.uptime = s.uptime_secs ?? h.uptime ?? null;
       h.swapUsed = s.swap_used_kb || 0;
       h.swapTotal = s.swap_total_kb || 0;

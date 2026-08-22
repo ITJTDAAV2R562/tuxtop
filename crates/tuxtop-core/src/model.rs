@@ -71,6 +71,10 @@ pub struct Sample {
     /// a plausible cold CPU.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cpu_temp_c: Option<f32>,
+    /// Every hwmon reading. The CPU's is repeated here; `cpu_temp_c` stays
+    /// separate because it is the one the ranking vouches for.
+    #[serde(default)]
+    pub temps: Vec<crate::sampler::TempSensor>,
     /// Swap in use. Zero total means no swap configured, which is normal.
     pub swap_used_kb: u64,
     pub swap_total_kb: u64,

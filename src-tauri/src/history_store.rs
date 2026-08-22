@@ -87,6 +87,17 @@ impl HistoryStore {
         if let Some(c) = s.cpu_temp_c {
             h.push(&s.host, "temp", t, c);
         }
+
+        // Every sensor gets its own series, keyed the same way the UI names
+        // it. An NVMe warming up over an hour is exactly the shape this app
+        // exists to show, and it was being collected and discarded.
+        let mut seen: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+        for sensor in &s.temps {
+            let i = seen.entry(sensor.driver.as_str()).or_insert(0);
+            let key = sensor_key(sensor, *i);
+            *i += 1;
+            h.push(&s.host, &key, t, sensor.celsius);
+        }
         if let Some(g) = &s.gpu {
             h.push(&s.host, "gpu", t, g.util_pct);
             if g.mem_total_mb > 0 {
@@ -145,6 +156,20 @@ pub struct HistoryUsage {
     /// Finest interval still held anywhere, in seconds. Above 1 means the cap
     /// has shed resolution, and the panel must say so.
     pub finest_secs: u32,
+}
+
+/// Series key for one sensor, stable across samples.
+///
+/// Keyed by driver and label rather than by position, because a host can gain
+/// or lose an hwmon device between samples - plugging in a drive shifts every
+/// index after it, and a chart would silently continue someone else's history
+/// under the same name.
+fn sensor_key(s: &tuxtop_core::sampler::TempSensor, index_within_driver: usize) -> String {
+    if s.label.is_empty() {
+        format!("temp.{}.{}", s.driver, index_within_driver)
+    } else {
+        format!("temp.{}.{}", s.driver, s.label.replace(' ', "_"))
+    }
 }
 
 /// Wall-clock seconds. History is anchored to real time rather than uptime so

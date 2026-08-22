@@ -21,15 +21,34 @@
     // Some hosts expose no CPU sensor - VMs typically do not - so the UI has
     // to handle both in the same fleet.
     cpu_temp_c: (name.length % 3 === 0) ? null : 34 + (name.length * 7) % 45,
+    // Mirrors dove: the NVMe runs far hotter than the CPU, and the board
+    // exposes several unlabelled inputs. Both are the cases the UI has to get
+    // right. A host with no CPU sensor has no sensors at all, like a VM.
+    temps: (name.length % 3 === 0) ? [] : [
+      { driver: 'k10temp', label: 'Tctl', kind: 'cpu',
+        celsius: 34 + (name.length * 7) % 45 },
+      { driver: 'k10temp', label: 'Tccd1', kind: 'cpu',
+        celsius: 36 + (name.length * 5) % 40 },
+      { driver: 'nvme', label: 'Composite', kind: 'drive', celsius: 48 + Math.random() * 4 },
+      { driver: 'nvme', label: 'Sensor 1', kind: 'drive', celsius: 68 + Math.random() * 6 },
+      { driver: 'gigabyte_wmi', label: '', kind: 'board', celsius: 33 + Math.random() * 3 },
+      { driver: 'gigabyte_wmi', label: '', kind: 'board', celsius: 36 + Math.random() * 3 },
+    ],
   });
 
   function invokeHistory(args) {
     const { metric, fromSecsAgo, maxPoints, host } = args;
     const now = Math.floor(Date.now() / 1000);
     const n = Math.min(maxPoints || 200, 240);
-    const pct = ['cpu','mem','temp','gpu','gpumem'].includes(metric) || String(metric).startsWith('core.');
+    // Anything on a 0-100 scale. `temp.*` are the per-sensor series and
+    // `hottest` the fleet metric; without them here they fell through to the
+    // byte-rate branch and charted 4,500,950 degrees.
+    const pct = ['cpu','mem','temp','gpu','gpumem','hottest','fs','swap'].includes(metric)
+      || String(metric).startsWith('core.')
+      || String(metric).startsWith('temp.');
     const load = metric === 'load';
-    const base = load ? 0.6 : pct ? 18 : 4e6;
+    const degrees = metric === 'hottest' || String(metric).startsWith('temp.') || metric === 'temp';
+    const base = load ? 0.6 : degrees ? (metric === 'hottest' ? 68 : 42) : pct ? 18 : 4e6;
     const seed = String(metric).length * 3 + String(host || '').length * 5;
     // coot falls silent through the middle of every window. The backend skips
     // gaps rather than returning nulls, so a silent host yields *fewer*

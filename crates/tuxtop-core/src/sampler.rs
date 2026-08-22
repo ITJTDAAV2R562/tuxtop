@@ -96,6 +96,8 @@ pub struct Frame {
     pub disk_write_bytes: u64,
     /// CPU package temperature in degrees C, when a sensor identifies one.
     pub cpu_temp_c: Option<f32>,
+    /// Every hwmon reading, not only the CPU's.
+    pub temps: Vec<TempSensor>,
     /// First GPU reported by nvidia-smi, if any.
     pub gpu: Option<crate::model::GpuSample>,
     /// Seconds since boot.
@@ -142,6 +144,7 @@ pub fn parse_frame(text: &str) -> Frame {
 
     frame.load = parse_loadavg(text);
     frame.cpu_temp_c = parse_cpu_temp(text);
+    frame.temps = parse_temps(text);
     frame.gpu = parse_gpu(text);
     frame.uptime_secs = crate::facts::parse_uptime(text);
 
@@ -190,6 +193,120 @@ pub fn parse_gpu(text: &str) -> Option<crate::model::GpuSample> {
         });
     }
     None
+}
+
+/// What a sensor is attached to.
+///
+/// Kept because naming the component is the whole point. "72C" is alarming
+/// for a CPU and unremarkable for an NVMe under load, so a temperature
+/// without its subject is a number the reader cannot act on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SensorKind {
+    Cpu,
+    Drive,
+    Wireless,
+    Board,
+    Other,
+}
+
+impl SensorKind {
+    fn of(driver: &str) -> Self {
+        match driver {
+            "coretemp" | "k10temp" | "zenpower" | "cpu_thermal" | "soc_thermal" => Self::Cpu,
+            "nvme" | "drivetemp" => Self::Drive,
+            d if d.starts_with("iwlwifi") || d.starts_with("mt79") => Self::Wireless,
+            "acpitz" | "gigabyte_wmi" | "nct6775" | "it87" => Self::Board,
+            _ => Self::Other,
+        }
+    }
+}
+
+/// One hwmon reading.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct TempSensor {
+    /// hwmon driver name, e.g. `nvme`, `k10temp`.
+    pub driver: String,
+    /// hwmon label, e.g. `Composite`, `Tctl`. Often empty — board sensors
+    /// frequently expose several inputs with no label at all.
+    pub label: String,
+    pub celsius: f32,
+    pub kind: SensorKind,
+}
+
+impl TempSensor {
+    /// A name a person can act on.
+    ///
+    /// Several sensors routinely share a driver with no label — dove's board
+    /// exposes four `gigabyte_wmi` inputs — so unlabelled ones are numbered
+    /// within their driver. Without that they collapse into one row and three
+    /// readings vanish.
+    pub fn name(&self, index_within_driver: usize) -> String {
+        if self.label.is_empty() {
+            if index_within_driver > 0 {
+                format!("{} {}", self.driver, index_within_driver + 1)
+            } else {
+                self.driver.clone()
+            }
+        } else {
+            format!("{} {}", self.driver, self.label)
+        }
+    }
+}
+
+/// Every plausible hwmon reading, in the order the host reported them.
+///
+/// The same plausibility floor as `parse_cpu_temp`: a failed sensor commonly
+/// reports 0 or something enormous, and publishing that is worse than
+/// publishing nothing.
+pub fn parse_temps(text: &str) -> Vec<TempSensor> {
+    let mut out = Vec::new();
+
+    for line in text.lines() {
+        let Some(rest) = line.strip_prefix("TXT|") else {
+            continue;
+        };
+        let mut f = rest.split('|');
+        let (Some(driver), Some(label), Some(value)) = (f.next(), f.next(), f.next()) else {
+            continue;
+        };
+        let Ok(milli) = value.trim().parse::<f32>() else {
+            continue;
+        };
+        let celsius = milli / 1000.0;
+        if !(5.0..=150.0).contains(&celsius) {
+            continue;
+        }
+        out.push(TempSensor {
+            kind: SensorKind::of(driver),
+            driver: driver.to_string(),
+            label: label.trim().to_string(),
+            celsius,
+        });
+    }
+    out
+}
+
+/// The hottest sensor, whatever it is attached to.
+///
+/// Deliberately separate from [`parse_cpu_temp`], which must never return this
+/// — an NVMe under load routinely beats the CPU, and on dove it does so by
+/// 40 degrees. Reporting that as "CPU temperature" would name the wrong
+/// component with total confidence. Reported as *the hottest sensor*, with its
+/// name attached, it is exactly the fleet-wide signal worth seeing.
+pub fn hottest(temps: &[TempSensor]) -> Option<(String, f32)> {
+    let mut seen: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    let mut best: Option<(String, f32)> = None;
+
+    for t in temps {
+        let i = seen.entry(t.driver.as_str()).or_insert(0);
+        let name = t.name(*i);
+        *i += 1;
+        if best.as_ref().is_none_or(|(_, c)| t.celsius > *c) {
+            best = Some((name, t.celsius));
+        }
+    }
+    best
 }
 
 /// Pick the CPU package temperature out of the hwmon lines.
@@ -797,5 +914,111 @@ TXF|/dev/nvme0n1p1 1888752112 158276184 1634458828 9% /
         );
         assert!(f.filesystems.is_empty());
         assert_eq!(f.uptime_secs, None);
+    }
+}
+
+#[cfg(test)]
+mod all_sensor_tests {
+    use super::*;
+
+    /// Real hwmon output from dove, where the NVMe runs 40 degrees hotter than
+    /// the CPU. This is the case the whole design turns on.
+    const CROW: &str = "\
+TXT|acpitz||16800
+TXT|acpitz||16800
+TXT|nvme|Composite|49850
+TXT|nvme|Sensor 1|71850
+TXT|nvme|Sensor 2|39850
+TXT|k10temp|Tctl|31625
+TXT|k10temp|Tccd1|33250
+TXT|k10temp|Tccd2|34500
+TXT|gigabyte_wmi||34000
+TXT|gigabyte_wmi||37000
+TXT|gigabyte_wmi||31000
+TXT|gigabyte_wmi||34000
+";
+
+    #[test]
+    fn the_hottest_sensor_is_not_the_cpu_temperature() {
+        // 71.9C of NVMe beside 31.6C of CPU. Reporting the former as the CPU
+        // would name the wrong component with total confidence, which is the
+        // failure this whole project was built in response to.
+        let temps = parse_temps(CROW);
+        let (name, c) = hottest(&temps).unwrap();
+        assert_eq!(name, "nvme Sensor 1");
+        assert!((c - 71.85).abs() < 0.01);
+
+        let cpu = parse_cpu_temp(CROW).unwrap();
+        assert!((cpu - 31.625).abs() < 0.01, "cpu is {cpu}");
+        assert!(c > cpu + 30.0, "the two must not be confusable");
+    }
+
+    #[test]
+    fn unlabelled_sensors_are_numbered_rather_than_collapsed() {
+        // dove's board exposes four gigabyte_wmi inputs with no labels. Naming
+        // them all "gigabyte_wmi" would silently drop three readings.
+        let temps = parse_temps(CROW);
+        let wmi: Vec<_> = temps
+            .iter()
+            .filter(|t| t.driver == "gigabyte_wmi")
+            .collect();
+        assert_eq!(wmi.len(), 4);
+
+        let names: Vec<String> = wmi.iter().enumerate().map(|(i, t)| t.name(i)).collect();
+        assert_eq!(
+            names,
+            [
+                "gigabyte_wmi",
+                "gigabyte_wmi 2",
+                "gigabyte_wmi 3",
+                "gigabyte_wmi 4"
+            ]
+        );
+    }
+
+    #[test]
+    fn every_sensor_is_kept_not_only_the_cpus() {
+        // The collection always shipped all of these; only the presentation
+        // threw them away.
+        let temps = parse_temps(CROW);
+        assert_eq!(temps.len(), 12);
+        assert_eq!(
+            temps.iter().filter(|t| t.kind == SensorKind::Drive).count(),
+            3
+        );
+        assert_eq!(
+            temps.iter().filter(|t| t.kind == SensorKind::Cpu).count(),
+            3
+        );
+        assert_eq!(
+            temps.iter().filter(|t| t.kind == SensorKind::Board).count(),
+            6
+        );
+    }
+
+    #[test]
+    fn a_host_with_no_sensors_yields_an_empty_list_not_a_zero() {
+        // heron is a VM and reports nothing at all. Zero degrees would render
+        // as an implausibly cold machine rather than as an absent sensor.
+        assert!(parse_temps("").is_empty());
+        assert!(hottest(&[]).is_none());
+    }
+
+    #[test]
+    fn an_implausible_reading_is_discarded_from_the_list_too() {
+        // A failed sensor commonly reports 0 or something enormous. The same
+        // floor the CPU ranking uses applies here, or the hottest-sensor bar
+        // would be pinned by a broken input on some host forever.
+        let t =
+            parse_temps("TXT|nvme|Composite|0\nTXT|nvme|Sensor 1|250000\nTXT|k10temp|Tctl|31000\n");
+        assert_eq!(t.len(), 1);
+        assert_eq!(t[0].driver, "k10temp");
+    }
+
+    #[test]
+    fn wireless_and_drive_sensors_are_told_apart() {
+        let t = parse_temps("TXT|iwlwifi_1||28000\nTXT|drivetemp|Composite|41000\n");
+        assert_eq!(t[0].kind, SensorKind::Wireless);
+        assert_eq!(t[1].kind, SensorKind::Drive);
     }
 }
