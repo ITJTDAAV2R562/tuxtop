@@ -14,6 +14,7 @@
 //! `docs/DECISIONS.md` for the measurement that forced the split.
 
 pub mod facts;
+pub mod fleet;
 pub mod history;
 pub mod hostlist;
 pub mod model;
@@ -23,6 +24,7 @@ pub mod sampler;
 pub mod traffic;
 pub mod transport;
 
+pub use fleet::{backoff_secs, watch_host, HostEvent};
 pub use hostlist::{
     add as add_host_to, remove as remove_host_from, reorder as reorder_hosts, AddError,
 };

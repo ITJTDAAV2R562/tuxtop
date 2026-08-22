@@ -11,8 +11,9 @@ use std::time::Duration;
 
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::mpsc;
+use tuxtop_core::fleet::{watch_host, HostEvent};
 use tuxtop_core::procs::ProcInfo;
-use tuxtop_core::{HostConfig, HostFault, ProcSampler, SshSampler, TrafficCounter, TrafficStats};
+use tuxtop_core::{HostConfig, HostFault, ProcSampler, TrafficCounter, TrafficStats};
 
 /// Event names the frontend subscribes to.
 pub const EVENT_SAMPLE: &str = "tuxtop://sample";
@@ -38,10 +39,6 @@ pub struct FaultEvent {
     #[serde(flatten)]
     pub fault: HostFault,
 }
-
-/// Reconnect backoff. Capped so a host that comes back is picked up promptly
-/// rather than sitting out a long exponential tail.
-const BACKOFF: &[u64] = &[1, 2, 5, 10, 20, 30];
 
 #[derive(Default)]
 pub struct Supervisor {
@@ -209,73 +206,39 @@ pub struct HostTraffic {
     pub stats: TrafficStats,
 }
 
-/// Watch one host forever, reconnecting with backoff.
-async fn watch(
-    app: AppHandle,
-    cfg: HostConfig,
-    interval_secs: u32,
-    traffic: Arc<TrafficCounter>,
-) {
-    let mut attempt = 0usize;
+/// Feed one host's events to the frontend.
+///
+/// The watching itself lives in `tuxtop_core::fleet` so it can be tested; this
+/// is only the adapter that turns its events into Tauri emits and history
+/// writes.
+///
+/// `select!` rather than `join!`: if the webview goes away the forwarder ends,
+/// and dropping the watcher with it drops the `SshSampler`, which is
+/// `kill_on_drop` — so a closed window does not leave an ssh process running
+/// against every host in the fleet.
+async fn watch(app: AppHandle, cfg: HostConfig, interval_secs: u32, traffic: Arc<TrafficCounter>) {
+    let (tx, mut rx) = mpsc::channel(16);
 
-    loop {
-        let (tx, mut rx) = mpsc::channel(16);
-
-        let sampler = match SshSampler::start(cfg.clone(), interval_secs, tx, traffic.clone()) {
-            Ok(s) => s,
-            Err(e) => {
-                // Could not even spawn ssh — almost always "not on PATH".
-                emit_fault(
-                    &app,
-                    &cfg.name,
-                    HostFault::SamplerFailed(format!("could not launch ssh: {e}")),
-                );
-                sleep_backoff(&mut attempt).await;
-                continue;
-            }
-        };
-
-        let mut got_data = false;
-        let mut reported = false;
-
-        while let Some(item) = rx.recv().await {
-            match item {
-                Ok(sample) => {
-                    got_data = true;
-                    attempt = 0; // a good sample resets the backoff
+    let forward = async {
+        while let Some((host, event)) = rx.recv().await {
+            match event {
+                HostEvent::Sample(sample) => {
                     // Record before emitting: history must not depend on a
                     // webview being attached to receive it.
                     app.state::<crate::history_store::HistoryStore>()
                         .record(&sample);
-                    if app.emit(EVENT_SAMPLE, &sample).is_err() {
-                        // The webview is gone; nothing left to feed.
-                        return;
+                    if app.emit(EVENT_SAMPLE, &*sample).is_err() {
+                        return; // the webview is gone; nothing left to feed
                     }
                 }
-                Err(fault) => {
-                    emit_fault(&app, &cfg.name, fault);
-                    reported = true;
-                    break;
-                }
+                HostEvent::Fault(fault) => emit_fault(&app, &host, fault),
             }
         }
+    };
 
-        sampler.stop().await;
-
-        // Only fall back to the generic message when nothing specific was
-        // reported. Emitting it unconditionally overwrote the accurate fault
-        // that had just been sent - an unreachable host showed "Sampler
-        // failed" instead of "Host unreachable: connection timed out", which
-        // points at the wrong thing entirely.
-        if !got_data && !reported {
-            emit_fault(
-                &app,
-                &cfg.name,
-                HostFault::SamplerFailed("connection closed before any data arrived".into()),
-            );
-        }
-
-        sleep_backoff(&mut attempt).await;
+    tokio::select! {
+        _ = watch_host(cfg, interval_secs, traffic, tx) => {}
+        _ = forward => {}
     }
 }
 
@@ -287,10 +250,4 @@ fn emit_fault(app: &AppHandle, host: &str, fault: HostFault) {
             fault,
         },
     );
-}
-
-async fn sleep_backoff(attempt: &mut usize) {
-    let secs = BACKOFF[(*attempt).min(BACKOFF.len() - 1)];
-    *attempt += 1;
-    tokio::time::sleep(Duration::from_secs(secs)).await;
 }

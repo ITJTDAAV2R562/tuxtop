@@ -71,7 +71,7 @@ next session recognises the shape rather than re-deriving it.
 
 ---
 
-## Phase 3 — Multi-host — **mostly done, unverified**
+## Phase 3 — Multi-host — **done**
 
 Landed with Phase 2 rather than as its own phase:
 
@@ -79,13 +79,17 @@ Landed with Phase 2 rather than as its own phase:
 - [x] Reconnect with capped backoff; a good sample resets it
 - [x] Faults render as a stated reason on the card
 - [x] Hosts that have not reported show as connecting, not up
-- [ ] **Not yet verified:** four hosts streaming at once, and killing sshd on
-      one leaving the other three untouched. The isolation is written but has
-      only been exercised against a single real host.
+- [x] **Verified against five real hosts** — 108 cores, 1 Hz, three connections
+      killed mid-flight. Each was detected, attributed to the right host, and
+      recovered in 1.3–2.9 s; no other host dropped a frame. The apparent
+      stalls in the log are sampling-phase jitter, and the check that
+      distinguishes them from causation is part of the record.
+      See [evidence](evidence/host-isolation.md).
 
-**Done when:** that last box is ticked against real hosts.
-
----
+The isolation loop moved from `src-tauri/supervisor.rs` into
+`tuxtop-core::fleet` to make this possible. It had been untestable by
+construction: the crate it lived in cannot be built on the development box, so
+the most consequential control flow in the app was the only part with no tests.
 
 ## Phase 4 — Beszel as optional enrichment — **rescoped, low priority**
 
