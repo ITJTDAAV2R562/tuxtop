@@ -10,8 +10,8 @@ rejected and why.
 ## What this is
 
 A Windows-native Task Manager for remote Linux hosts. Tauri 2 + Rust backend,
-HTML/CSS frontend. Two data planes: live SSH sampling at 1 Hz, and Beszel's
-API for 1-minute history.
+HTML/CSS frontend. One data plane: SSH sampling at a configurable interval
+(1 Hz default), feeding both the live grid and an in-memory history cascade.
 
 ---
 
@@ -53,8 +53,8 @@ costs more than the interval it is measuring.
 
 **Nothing is installed on the monitored host.**
 No agent, no binary copied over, no package, no open port, no firewall change.
-If a feature seems to need one, it belongs in the slow plane via Beszel, or it
-does not ship. [ADR-004](docs/DECISIONS.md#adr-004--nothing-gets-installed-on-the-monitored-host).
+If a feature seems to need one, it is collected over the existing SSH stream or
+it does not ship. [ADR-004](docs/DECISIONS.md#adr-004--nothing-gets-installed-on-the-monitored-host).
 
 **Never let one data plane's absence blank a card.**
 No Beszel agent means no history — the live grid still works. SSH down means no

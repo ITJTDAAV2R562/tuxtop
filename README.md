@@ -43,17 +43,23 @@ Measurement: [docs/evidence/beszel-cadence.md](docs/evidence/beszel-cadence.md).
 
 ## How it works
 
-Two data planes, either of which can be absent:
+One data plane, and it is ours:
 
-- **Fast plane** — one persistent SSH connection per host running a POSIX `sh`
-  loop that cats `/proc` once a second. Per-core CPU, memory, disk I/O,
-  network, load. **Nothing is installed on the monitored host**, no root, no
-  open port, no firewall change.
-- **Slow plane** — the Beszel hub's PocketBase API for 1-minute history,
-  trends and alerts.
+- One persistent SSH connection per host, running a POSIX `sh` loop that cats
+  `/proc` at the configured interval. Per-core CPU, memory, swap, disk I/O and
+  capacity, network, load, temperatures, GPU, uptime and host identity.
+  **Nothing is installed on the monitored host** — no agent, no root, no open
+  port, no firewall change.
+- The live grid and the history charts are two readings of that same stream.
+  History is kept in memory in a four-tier cascade, so a spike is still visible
+  at the resolution it happened at.
 
-A host with only SSH gets the live grid without history. A host reachable only
-through Beszel shows history marked stale. Neither case blanks the card.
+A host that goes silent keeps its history, marked stale, and its card states
+why it went quiet rather than showing a generic "offline".
+
+Beszel is supported as optional enrichment for history beyond seven days, on
+hosts that happen to run its agent. Nothing requires it
+([ADR-009](docs/DECISIONS.md#adr-009--we-own-history-beszel-is-optional-enrichment)).
 
 Full picture: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 Reasoning, with rejected alternatives: [docs/DECISIONS.md](docs/DECISIONS.md).

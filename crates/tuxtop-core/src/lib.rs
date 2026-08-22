@@ -6,12 +6,13 @@
 //! compile the Windows binary.
 //!
 //! ```text
-//! fast plane   ssh -> sampler loop -> Frame -> RateTracker -> Sample -> UI
-//! slow plane   Beszel hub REST/SSE -> history series -> UI
+//! ssh -> sampler loop -> Frame -> RateTracker -> Sample -> UI
+//!                                             \-> History cascade -> UI
 //! ```
 //!
-//! See `docs/ARCHITECTURE.md` for why there are two planes, and
-//! `docs/DECISIONS.md` for the measurement that forced the split.
+//! One stream, read at two zoom levels. See `docs/ARCHITECTURE.md`, and
+//! `docs/DECISIONS.md` for the measurement that forced us to sample ourselves
+//! rather than reuse an existing agent.
 
 pub mod facts;
 pub mod fleet;

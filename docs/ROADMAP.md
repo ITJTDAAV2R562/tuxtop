@@ -91,22 +91,28 @@ The isolation loop moved from `src-tauri/supervisor.rs` into
 construction: the crate it lived in cannot be built on the development box, so
 the most consequential control flow in the app was the only part with no tests.
 
-## Phase 4 — Beszel as optional enrichment — **rescoped, low priority**
+## Phase 4 — Beszel as optional enrichment — **closed, nothing to build**
 
 Written when Beszel was "the slow plane" and owned history. Phase 8 changed
 that: our own store covers **every** host at full resolution, including the
-ones with no agent, so Beszel is no longer load-bearing.
+ones with no agent, so Beszel is not load-bearing and never was integrated.
 
-What remains worth having, if anything:
+[ADR-009](DECISIONS.md#adr-009--we-own-history-beszel-is-optional-enrichment)
+supersedes ADR-002 and records the reasoning. The deciding asymmetry: our store
+covers every host because the live grid already feeds it, while Beszel covers
+only hosts running its agent — one of five on this fleet. A history view that
+silently covers part of a fleet is worse than none.
 
-- History extending *beyond* our 7-day ceiling, from Beszel's own records, for
-  hosts that happen to run an agent.
+What would still be worth having, if anyone ever wants it:
+
+- History beyond our seven-day ceiling, from Beszel's own records, for hosts
+  that happen to run an agent.
 - Nothing else. Container stats and SMART would be better collected directly
   than read second-hand through a hub that may not be installed.
 
-Low priority precisely because it is now optional. ADR-002 still describes the
-old division of labour and needs superseding — that is the actual outstanding
-work here.
+**Closed** rather than deferred: there is no work here until someone wants
+history older than a week badly enough to accept it being missing on most
+hosts.
 
 ---
 
@@ -213,8 +219,8 @@ Full spec: **[specs/history-plane.md](specs/history-plane.md)**.
 - [ ] **Cap enforcement.** The cap is configurable and displayed but nothing
       evicts on it yet. At ~24 MB for a 19-host fleet nothing has come close;
       it matters around 100 hosts.
-- [ ] **Superseding ADR for Beszel.** ADR-002 still calls it the slow plane
-      responsible for history, which is no longer true.
+- [x] **Superseding ADR for Beszel.** [ADR-009](DECISIONS.md#adr-009--we-own-history-beszel-is-optional-enrichment)
+      supersedes ADR-002; Phase 4 is closed.
 
 Settled:
 
@@ -230,8 +236,8 @@ Settled:
   zoom crosses tiers invisibly and needs no preset buttons.
 - **History inherits its slice** from wherever it was entered: from a host,
   one host and many metrics; from the fleet, one metric and many hosts.
-- **Beszel drops to optional enrichment** beyond 24 h, superseding its role as
-  the slow plane in ADR-002.
+- **Beszel drops to optional enrichment** beyond our seven-day ceiling,
+  superseding its role as the slow plane in ADR-002. See ADR-009.
 
 
 

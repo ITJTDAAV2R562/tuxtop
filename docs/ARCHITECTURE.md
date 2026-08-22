@@ -7,44 +7,59 @@
   │  ┌────────────────────────────────────────────────────┐  │
   │  │  WebView2 frontend  —  src/                        │  │
   │  │  host cards · core grid · charts · Mica backdrop   │  │
-  │  └───────────────▲────────────────────────────────────┘  │
-  │                  │ Tauri events (JSON `Sample`, 1 Hz)    │
-  │  ┌───────────────┴────────────────────────────────────┐  │
+  │  └──────▲──────────────────────────────▲──────────────┘  │
+  │  events │ (JSON `Sample`)     query    │ (window +       │
+  │         │                              │  point budget)  │
+  │  ┌──────┴──────────────────────────────┴──────────────┐  │
   │  │  Rust backend  —  src-tauri/ + crates/tuxtop-core/ │  │
   │  │  ssh sampler · /proc parsing · rate maths          │  │
-  │  └──────┬──────────────────────────────┬──────────────┘  │
-  └─────────┼──────────────────────────────┼─────────────────┘
-            │ FAST PLANE                   │ SLOW PLANE
-            │ ssh, 1 Hz                    │ https, on demand
-            ▼                              ▼
-  ┌──────────────────┐            ┌──────────────────────┐
-  │ Linux host       │            │ Beszel hub           │
-  │ sshd → sh loop   │            │ PocketBase REST/SSE  │
-  │ cat /proc/*      │            │ 1-minute history     │
-  │ (nothing         │            │ alerts, inventory    │
-  │  installed)      │            └──────────────────────┘
-  └──────────────────┘
+  │  │                        │                           │  │
+  │  │              Sample ───┴──▶ history cascade        │  │
+  │  │                             1Hz/1h · 10s/6h        │  │
+  │  │                             60s/24h · 5m/7d        │  │
+  │  └──────┬─────────────────────────────────────────────┘  │
+  └─────────┼────────────────────────────────────────────────┘
+            │ one persistent ssh per host, configurable rate
+            ▼
+  ┌──────────────────────┐
+  │ Linux host           │
+  │ sshd → POSIX sh loop │
+  │ cat /proc/*          │
+  │ (nothing installed)  │
+  └──────────────────────┘
 ```
 
-## The two planes
+## One plane, two readings
 
-The central design fact: **the two data sources have different jobs because
-they have different latencies.** See
-[ADR-002](DECISIONS.md#adr-002--two-data-planes-beszel-for-history-direct-ssh-for-live)
-and the [measurement](evidence/beszel-cadence.md).
+The central design fact: **a monitoring agent that caches cannot show you a
+spike.** Beszel's agent reported 0.14% during 26 seconds of 25% load, then
+21.95% for 25 seconds after it stopped — see the
+[measurement](evidence/beszel-cadence.md), which is why this project exists.
 
-| | Fast plane | Slow plane |
-| --- | --- | --- |
-| Transport | SSH, one persistent connection per host | HTTPS to the Beszel hub |
-| Cadence | 1 Hz | 60 s (fixed, not tunable) |
-| Provides | per-core CPU, memory, disk I/O, network, load | history, trends, alerts, inventory |
-| Needs on target | nothing | a Beszel agent |
-| If unavailable | no live grid; history still renders | no history; live grid still renders |
+So the sampling is ours, and everything is read from one stream:
 
-Neither plane is required. A host with only SSH gets a live grid with no past;
-a host whose SSH is down but which reports to Beszel shows history marked
-stale. **Never let one plane's absence blank the card** — say which part is
-missing.
+| | |
+| --- | --- |
+| Transport | SSH, one persistent connection per host |
+| Cadence | configurable, 1 Hz default; per-host override |
+| Provides | per-core CPU, memory, swap, disk I/O and capacity, network, load, temperature, GPU, uptime, identity, processes |
+| Needs on target | nothing — no agent, no root, no open port |
+| Live grid | the newest sample |
+| History | the same samples, kept in a four-tier in-memory cascade |
+
+Live and historical are not separate sources with different latencies; they are
+the same data read at different zoom levels. That is what makes a 100% spike
+still readable an hour later instead of averaged into a 60-second bucket.
+
+**A host going quiet must never blank its card.** It keeps its history, marked
+stale, and states the reason it stopped — `Unreachable`, `AuthFailed`,
+`SamplerFailed` or `Stalled`, never a generic "offline".
+
+This supersedes the original two-plane split, where Beszel owned history
+([ADR-002](DECISIONS.md#adr-002--two-data-planes-beszel-for-history-direct-ssh-for-live)
+→ [ADR-009](DECISIONS.md#adr-009--we-own-history-beszel-is-optional-enrichment)).
+Beszel is now optional enrichment: it covers only hosts running its agent,
+and a history view that silently covers part of a fleet is worse than none.
 
 ## Crate layout
 

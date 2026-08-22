@@ -45,7 +45,13 @@ reads from it (ADR-002).
 
 ## ADR-002 — Two data planes: Beszel for history, direct SSH for live
 
-**Date:** 2026-08-16 · **Status:** accepted
+**Date:** 2026-08-16 · **Status:** **superseded by [ADR-009](#adr-009--we-own-history-beszel-is-optional-enrichment)**
+
+> Superseded on 2026-08-22. The measurement below stands and is the reason this
+> project exists — nothing here is retracted. What changed is the division of
+> labour: Phase 8 built our own history store, so Beszel no longer owns the
+> slow plane. Read this ADR for *why the fast plane had to be ours*, and
+> ADR-009 for who owns history now.
 
 ### Context
 
@@ -382,3 +388,68 @@ requirement as the history plane's explicit gaps, applied one level up.
 
 Groups and individual hosts must not share a comparison axis: a group's summed
 network rate against one host's is a category error, not a comparison.
+
+---
+
+## ADR-009 — We own history; Beszel is optional enrichment
+
+**Date:** 2026-08-22 · **Status:** accepted · **Supersedes:** [ADR-002](#adr-002--two-data-planes-beszel-for-history-direct-ssh-for-live)
+
+### Context
+
+ADR-002 split the work in two: Beszel owned history at 1-minute resolution, we
+owned the live grid at 1 Hz. That was the right call when the alternative was
+building a storage layer we did not need.
+
+Phase 8 changed the facts. The live plane already produces a sample per host
+per second; keeping it costs a four-tier cascade of ring buffers and 23.4 MB
+for a nineteen-host fleet, bounded by construction at 79.9 KB per series. That
+turned out to be far less work than integrating someone else's storage, and it
+produces something Beszel structurally cannot: **history at the resolution the
+spike actually happened at.**
+
+### Decision
+
+**We own history.** The in-memory cascade in `crates/tuxtop-core/src/history.rs`
+is the history plane, for every host, at 1 Hz for the last hour.
+
+**Beszel is optional enrichment, and currently unused.** The only thing it can
+still offer is history beyond our seven-day ceiling, for the subset of hosts
+that happen to run an agent. Nothing in the app requires it, and nothing
+degrades without it.
+
+### Rationale
+
+The asymmetry that decided it: our store covers **every** host, because it is
+fed by the same SSH connection that draws the live grid. Beszel covers only
+hosts with an agent installed — which, on this fleet, is one of five.
+
+A history plane that silently covers a subset of the fleet is worse than no
+history plane. Nineteen cards where four have charts and fifteen do not is not
+a monitoring tool, it is a puzzle. And the fix — install the agent everywhere —
+is exactly the thing [ADR-004](#adr-004--nothing-gets-installed-on-the-monitored-host)
+says we do not do.
+
+Resolution compounds it. A 60-second bucket averaging a 100% spike down to 7%
+is the failure this project was built in response to; inheriting it for the
+history view would have reintroduced it one plane over.
+
+### Consequences
+
+- **The two-plane framing is retired.** There is one plane — ours — sampled at
+  a configurable interval, of which the live grid and history are two readings.
+  `docs/ARCHITECTURE.md` describes this shape.
+- **History does not survive a restart**, by design, and that is now a
+  first-class property rather than a gap Beszel was covering. See
+  [specs/history-plane.md](specs/history-plane.md).
+- **Container stats and SMART** — the things Beszel collects that we do not —
+  would be better collected directly than read second-hand through a hub that
+  may not be installed. Neither is currently planned.
+- **Nothing to remove.** The Beszel integration was never built, so this ADR
+  ratifies an absence rather than deleting code.
+
+### Revisit when
+
+Someone wants history older than seven days, on hosts that already run a Beszel
+agent, badly enough to accept that the feature will be missing on every host
+that does not.

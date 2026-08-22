@@ -20,7 +20,7 @@ These came from the design conversation and are not open:
   and backup from the design in one stroke.
 - **Beszel becomes an optional add-on.** It may be installed on all hosts,
   some, or none. Removing it must lose nothing essential. This supersedes its
-  role as "the slow plane" in ADR-002.
+  role as "the slow plane" in ADR-002 (see ADR-009).
 - **Capped from the start**, with the cap configurable.
 - **Resolution:** 1 Hz for the last hour, coarsening with age, out to 24 h.
 - **Window selection is continuous**, not a set of preset buttons — the
@@ -121,7 +121,8 @@ effect on history resolution, since the two are now visibly linked.
 
 ADR-002 called Beszel "the slow plane" and made it responsible for history.
 That is no longer true: our own store covers every host at full resolution,
-including hosts with no agent.
+including hosts with no agent. Ratified in
+[ADR-009](../DECISIONS.md#adr-009--we-own-history-beszel-is-optional-enrichment).
 
 Beszel becomes **optional enrichment**:
 
