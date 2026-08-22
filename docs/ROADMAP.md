@@ -327,7 +327,8 @@ far — hence a spec before code, as Phase 8 had.
       metrics get one block holding every member's cores with each tile
       attributed to its host. Severity from the worst member, composition and
       partial reporting stated. `group` is a field on `HostConfig`, set from
-      the Add host dialog or by hand in `hosts.toml`.
+      the per-host table in Settings, the Add host dialog, or by hand in
+      `hosts.toml`.
       Testing revised two spec decisions — see the notes marked *revised
       during 11b* in the spec, and ADR-008's consequences.
 - [x] **11c — group history**, aggregated on read from the members' own
