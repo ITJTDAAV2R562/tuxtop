@@ -207,7 +207,11 @@ Full spec: **[specs/history-plane.md](specs/history-plane.md)**.
 
 - [x] Four-tier cascade in `crates/tuxtop-core/src/history.rs`, memory only.
 - [x] Gaps written explicitly, so a silent host leaves a hole rather than a
-      straight line implying it was fine.
+      straight line implying it was fine. **Only half true until 11c**: the
+      store recorded the gap, but the query dropped it and the chart joined
+      the two ends — drawing exactly the straight line the storage comment
+      promised it prevented. `drawHistory` now splits the series into runs on
+      an outsized time delta and shades the hole.
 - [x] Stored in the Rust backend, queried with a window and a point budget.
 - [x] History view with min/max bands, a shared window, and a slider spanning
       a minute to a week continuously.
@@ -289,7 +293,7 @@ and a runaway process are the same question asked twice.
 
 ---
 
-## Phase 11 — Grouping hosts into clusters — **in progress**
+## Phase 11 — Grouping hosts into clusters — **done**
 
 Group hosts by role, site or cluster and aggregate per group, so a fleet of
 nineteen reads as five things.
@@ -326,8 +330,16 @@ far — hence a spec before code, as Phase 8 had.
       the Add host dialog or by hand in `hosts.toml`.
       Testing revised two spec decisions — see the notes marked *revised
       during 11b* in the spec, and ADR-008's consequences.
-- [ ] **11c — group history**, aggregated on read, marking spans where a
-      member was silent.
+- [x] **11c — group history**, aggregated on read from the members' own
+      series, so a group cannot drift from what it summarises and re-labelling
+      a host re-labels its past. Series are aligned by timestamp, never by
+      index: a gap is skipped rather than returned, so a host that went quiet
+      simply has fewer points. Each aggregated point carries how many members
+      contributed; incomplete spans are shaded and the header states what
+      fraction of the window was short.
+
+      Found and fixed a pre-existing bug on the way: charts drew straight
+      lines across outages. See the Phase 8 note above.
 
 It lives in JS rather than Rust because the frontend must also run standalone
 as a browser mockup with no Tauri backend, so the rules would otherwise need

@@ -1324,6 +1324,17 @@
         refreshHistory();
         return;
       }
+      // Groups first, then every host. The group charts are added rather
+      // than substituted: a summary that costs you the ability to see which
+      // member caused a spike is a worse trade than a longer page.
+      const { groups } = TuxAgg.groupHosts(ordered());
+      for (const g of groups) {
+        const el = chartEl(`group:${g.name}::${slice.metric}`,
+                           `${g.name} · ${g.hosts.length} hosts`, slice.metric, '');
+        el.classList.add('group-chart');
+        el.dataset.group = g.name;
+        wrap.appendChild(el);
+      }
       for (const h of ordered()) {
         wrap.appendChild(chartEl(`${h.name}::${slice.metric}`, h.name, slice.metric, h.name));
       }
@@ -1490,7 +1501,54 @@
     const nowS = Math.floor(Date.now() / 1000);
     const win = { from: nowS - secs, to: nowS };
 
-    const charts = [...grid.querySelectorAll('.chart')];
+    // Group charts are aggregated on read from their members' series, so a
+    // group cannot drift from what it claims to summarise and re-labelling a
+    // host re-labels its past with it.
+    const gcharts = [...grid.querySelectorAll('.chart[data-group]')];
+    await Promise.all(gcharts.map(async el => {
+      const m = METRICS[el.dataset.metric];
+      if (!m) return;
+      const cv = el.querySelector('canvas');
+      const budget = Math.max(60, Math.round(cv.clientWidth || 320));
+      const list = hosts.filter(h => h.group === el.dataset.group);
+
+      const series = await Promise.all(list.map(async h => {
+        let points = [];
+        if (LIVE) {
+          try {
+            points = await TAURI.core.invoke('query_history', {
+              host: h.name, metric: el.dataset.metric,
+              fromSecsAgo: secs, toSecsAgo: 0, maxPoints: budget,
+            });
+          } catch { points = []; }
+        } else {
+          points = simHistory(h.name, el.dataset.metric, secs, budget);
+        }
+        // Weight for 'ratio' metrics is the denominator the live view uses -
+        // cores for CPU, gigabytes for memory - taken at its present value,
+        // since history stores the percentage and not the parts it came from.
+        const w = m.parts ? m.parts(h)[1] : 1;
+        return { host: h.name, weight: w, points };
+      }));
+
+      const pts = TuxAgg.aggregateSeries(m, series, win, budget);
+      drawHistory(cv, pts, m, win);
+
+      const last = pts.length ? pts[pts.length - 1] : null;
+      el.querySelector('[data-latest]').textContent = last ? m.fmt(last.mean) : '\u2014';
+      // Say when the summary was incomplete, and for how much of the window.
+      // A shaded span the reader has to interpret is not the same as being
+      // told.
+      const short = pts.filter(p => p.n < p.of).length;
+      el.querySelector('[data-peak]').textContent = !pts.length ? ''
+        : short
+          ? `peak ${m.fmt(pts.reduce((a, p) => Math.max(a, p.max), 0))} · ` +
+            `${Math.round(short / pts.length * 100)}% of window incomplete`
+          : 'peak ' + m.fmt(pts.reduce((a, p) => Math.max(a, p.max), 0));
+      el.classList.toggle('short', short > 0);
+    }));
+
+    const charts = [...grid.querySelectorAll('.chart:not([data-group])')];
     await Promise.all(charts.map(async el => {
       const m = METRICS[el.dataset.metric];
       if (!m) return;
@@ -1581,8 +1639,66 @@
       c.beginPath(); c.moveTo(0, h * f); c.lineTo(w, h * f); c.stroke();
     }
 
+    // Where a group had fewer hosts reporting than it has, before anything is
+    // drawn over it. Without this the line looks like a complete answer for a
+    // span in which it was not one - and unlike a gap, a partial aggregate
+    // draws a perfectly plausible value.
+    const spans = [];
+    pts.forEach((p, i) => {
+      if (!(p.of > 0 && p.n < p.of)) return;
+      const a = x(p);
+      const b = i + 1 < pts.length ? x(pts[i + 1]) : w;
+      // Merge with the previous span when they touch. Drawing one rect per
+      // bucket instead leaves a picket fence: at a point per pixel the rects
+      // land on fractional coordinates and antialias into stripes.
+      const last = spans[spans.length - 1];
+      if (last && a - last[1] < 1.5) last[1] = b;
+      else spans.push([a, b]);
+    });
+    if (spans.length) {
+      c.save();
+      c.fillStyle = css('--warn');
+      c.globalAlpha = 0.1;
+      spans.forEach(([a, b]) => c.fillRect(a, 0, Math.max(1, b - a), h));
+      c.globalAlpha = 0.55;
+      spans.forEach(([a, b]) => c.fillRect(a, h - 2, Math.max(1, b - a), 2));
+      c.restore();
+    }
+
     const colour = m.scale === 'absolute' ? css('--accent') : css('--viz-net');
     const banded = bandedGradient(c, m, y, h);
+
+    // Break the series wherever it skips.
+    //
+    // The backend stores a gap as NaN and drops it on query, so a host that
+    // stopped reporting arrives as a *jump in t* rather than as a null. Drawn
+    // naively that becomes a straight line across the outage - precisely the
+    // "straight line implying it was fine throughout" that the storage layer's
+    // own comment says it prevents. Storage did its job; drawing was undoing
+    // it. Runs are split on a delta well past the normal spacing, so ordinary
+    // jitter does not fragment a healthy chart.
+    const deltas = pts.slice(1).map((p, i) => p.t - pts[i].t).sort((a, b) => a - b);
+    const typical = deltas.length ? deltas[Math.floor(deltas.length / 2)] : 0;
+    const maxStep = typical > 0 ? typical * 2.5 : Infinity;
+
+    const runs = [[pts[0]]];
+    for (let i = 1; i < pts.length; i++) {
+      if (pts[i].t - pts[i - 1].t > maxStep) runs.push([]);
+      runs[runs.length - 1].push(pts[i]);
+    }
+
+    // Say where the data is missing, rather than leaving blank space that
+    // reads as "flat" or as the edge of the chart.
+    if (runs.length > 1) {
+      c.save();
+      c.fillStyle = css('--text-3');
+      c.globalAlpha = 0.07;
+      for (let i = 1; i < runs.length; i++) {
+        const a = x(runs[i - 1][runs[i - 1].length - 1]), b = x(runs[i][0]);
+        c.fillRect(a, 0, Math.max(1, b - a), h);
+      }
+      c.restore();
+    }
 
     // Area under the mean, always.
     //
@@ -1590,10 +1706,16 @@
     // those are served by the raw tier, where min == mean == max, so the band
     // has no height at all. The fill is what gives every zoom level the same
     // weight - and it is the part that reads as a chart rather than a wire.
+    const meanPath = () => {
+      for (const run of runs) {
+        c.moveTo(x(run[0]), h);
+        run.forEach(p => c.lineTo(x(p), y(p.mean)));
+        c.lineTo(x(run[run.length - 1]), h);
+      }
+    };
+
     c.beginPath();
-    c.moveTo(x(pts[0]), h);
-    pts.forEach(p => c.lineTo(x(p), y(p.mean)));
-    c.lineTo(x(pts[pts.length - 1]), h);
+    meanPath();
     c.closePath();
     if (banded) {
       // Band the hue by height, then fade it downward so the fill still reads
@@ -1623,8 +1745,10 @@
     const spread = pts.some(p => p.max - p.min > 1e-6);
     if (spread) {
       c.beginPath();
-      pts.forEach((p, i) => (i ? c.lineTo(x(p), y(p.max)) : c.moveTo(x(p), y(p.max))));
-      for (let i = pts.length - 1; i >= 0; i--) c.lineTo(x(pts[i]), y(pts[i].min));
+      for (const run of runs) {
+        run.forEach((p, i) => (i ? c.lineTo(x(p), y(p.max)) : c.moveTo(x(p), y(p.max))));
+        for (let i = run.length - 1; i >= 0; i--) c.lineTo(x(run[i]), y(run[i].min));
+      }
       c.closePath();
       const band = c.createLinearGradient(0, 0, 0, h);
       band.addColorStop(0, colour + '4D');
@@ -1636,9 +1760,7 @@
     // A specular sheen along the top, matching the tiles and bars.
     c.save();
     c.beginPath();
-    c.moveTo(x(pts[0]), h);
-    pts.forEach(p => c.lineTo(x(p), y(p.mean)));
-    c.lineTo(x(pts[pts.length - 1]), h);
+    meanPath();
     c.closePath();
     c.clip();
     const gloss = c.createLinearGradient(0, 0, 0, h * 0.55);
@@ -1650,7 +1772,9 @@
 
     // Mean line last, so it sits above its own fill.
     c.beginPath();
-    pts.forEach((p, i) => (i ? c.lineTo(x(p), y(p.mean)) : c.moveTo(x(p), y(p.mean))));
+    for (const run of runs) {
+      run.forEach((p, i) => (i ? c.lineTo(x(p), y(p.mean)) : c.moveTo(x(p), y(p.mean))));
+    }
     c.strokeStyle = banded || colour; c.lineWidth = 1.5; c.lineJoin = 'round'; c.stroke();
 
     const lastP = pts[pts.length - 1];

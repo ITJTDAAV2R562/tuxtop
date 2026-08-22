@@ -172,3 +172,86 @@ test('groups_keep_the_order_they_first_appear_in', () => {
   ]);
   assert.deepStrictEqual(groups.map(g => g.name), ['zulu', 'alpha']);
 });
+
+// ---- history aggregation ---------------------------------------------------
+
+const { aggregateSeries } = require('../src/agg.js');
+const WIN = { from: 0, to: 100 };
+const pt = (t, mean, min, max) => ({ t, mean, min: min ?? mean, max: max ?? mean });
+
+test('a_silent_member_leaves_a_count_not_a_dip', () => {
+  // The bug this guards: a host going quiet drops out of the denominator, the
+  // group's line moves, and it looks like load changed when nothing did.
+  // The line must hold and the point must say how many hosts are behind it.
+  const g = aggregateSeries({ agg: 'ratio' }, [
+    { host: 'a', weight: 8, points: [pt(10, 50), pt(50, 50), pt(90, 50)] },
+    { host: 'b', weight: 8, points: [pt(10, 50), /* silent */ pt(90, 50)] },
+  ], WIN, 10);
+
+  const at = t => g.find(p => Math.abs(p.t - t) < 12);
+  assert.strictEqual(at(10).mean, 50);
+  assert.strictEqual(at(50).mean, 50, 'the value must not move when a host goes quiet');
+  assert.strictEqual(at(10).n, 2);
+  assert.strictEqual(at(50).n, 1, 'but the point must record that only one host answered');
+  assert.strictEqual(at(50).of, 2);
+});
+
+test('a_bucket_no_member_reported_in_stays_a_hole', () => {
+  // Not a zero. A gap in a group is still a gap - the same rule the single
+  // host series already follows.
+  const g = aggregateSeries({ agg: 'sum' }, [
+    { host: 'a', points: [pt(5, 10)] },
+  ], WIN, 10);
+  assert.strictEqual(g.length, 1, 'nine empty buckets must not become nine zeros');
+});
+
+test('history_ratio_weights_by_size_like_the_live_view', () => {
+  // Same dove/heron case as the live aggregate: 32 cores pinned beside 4 idle
+  // is 88.9%, not 50%. The two paths must not disagree.
+  const g = aggregateSeries({ agg: 'ratio' }, [
+    { host: 'dove', weight: 32, points: [pt(50, 100)] },
+    { host: 'heron', weight: 4, points: [pt(50, 0)] },
+  ], WIN, 10);
+  assert.ok(Math.abs(g[0].mean - 88.89) < 0.01, `got ${g[0].mean}`);
+});
+
+test('history_sum_adds_and_history_max_takes_the_worst', () => {
+  const members = [
+    { host: 'a', points: [pt(50, 3, 1, 9)] },
+    { host: 'b', points: [pt(50, 5, 4, 6)] },
+  ];
+  const sum = aggregateSeries({ agg: 'sum' }, members, WIN, 10);
+  assert.strictEqual(sum[0].mean, 8);
+  assert.strictEqual(sum[0].max, 15);
+
+  const max = aggregateSeries({ agg: 'max' }, members, WIN, 10);
+  assert.strictEqual(max[0].mean, 5);
+  assert.strictEqual(max[0].max, 9);
+});
+
+test('several_points_in_one_bucket_keep_the_true_extremes', () => {
+  // Collapsing by taking the last point would drop the spike, which is the
+  // one thing the whole history plane exists to preserve.
+  const g = aggregateSeries({ agg: 'max' }, [
+    { host: 'a', points: [pt(1, 5, 5, 100), pt(2, 5), pt(3, 5)] },
+  ], WIN, 10);
+  assert.strictEqual(g[0].max, 100);
+});
+
+test('series_are_aligned_by_time_not_by_index', () => {
+  // Hosts return different numbers of points because gaps are skipped, so
+  // index alignment would pair one host's noon with another's midnight.
+  const g = aggregateSeries({ agg: 'sum' }, [
+    { host: 'a', points: [pt(5, 1), pt(15, 1), pt(25, 1), pt(85, 1)] },
+    { host: 'b', points: [pt(85, 1)] },
+  ], WIN, 10);
+  const late = g.find(p => p.t >= 80);
+  assert.strictEqual(late.n, 2, 'both hosts reported near t=85 and must pair there');
+  assert.strictEqual(g.find(p => p.t < 10).n, 1);
+});
+
+test('a_vector_metric_has_no_group_line', () => {
+  // "CPU cores" across a group is a grid, not a chart.
+  assert.deepStrictEqual(
+    aggregateSeries({ agg: 'concat' }, [{ host: 'a', points: [pt(5, 1)] }], WIN, 10), []);
+});

@@ -978,3 +978,12 @@ body[data-bands="off"] .legend span:not(:last-child){display:none}
   color:var(--text-3);text-transform:uppercase;letter-spacing:.06em;
   margin-left:6px;
 }
+
+/* A group's history chart summarises several hosts, so it is marked as a
+   different kind of thing from the per-host charts beneath it. */
+.chart.group-chart{border-color:var(--stroke-hi);background:var(--surface-hi)}
+.chart.group-chart .chart-name{font-weight:700}
+/* Incomplete for part of the window: the shaded spans on the canvas say
+   where, the header says how much, and this says the chart as a whole is
+   provisional. */
+.chart.group-chart.short .chart-peak{color:var(--warn)}

@@ -23,14 +23,18 @@
   });
 
   function invokeHistory(args) {
-    const { metric, fromSecsAgo, maxPoints } = args;
+    const { metric, fromSecsAgo, maxPoints, host } = args;
     const now = Math.floor(Date.now() / 1000);
     const n = Math.min(maxPoints || 200, 240);
     const pct = ['cpu','mem','temp','gpu','gpumem'].includes(metric) || String(metric).startsWith('core.');
     const load = metric === 'load';
     const base = load ? 0.6 : pct ? 18 : 4e6;
-    const seed = String(metric).length * 3;
-    return Array.from({ length: n }, (_, i) => {
+    const seed = String(metric).length * 3 + String(host || '').length * 5;
+    // coot falls silent through the middle of every window. The backend skips
+    // gaps rather than returning nulls, so a silent host yields *fewer*
+    // points - which is exactly the case group aggregation has to survive.
+    const silent = i => host === 'coot' && i > n * 0.35 && i < n * 0.6;
+    return Array.from({ length: n }, (_, i) => i).filter(i => !silent(i)).map(i => {
       const wob = Math.sin((i + seed) / 9) * (load ? 0.3 : pct ? 9 : 1.6e6);
       const mean = Math.max(0, base + wob + Math.random() * (load ? 0.2 : pct ? 5 : 8e5));
       const spike = ((i + seed) % 37 === 0) ? (load ? 2.5 : pct ? 60 : 9e6) : 0;

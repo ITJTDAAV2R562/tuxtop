@@ -144,6 +144,13 @@ Group series are computed from member series at query time, not stored.
 Cheaper, and it cannot drift from the members it claims to summarise. It also
 means changing a host's group re-labels its history instead of orphaning it.
 
+**How the weight is obtained.** *(Noted during 11c.)* History stores a
+percentage, not the numerator and denominator it came from, so a `ratio`
+aggregate cannot recombine parts from the past. It weights by the host's
+*current* size instead — cores for CPU, gigabytes for memory, taken from the
+same `parts` denominator the live view uses. Exact for a physical box, and near
+enough for anything whose core count changed inside the seven-day ceiling.
+
 **The gap problem.** Members do not have identical gaps. If a group's CPU is
 averaged over whichever members happened to report, a host going silent makes
 the group's line move for a reason that has nothing to do with load — a silent

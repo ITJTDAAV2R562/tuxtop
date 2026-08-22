@@ -128,6 +128,13 @@ impl Tier {
     /// A gap is stored as NaN and skipped on query, so a host that stopped
     /// reporting leaves a hole rather than a straight line implying it was
     /// fine throughout.
+    ///
+    /// Half of that guarantee lives in the frontend and must stay there.
+    /// Skipping a gap means the series arrives with a *jump in `t`*, not a
+    /// null, so anything drawing it has to break the line on an outsized time
+    /// delta - otherwise it joins the two ends and draws exactly the straight
+    /// line this comment promises it does not. `drawHistory` splits into runs
+    /// for that reason; do not remove it believing this function suffices.
     fn fill_gap(&mut self, upto: u64) {
         if self.len == 0 {
             return;

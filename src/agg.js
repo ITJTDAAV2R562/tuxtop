@@ -151,5 +151,95 @@
     return { groups, ungrouped: loose };
   }
 
-  return { aggregateGroup, canAggregate, groupHosts, KINDS };
+  /// Combine several hosts' history series into one group series.
+  ///
+  /// Aggregated on read rather than stored, so a group series cannot drift
+  /// from the members it claims to summarise, and re-labelling a host
+  /// re-labels its past with it.
+  ///
+  /// `members` is `[{ host, weight, points }]`, where `points` is what the
+  /// backend returned for that host and `weight` is its share for 'ratio'
+  /// metrics — cores for CPU, gigabytes for memory. Weight comes from the
+  /// host's *current* size because history stores only the percentage, not
+  /// the numerator and denominator it came from. That is exact for a physical
+  /// box and near enough for anything whose core count changed within the
+  /// last seven days, which is the longest window that exists.
+  ///
+  /// Series cannot be aligned by index: a gap is skipped rather than
+  /// returned, so a host that went silent simply has fewer points than one
+  /// that did not. Everything is therefore bucketed by timestamp.
+  ///
+  /// Each output point carries `n` (members that contributed) and `of`
+  /// (members in the group). A group summarising four hosts while appearing
+  /// to summarise five is the averaged-away spike one level up, so the count
+  /// travels with the data rather than being recomputed by whoever draws it.
+  function aggregateSeries(spec, members, win, buckets) {
+    if (!canAggregate(spec) || spec.agg === 'concat') return [];
+
+    const all = members || [];
+    const n = Math.max(1, buckets | 0);
+    const span = Math.max(1, win.to - win.from);
+    const step = span / n;
+
+    // Bucket each host's points by time, collapsing several points in one
+    // bucket the way the backend's own downsampling does: true min and max,
+    // mean of means. Taking the last point instead would drop spikes.
+    const lanes = all.map(mem => {
+      const slots = new Array(n).fill(null);
+      for (const p of mem.points || []) {
+        if (!isNum(p.mean)) continue;
+        let i = Math.floor((p.t - win.from) / step);
+        if (i < 0 || i >= n) continue;
+        const cur = slots[i];
+        if (!cur) {
+          slots[i] = { min: p.min, mean: p.mean, max: p.max, c: 1 };
+        } else {
+          cur.min = Math.min(cur.min, p.min);
+          cur.max = Math.max(cur.max, p.max);
+          cur.mean += p.mean;
+          cur.c += 1;
+        }
+      }
+      for (const sl of slots) if (sl) sl.mean /= sl.c;
+      return { weight: isNum(mem.weight) ? mem.weight : 1, slots };
+    });
+
+    const out = [];
+    for (let i = 0; i < n; i++) {
+      const live = lanes.filter(l => l.slots[i]);
+      if (!live.length) continue;      // a hole stays a hole, never a zero
+
+      const t = Math.round(win.from + i * step);
+      const pick = f => live.map(l => f(l.slots[i]));
+      let min, mean, max;
+
+      if (spec.agg === 'sum') {
+        const add = a => a.reduce((x, y) => x + y, 0);
+        min = add(pick(p => p.min));
+        mean = add(pick(p => p.mean));
+        max = add(pick(p => p.max));
+      } else if (spec.agg === 'max') {
+        // The group's value is its worst member at every instant, so the
+        // band is the worst member's band.
+        min = Math.max.apply(null, pick(p => p.min));
+        mean = Math.max.apply(null, pick(p => p.mean));
+        max = Math.max.apply(null, pick(p => p.max));
+      } else {
+        // ratio: weight by size, exactly as the live view does. Weighting by
+        // the members present rather than by the whole group is deliberate -
+        // a silent host must not drag the average toward zero, which is why
+        // `n` is reported instead.
+        const wsum = live.reduce((a, l) => a + l.weight, 0) || 1;
+        const w = f => live.reduce((a, l) => a + f(l.slots[i]) * l.weight, 0) / wsum;
+        min = w(p => p.min);
+        mean = w(p => p.mean);
+        max = w(p => p.max);
+      }
+
+      out.push({ t, min, mean, max, n: live.length, of: lanes.length });
+    }
+    return out;
+  }
+
+  return { aggregateGroup, aggregateSeries, canAggregate, groupHosts, KINDS };
 });
