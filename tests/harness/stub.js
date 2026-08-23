@@ -21,6 +21,20 @@
     // Some hosts expose no CPU sensor - VMs typically do not - so the UI has
     // to handle both in the same fleet.
     cpu_temp_c: (name.length % 3 === 0) ? null : 34 + (name.length * 7) % 45,
+    // Guests get real steal; metal gets zero, as the kernel would report.
+    cpu_breakdown: {
+      user: 8 + Math.random() * 4, system: 3 + Math.random() * 2,
+      iowait: Math.random() * 2,
+      steal: (name === 'heron' || name === 'owl') ? 2 + Math.random() * 3 : 0,
+    },
+    // Mirrors the real fleet: mostly bare metal, one KVM guest, one WSL guest
+    // that systemd reports as a container.
+    facts: {
+      kernel: 'Linux 6.12', os: 'Debian GNU/Linux 13', arch: 'x86_64',
+      cpu_model: 'AMD Ryzen 9 5950X 16-Core Processor',
+      virt: name === 'heron' ? 'kvm' : name === 'owl' ? 'wsl' : 'none',
+      virt_kind: name === 'owl' ? 'container' : 'vm',
+    },
     // Mirrors dove: the NVMe runs far hotter than the CPU, and the board
     // exposes several unlabelled inputs. Both are the cases the UI has to get
     // right. A host with no CPU sensor has no sensors at all, like a VM.

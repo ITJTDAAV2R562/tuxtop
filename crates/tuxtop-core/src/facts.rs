@@ -15,6 +15,76 @@ pub struct HostFacts {
     pub cpu_model: String,
     /// e.g. "x86_64"
     pub arch: String,
+    /// What kind of machine this is, from `systemd-detect-virt`: `none` for
+    /// bare metal, otherwise the technology — `kvm`, `wsl`, `lxc`,
+    /// `microsoft`, `vmware`. Empty when the host could not be asked.
+    ///
+    /// Every number a guest reports is honest *about the guest*, and that is
+    /// exactly why this matters: without it a reader assumes the numbers
+    /// describe hardware. owl reports 31 GB because that is what its WSL VM
+    /// was given; the machine it runs on has 64.
+    #[serde(default)]
+    pub virt: String,
+    /// `vm`, `container`, or empty. A container shares its host's kernel and
+    /// so reports the *host's* uptime and often its core count, while a VM
+    /// has its own — a distinction that changes what half these readings mean.
+    #[serde(default)]
+    pub virt_kind: String,
+}
+
+/// How a host's readings should be read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Machine {
+    /// Real silicon. Core counts are cores, and steal time is always zero.
+    Metal,
+    /// A virtual machine. Its "cores" are vCPUs carved out of a host that may
+    /// be in this fleet too, and steal time becomes meaningful.
+    Vm,
+    /// A container sharing a kernel with its host.
+    Container,
+    /// The host could not be asked — an older system without
+    /// `systemd-detect-virt`, or one that refused it.
+    Unknown,
+}
+
+impl HostFacts {
+    /// What kind of machine this is.
+    ///
+    /// `Unknown` rather than assuming metal: claiming a guest is hardware is
+    /// the mistake this whole distinction exists to prevent, and an absent
+    /// answer is not evidence of bare metal.
+    pub fn machine(&self) -> Machine {
+        // A value with whitespace is corrupt rather than a technology name -
+        // the "none unknown" shape a broken fallback produced. Reading it as
+        // anything definite would launder a bug into a claim.
+        if self.virt.split_whitespace().count() > 1 {
+            return Machine::Unknown;
+        }
+        match self.virt.as_str() {
+            "none" => Machine::Metal,
+            "" | "unknown" => Machine::Unknown,
+            // systemd calls WSL a container - it has no firmware and no
+            // virtual BIOS, so by its definition that is fair. For the
+            // question this app asks it is wrong: WSL2 runs its own kernel
+            // with its own memory allocation, which is precisely why owl
+            // reports 31 GB while the machine it runs on has 64. A container
+            // would report its host's. Classified by what its numbers mean,
+            // not by how it boots.
+            "wsl" => Machine::Vm,
+            _ if self.virt_kind == "container" => Machine::Container,
+            _ => Machine::Vm,
+        }
+    }
+
+    /// Whether steal time can ever be non-zero here.
+    ///
+    /// On bare metal it is structurally zero — there is no hypervisor to take
+    /// the time — so showing it beside real numbers implies a measurement
+    /// where none exists. On a guest it answers "why is this slow when it
+    /// looks idle", which is the question guests actually raise.
+    pub fn steal_is_meaningful(&self) -> bool {
+        matches!(self.machine(), Machine::Vm | Machine::Unknown)
+    }
 }
 
 impl HostFacts {
@@ -157,6 +227,8 @@ pub fn parse_facts(text: &str) -> HostFacts {
             "os" => f.os = value,
             "cpu" => f.cpu_model = value,
             "arch" => f.arch = value,
+            "virt" => f.virt = value,
+            "virtkind" => f.virt_kind = value,
             _ => {}
         }
     }
@@ -291,5 +363,96 @@ TXI|cpu|AMD Ryzen 9 5950X 16-Core Processor
         assert_eq!(parse_uptime("TXU|858066.79\n"), Some(858_066));
         assert_eq!(parse_uptime("TXU|not-a-number\n"), None);
         assert_eq!(parse_uptime("cpu 1 2 3 4\n"), None);
+    }
+}
+
+#[cfg(test)]
+mod machine_tests {
+    use super::*;
+
+    fn facts(virt: &str, kind: &str) -> HostFacts {
+        HostFacts {
+            virt: virt.into(),
+            virt_kind: kind.into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn bare_metal_is_recognised() {
+        // dove, wader and coot all report "none".
+        assert_eq!(facts("none", "vm").machine(), Machine::Metal);
+    }
+
+    #[test]
+    fn a_kvm_guest_and_a_wsl_guest_are_both_virtual_machines() {
+        // heron is a Hetzner vServer; owl is WSL2, which is a Hyper-V VM with
+        // its own kernel - which is why its 31 GB is the VM's and not N1's 64.
+        assert_eq!(facts("kvm", "vm").machine(), Machine::Vm);
+        assert_eq!(facts("wsl", "vm").machine(), Machine::Vm);
+        assert_eq!(facts("microsoft", "vm").machine(), Machine::Vm);
+    }
+
+    #[test]
+    fn wsl_is_a_virtual_machine_even_though_systemd_calls_it_a_container() {
+        // `systemd-detect-virt --container` succeeds on WSL, so the host
+        // itself reports virtkind=container. Trusting that would imply owl
+        // shares N1's kernel and memory accounting - the exact confusion this
+        // labelling exists to remove.
+        assert_eq!(facts("wsl", "container").machine(), Machine::Vm);
+        assert!(facts("wsl", "container").steal_is_meaningful());
+    }
+
+    #[test]
+    fn a_detected_value_is_never_overwritten_by_the_fallback() {
+        // systemd-detect-virt exits non-zero when it finds nothing and still
+        // prints "none", so a naive `|| echo unknown` produced "none unknown"
+        // on every bare-metal host in the fleet.
+        assert_eq!(parse_facts("TXI|virt|none\n").machine(), Machine::Metal);
+        assert_eq!(
+            parse_facts("TXI|virt|none unknown\n").machine(),
+            Machine::Unknown,
+            "the broken shape must not read as metal either"
+        );
+    }
+
+    #[test]
+    fn a_container_is_told_apart_from_a_virtual_machine() {
+        // coot runs LXC containers beside its VMs. A container shares its
+        // host's kernel, so half its readings mean something different again.
+        assert_eq!(facts("lxc", "container").machine(), Machine::Container);
+        assert_eq!(facts("docker", "container").machine(), Machine::Container);
+    }
+
+    #[test]
+    fn an_unanswered_host_is_not_assumed_to_be_hardware() {
+        // Claiming a guest is bare metal is the mistake this distinction
+        // exists to prevent, and silence is not evidence of silicon.
+        assert_eq!(facts("", "").machine(), Machine::Unknown);
+        assert_eq!(facts("unknown", "").machine(), Machine::Unknown);
+    }
+
+    #[test]
+    fn steal_is_shown_only_where_it_can_be_non_zero() {
+        // On bare metal there is no hypervisor to take the time, so a steal
+        // figure there implies a measurement that does not exist.
+        assert!(!facts("none", "vm").steal_is_meaningful());
+        assert!(facts("kvm", "vm").steal_is_meaningful());
+        // Unknown errs toward showing it: a hidden real number is worse than
+        // a shown zero.
+        assert!(facts("", "").steal_is_meaningful());
+    }
+
+    #[test]
+    fn the_facts_line_is_parsed() {
+        let f = parse_facts("TXI|kernel|Linux 6.6\nTXI|virt|kvm\nTXI|virtkind|vm\n");
+        assert_eq!(f.virt, "kvm");
+        assert_eq!(f.machine(), Machine::Vm);
+    }
+
+    #[test]
+    fn a_host_from_before_this_existed_still_parses() {
+        let f = parse_facts("TXI|kernel|Linux 6.6\nTXI|os|Debian 13\n");
+        assert_eq!(f.machine(), Machine::Unknown);
     }
 }

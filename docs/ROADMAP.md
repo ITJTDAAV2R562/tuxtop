@@ -444,10 +444,33 @@ Work that arrived from design conversation rather than the plan:
 - **Windows hosts.** SSH to Windows works and OpenSSH ships with it, but there
   is no `/proc`, so it needs a second sampler shape — PowerShell performance
   counters or CIM — behind the same `Sample`. Lean version: detect the OS once
-  at connect (host facts already do this) and pick a command set. Until then
-  a Windows box can be watched through its WSL instance, which is how `owl` is
-  reachable today, and which reports the Windows kernel's view of CPU and
-  memory anyway.
+  at connect (host facts already do this) and pick a command set.
+
+  **Correction, 2026-08-23:** this entry claimed a WSL instance "reports the
+  Windows kernel's view of CPU and memory anyway". That is **WSL1** behaviour
+  and false for WSL2, which is a Hyper-V VM with its own kernel: `owl` reports
+  31 GB because that is its VM's allocation, while `N1` has 63.8 GB. Its CPU
+  is the VM's activity, with everything running on Windows invisible. The
+  numbers are honest about the guest and were being read as the host's — which
+  is why every host now says what kind of machine it is.
+
+  Two routes exist if Windows hosts are ever wanted, both measured against N1:
+
+  - **Through WSL interop.** `powershell.exe` is reachable from inside the
+    existing WSL SSH session (absolute path — the Windows PATH is not
+    inherited), so the Windows host can be read over the connection that
+    already exists. No agent, no OpenSSH on Windows, no new port.
+  - **Windows' built-in OpenSSH Server**, a first-party optional feature
+    rather than a third-party agent, for Windows hosts without WSL.
+
+  **The trap, verified on N1:** `Win32_PerfRawData_PerfOS_Processor`'s
+  `PercentProcessorTime` is an *inverse* counter accumulating idle ticks. Read
+  directly it reported **79%** on a box that was ~11–21% busy; the correct
+  reading is `100 − Δcounter/Δtimestamp`. Avoid the alternatives for the same
+  reason: `Win32_PerfFormattedData_*` computes its delta over WMI's own
+  refresh window, which is the Beszel cached-value problem again;
+  `Get-Counter` paths are **localised** and simply do not exist on a
+  non-English Windows.
 - **Browser access, not only the desktop app.** The frontend is already static
   HTML/CSS/JS against a small command surface, and the backend is already Rust
   holding all the state. Serving the same commands over HTTP instead of Tauri

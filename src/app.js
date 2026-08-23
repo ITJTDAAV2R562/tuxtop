@@ -12,7 +12,8 @@
   // everywhere, so the call sites read the same as before the extraction.
   const { bps, gb, fmtKb, fmtSpan, humanUptime, shortGpu } = TuxFormat;
   const { band, logWindow, normalise, sliderToSecs, niceCols } = TuxScale;
-  const { fullestFs, fsPct, sensorName, sensorMetric, hottestSensor } = TuxPick;
+  const { fullestFs, fsPct, sensorName, sensorMetric, hottestSensor,
+          machine, machineLabel, stealIsMeaningful } = TuxPick;
   const { matchesHost, matchesProcess } = TuxFilter;
 
   const $ = s => document.querySelector(s);
@@ -881,6 +882,7 @@
           <span class="dot"></span>
           <h2 class="hname">${h.name}</h2>
           <span class="chip" data-tag>${h.distro || '&mdash;'}</span>
+          <span class="chip chip-virt" data-virt hidden></span>
           <span class="chip chip-up" data-uptime hidden></span>
           <span class="chip" data-cores>${h.cores || '?'}c</span>
           <span class="tb-grow"></span>
@@ -906,6 +908,7 @@
           <div class="m"><span class="k">Net</span><span class="v" data-net></span></div>
           <div class="m" data-fs-chip hidden><span class="k">Disk</span><span class="v" data-fs></span></div>
           <div class="m" data-temp-chip><span class="k">Temp</span><span class="v" data-temp></span></div>
+          <div class="m" data-steal-chip hidden><span class="k">Steal</span><span class="v" data-steal></span></div>
           <div class="m" data-gpu-chip hidden><span class="k" data-gpu-k>GPU</span><span class="v" data-gpu></span></div>
           ${h.gpu ? '<div class="m"><span class="k">GPU</span><span class="v" data-gpu></span></div>' : ''}
         </div>
@@ -1061,6 +1064,19 @@
         el.querySelector('.hname').title =
           [f.cpu_model, f.os, f.kernel].filter(Boolean).join('\n');
       }
+      // What kind of machine this is. Bare metal gets no badge - it is what a
+      // reader already assumes, and a chip on all eighteen cards would bury
+      // the three that are not.
+      const vchip = el.querySelector('[data-virt]');
+      if (vchip) {
+        const label = machineLabel(h);
+        vchip.hidden = !label;
+        vchip.textContent = label;
+        vchip.dataset.kind = machine(h);
+        vchip.title = machine(h) === 'container'
+          ? 'Shares its host\u2019s kernel: uptime and core count are the host\u2019s, and memory is a limit rather than hardware'
+          : 'A guest. Its cores are vCPUs and its memory is an allocation \u2014 both are honest about this guest, not about the machine it runs on';
+      }
       el.querySelector('[data-cores]').textContent = (h.cores || '?') + 'c';
 
       el.querySelector('[data-cpu]').innerHTML = Math.round(cpu) + '<span>%</span>';
@@ -1108,6 +1124,40 @@
           v.dataset.band = band(p);
           fchip.title = `${f.mount} - ${gb(f.used_kb / 1048576)} of ${gb(f.total_kb / 1048576)} GB used`;
         }
+      }
+
+      // Steal: time the hypervisor gave to somebody else.
+      //
+      // Shown only on guests, and only when non-zero. On bare metal it is
+      // structurally zero - there is no hypervisor to take the time - so a
+      // figure there would imply a measurement that does not exist. On a
+      // guest it answers "why is this slow when it looks idle", which is the
+      // question a guest actually raises, and the one that pairs a guest card
+      // with its hypervisor's.
+      const schip = el.querySelector('[data-steal-chip]');
+      if (schip) {
+        const st = h.breakdown ? h.breakdown.steal : null;
+        const show = stealIsMeaningful(h) && typeof st === 'number' && st >= 0.5;
+        schip.hidden = !show;
+        if (show) {
+          const v = el.querySelector('[data-steal]');
+          v.textContent = st.toFixed(1) + '%';
+          v.dataset.band = band(st * 4);   // 25% steal is already severe
+          schip.title = 'Time this guest was ready to run but the hypervisor '
+            + 'gave the CPU to someone else. Not this machine being busy \u2014 '
+            + 'this machine being kept waiting.';
+        }
+      }
+
+      // The full split, on the number it explains. "Not busy, waiting on
+      // disk" is a different problem with a different fix from "busy".
+      if (h.breakdown) {
+        const b = h.breakdown;
+        const parts = [`user ${b.user.toFixed(1)}%`, `system ${b.system.toFixed(1)}%`,
+                       `io wait ${b.iowait.toFixed(1)}%`];
+        if (stealIsMeaningful(h)) parts.push(`steal ${b.steal.toFixed(1)}%`);
+        const cpuEl = el.querySelector('[data-cpu]');
+        if (cpuEl) cpuEl.title = parts.join(' \u00b7 ');
       }
 
       const tchip = el.querySelector('[data-temp-chip]');
@@ -1158,8 +1208,31 @@
   function tally() {
     refreshMetricOptions();
     $('#nhosts').textContent = hosts.length;
-    $('#ncores').textContent = hosts.reduce((a, h) => a + (h.cores || 0), 0);
     $('#nup').textContent = hosts.filter(h => !h.fault && (!LIVE || h.seen)).length;
+
+    // Physical and virtual cores are stated separately, never summed.
+    //
+    // A guest's vCPUs are carved out of a host that may be in this very fleet
+    // - athens' cores come from coot's - so adding them counts the same
+    // silicon twice and reports a machine that does not exist. Splitting the
+    // figure needs no knowledge of which host owns which guest, only of what
+    // each host is, so it cannot be wrong the way a guessed parent could.
+    let phys = 0, virt = 0;
+    for (const h of hosts) {
+      const c = h.cores || 0;
+      if (machine(h) === 'metal') phys += c; else virt += c;
+    }
+    const el = $('#ncores');
+    if (virt && phys) {
+      el.textContent = `${phys} + ${virt}`;
+      el.title = `${phys} physical cores, plus ${virt} vCPUs in guests — ` +
+                 `not added together, because a guest's cores come out of a host's`;
+      $('#coresLabel').textContent = 'cores (physical + virtual)';
+    } else {
+      el.textContent = String(phys + virt);
+      el.title = '';
+      $('#coresLabel').textContent = 'cores';
+    }
   }
 
   // Fault text. Each variant names a different fix, which is the entire

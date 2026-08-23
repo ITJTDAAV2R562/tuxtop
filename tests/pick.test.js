@@ -5,8 +5,8 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert');
-const { fullestFs, fsPct, sensorName, sensorMetric, hottestSensor } =
-  require('../src/pick.js');
+const { fullestFs, fsPct, sensorName, sensorMetric, hottestSensor,
+        machine, machineLabel, stealIsMeaningful } = require('../src/pick.js');
 
 const HOST = {
   fs: [
@@ -77,4 +77,56 @@ test('a_host_with_no_sensors_has_no_hottest_one', () => {
   // machine rather than as an absent sensor.
   assert.strictEqual(hottestSensor({}), null);
   assert.strictEqual(hottestSensor({ temps: [] }), null);
+});
+
+// ---- what kind of machine a host is ---------------------------------------
+
+const host = (virt, kind) => ({ facts: { virt, virt_kind: kind } });
+
+test('bare_metal_gets_no_badge_because_that_is_the_assumption_already', () => {
+  // dove, wader and coot. A chip on every card would bury the few that are
+  // not hardware.
+  assert.strictEqual(machine(host('none', 'vm')), 'metal');
+  assert.strictEqual(machineLabel(host('none', 'vm')), '');
+});
+
+test('a_kvm_guest_is_named_as_one', () => {
+  // heron is a Hetzner vServer: 4 vCPUs that are not 4 cores.
+  assert.strictEqual(machine(host('kvm', 'vm')), 'vm');
+  assert.strictEqual(machineLabel(host('kvm', 'vm')), 'kvm guest');
+});
+
+test('wsl_is_a_guest_even_though_systemd_reports_it_as_a_container', () => {
+  // The host itself says virtkind=container - no firmware, no virtual BIOS,
+  // fair by systemd's definition. Wrong for this question: WSL2 runs its own
+  // kernel with its own memory, which is why owl reports 31 GB while the
+  // machine it runs on has 64. A container would report its host's.
+  assert.strictEqual(machine(host('wsl', 'container')), 'vm');
+  assert.strictEqual(machineLabel(host('wsl', 'container')), 'wsl guest');
+});
+
+test('a_corrupt_value_is_unknown_rather_than_laundered_into_a_claim', () => {
+  // "none unknown" is what a broken shell fallback produced on every
+  // bare-metal host: systemd-detect-virt exits non-zero when it finds nothing
+  // and still prints "none".
+  assert.strictEqual(machine(host('none unknown', 'vm')), 'unknown');
+  assert.strictEqual(machine(host('', '')), 'unknown');
+  assert.strictEqual(machine({}), 'unknown');
+});
+
+test('an_unknown_host_gets_no_badge_but_is_not_called_metal', () => {
+  // Silence is not evidence of silicon, and a badge reading "unknown" on an
+  // old host is noise. It stays unlabelled and out of the physical count.
+  assert.strictEqual(machineLabel(host('', '')), '');
+  assert.notStrictEqual(machine(host('', '')), 'metal');
+});
+
+test('steal_is_shown_only_where_a_hypervisor_could_take_the_time', () => {
+  // On bare metal it is structurally zero, so a figure there implies a
+  // measurement that does not exist. Unknown errs toward showing it: a hidden
+  // real number is worse than a shown zero.
+  assert.strictEqual(stealIsMeaningful(host('none', 'vm')), false);
+  assert.strictEqual(stealIsMeaningful(host('kvm', 'vm')), true);
+  assert.strictEqual(stealIsMeaningful(host('wsl', 'container')), true);
+  assert.strictEqual(stealIsMeaningful(host('', '')), true);
 });

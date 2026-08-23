@@ -51,11 +51,18 @@ pub const DF_EVERY: u32 = 30;
 ///
 /// None of it changes between frames, so re-reading it 86,400 times a day
 /// would be pure waste. It arrives in the first frame and the UI keeps it.
+/// `systemd-detect-virt` exits **non-zero when it finds nothing** and still
+/// prints "none", so `cmd || echo unknown` appends the fallback to a perfectly
+/// good answer - every bare-metal host reported "none unknown". The output is
+/// captured and only substituted when it is empty.
 const FACTS_SNIPPET: &str = "\
   echo \"TXI|kernel|$(uname -sr 2>/dev/null)\"; \
   echo \"TXI|arch|$(uname -m 2>/dev/null)\"; \
   echo \"TXI|os|$( . /etc/os-release 2>/dev/null; echo \"$PRETTY_NAME\" )\"; \
-  echo \"TXI|cpu|$(grep -m1 -E '^(model name|Model)' /proc/cpuinfo 2>/dev/null | cut -d: -f2- | sed 's/^ *//')\";";
+  echo \"TXI|cpu|$(grep -m1 -E '^(model name|Model)' /proc/cpuinfo 2>/dev/null | cut -d: -f2- | sed 's/^ *//')\"; \
+  v=$(systemd-detect-virt 2>/dev/null); echo \"TXI|virt|${v:-unknown}\"; \
+  k=$(systemd-detect-virt --container 2>/dev/null); \
+  echo \"TXI|virtkind|$([ -n \"$k\" ] && [ \"$k\" != none ] && echo container || echo vm)\";";
 
 /// Emits one `TXT|driver|label|millidegrees` line per hwmon temperature.
 ///

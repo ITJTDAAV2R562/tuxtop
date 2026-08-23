@@ -70,5 +70,46 @@
     return h.temps.reduce((a, b) => (b.celsius > a.celsius ? b : a));
   }
 
-  return { fullestFs, fsPct, sensorName, sensorMetric, hottestSensor };
+  /// What kind of machine a host is, from `systemd-detect-virt`.
+  ///
+  /// Mirrors `HostFacts::machine` in `facts.rs`. Every number a guest reports
+  /// is honest *about the guest* - the point of naming it is that a reader
+  /// otherwise assumes the numbers describe hardware. owl reports 31 GB
+  /// because that is what its WSL VM was given; the machine it runs on has 64.
+  function machine(h) {
+    const v = (h && h.facts && h.facts.virt || '').trim();
+    // A value with whitespace is corrupt, not a technology name.
+    if (!v || v === 'unknown' || v.split(/\s+/).length > 1) return 'unknown';
+    if (v === 'none') return 'metal';
+    // systemd calls WSL a container - no firmware, no virtual BIOS, fair by
+    // its definition. Wrong for this question: WSL2 runs its own kernel with
+    // its own memory, which is exactly why owl and the box it runs on
+    // disagree. Classified by what its numbers mean, not by how it boots.
+    if (v === 'wsl') return 'vm';
+    return (h.facts.virt_kind === 'container') ? 'container' : 'vm';
+  }
+
+  /// A short label for the card, or empty for bare metal.
+  ///
+  /// Metal gets no badge: it is the assumption a reader already makes, and a
+  /// chip on every card would be noise that hides the three that matter.
+  function machineLabel(h) {
+    const m = machine(h);
+    if (m === 'metal') return '';
+    if (m === 'unknown') return '';
+    const v = (h.facts.virt || '').trim();
+    return m === 'container' ? `${v} container` : `${v} guest`;
+  }
+
+  /// Whether steal time can ever be non-zero on this host.
+  ///
+  /// On bare metal there is no hypervisor to take the time, so showing a
+  /// steal figure there implies a measurement where none exists.
+  function stealIsMeaningful(h) {
+    const m = machine(h);
+    return m === 'vm' || m === 'unknown';
+  }
+
+  return { fullestFs, fsPct, sensorName, sensorMetric, hottestSensor,
+           machine, machineLabel, stealIsMeaningful };
 });
