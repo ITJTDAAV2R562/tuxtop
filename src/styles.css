@@ -168,7 +168,11 @@ body{
 
 /* ============ window ============ */
 .app{
-  max-width:1240px;margin:0 auto;
+  /* 1240 was a reading width, and this is not a document. A fleet view of
+     nineteen hosts wants the screen it has been given: more cards per row,
+     more cores visible at once, and a toolbar that fits its controls. The
+     body padding still keeps it off the edges. */
+  max-width:1500px;margin:0 auto;
   background:var(--win);
   border:1px solid var(--win-stroke);
   border-radius:14px;
@@ -196,20 +200,17 @@ body{
 /* ============ toolbar ============ */
 .toolbar{
   display:flex;align-items:center;gap:10px;
-  /* No wrapping at desktop widths. A flex container wraps *before* it
-     shrinks, so one control too many did not squeeze the row - it threw
-     "Add host" onto a second line, and which controls a view shows changed
-     whether that happened. Shrinking instead keeps every item on one row and
-     in the same place in every view. */
-  flex-wrap:nowrap;
+  /* Wrapping is allowed, and must be.
+     `nowrap` kept everything on one row but made the row *overflow* when it
+     genuinely did not fit - the History view adds a host select, and a
+     nineteen-host tally is long, so at some widths "Add host" was clipped off
+     the right edge entirely. A control you cannot see or click is worse than
+     one on a second line. What stops the row breaking needlessly is that only
+     the filter gives way, and that the tally below is kept short. */
+  flex-wrap:wrap;
   padding:11px 14px;border-bottom:1px solid var(--stroke);
 }
-/* Below this the widest view - Fleet, which adds a metric select - genuinely
-   cannot fit even with everything shrunk, and `nowrap` would push "Add host"
-   off the edge. Wrapping is the better failure there. Measured: the row needs
-   about 1,175px, so the breakpoint sits above that with room for a longer
-   host tally. */
-@media (max-width:1240px){ .toolbar{flex-wrap:wrap} }
+
 /* Nothing in the toolbar shrinks except the filter.
    `nowrap` stopped the row breaking but left flex free to squeeze the items
    instead, so "Add host" lost width and broke its own label onto two lines -
@@ -1079,7 +1080,7 @@ body[data-bands="off"] .legend span:not(:last-child){display:none}
    slack instead, so every control sits in the same place in every view. It
    still shrinks when the row is genuinely tight, which is what stops the row
    wrapping. */
-.hostfilterwrap{display:flex;align-items:center;flex:0 1 190px;min-width:104px}
+.hostfilterwrap{display:flex;align-items:center;flex:0 1 170px;min-width:104px}
 .hostfilterwrap .procfilter{width:100%;min-width:0}
 /* Selects have intrinsic widths that resist shrinking; letting them give a
    little keeps the row intact one breakpoint longer. */

@@ -1223,16 +1223,16 @@
       if (machine(h) === 'metal') phys += c; else virt += c;
     }
     const el = $('#ncores');
-    if (virt && phys) {
-      el.textContent = `${phys} + ${virt}`;
-      el.title = `${phys} physical cores, plus ${virt} vCPUs in guests — ` +
-                 `not added together, because a guest's cores come out of a host's`;
-      $('#coresLabel').textContent = 'cores (physical + virtual)';
-    } else {
-      el.textContent = String(phys + virt);
-      el.title = '';
-      $('#coresLabel').textContent = 'cores';
-    }
+    // "112 + 52 cores", not "112 + 52 cores (physical + virtual)". The label
+    // explaining the split cost about 150px of a toolbar that has to hold a
+    // host select and a filter as well, and the sum being split is itself the
+    // signal - the words belong in the tooltip, where they are one hover away
+    // rather than permanently in the way.
+    el.textContent = virt && phys ? `${phys} + ${virt}` : String(phys + virt);
+    el.title = virt && phys
+      ? `${phys} physical cores, plus ${virt} vCPUs in guests — not added ` +
+        `together, because a guest's cores come out of a host's`
+      : '';
   }
 
   // Fault text. Each variant names a different fix, which is the entire
