@@ -45,6 +45,14 @@ WIN_SRC=/mnt/c/Users/sam/tuxtop/src-tauri
 if [ -x "$WIN_CARGO" ] && [ -d "$WIN_SRC" ]; then
   printf '\n\033[1m== windows build (src-tauri)\033[0m\n'
   printf '   note: builds the Windows checkout, so `git pull` there first\n'
+  # Windows will not let cargo replace a running binary, and this script has
+  # to launch one to smoke-test it. Closing it first is the only way the gate
+  # can run twice in a row.
+  if /mnt/c/Windows/System32/tasklist.exe /FI "IMAGENAME eq tuxtop.exe" 2>/dev/null | grep -q tuxtop.exe; then
+    printf '   closing the running tuxtop.exe so the binary can be replaced\n'
+    /mnt/c/Windows/System32/taskkill.exe /IM tuxtop.exe /F >/dev/null 2>&1
+    sleep 2
+  fi
   if (cd "$WIN_SRC" && "$WIN_CARGO" build --quiet); then printf '   ok\n'
   else printf '\033[31m   FAILED\033[0m\n'; FAIL=1; fi
   # Compiling is not running. Two startup panics shipped past a green build
