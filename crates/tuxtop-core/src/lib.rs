@@ -17,11 +17,13 @@
 pub mod facts;
 pub mod fleet;
 pub mod history;
+pub mod history_store;
 pub mod hostlist;
 pub mod model;
 pub mod proc;
 pub mod procs;
 pub mod sampler;
+pub mod supervisor;
 pub mod traffic;
 pub mod transport;
 pub mod windows;

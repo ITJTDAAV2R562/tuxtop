@@ -90,6 +90,14 @@ sanctioned exception is per-field parsing inside `/proc` parsers, where a
 malformed field degrades that field to zero rather than discarding the whole
 snapshot — that is deliberate and documented at each site.
 
+**`src-tauri` holds the window and nothing else.**
+The supervisor, the history store, the samplers and the fleet loop all live in
+`tuxtop-core`. What remains in `src-tauri` is a thin adapter: Tauri commands,
+window chrome, and one task turning `supervisor::Event` into webview events.
+Anything that would be needed by a headless server belongs in core — that is
+what makes one possible, and what makes the code testable at all, since the
+next rule means nothing in `src-tauri` is ever compiled here.
+
 **`src-tauri` is not a workspace member — keep it that way.**
 Tauri pulls webkit2gtk on Linux, which is absent on the WSL dev box. Adding it
 to the workspace breaks `cargo test` on the machine where development happens.

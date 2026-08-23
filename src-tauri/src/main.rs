@@ -6,16 +6,36 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-mod history_store;
 mod hosts;
-mod supervisor;
+
+/// Event names the webview subscribes to.
+///
+/// Strings, because that is what Tauri's event system takes. The supervisor
+/// emits a typed `Event` and knows nothing about them - which is what lets the
+/// same supervisor feed a browser over HTTP later.
+const EVENT_SAMPLE: &str = "tuxtop://sample";
+const EVENT_FAULT: &str = "tuxtop://fault";
+const EVENT_HOSTS: &str = "tuxtop://hosts-changed";
+const EVENT_SETTINGS: &str = "tuxtop://settings-changed";
+const EVENT_PROCS: &str = "tuxtop://processes";
+
+/// The fault payload the frontend expects: the host name beside the reason.
+///
+/// A bare fault cannot be attributed to a card, and attributing one to the
+/// wrong card is worse than dropping it.
+#[derive(Clone, serde::Serialize)]
+struct FaultEvent {
+    host: String,
+    #[serde(flatten)]
+    fault: tuxtop_core::HostFault,
+}
 
 use tauri::{AppHandle, Emitter, Manager};
 use tuxtop_core::hostlist::{effective_interval, Settings};
 use tuxtop_core::HostConfig;
 
-use history_store::{HistoryStore, HistoryUsage};
-use supervisor::Supervisor;
+use tuxtop_core::history_store::{HistoryStore, HistoryUsage};
+use tuxtop_core::supervisor::Supervisor;
 
 /// The configured hosts, for the frontend to render cards from.
 #[tauri::command]
@@ -27,7 +47,7 @@ fn list_hosts(app: AppHandle) -> Result<Vec<HostConfig>, String> {
 #[tauri::command]
 fn add_host(
     app: AppHandle,
-    sup: tauri::State<'_, Supervisor>,
+    sup: tauri::State<'_, std::sync::Arc<Supervisor>>,
     cfg: HostConfig,
 ) -> Result<Vec<HostConfig>, String> {
     let mut all = hosts::load(&app)?;
@@ -39,8 +59,8 @@ fn add_host(
     let stored = all.last().cloned().expect("just pushed");
     let settings = hosts::load_settings(&app)?;
     let iv = effective_interval(&stored, &settings);
-    sup.start(app.clone(), stored, iv);
-    let _ = app.emit(supervisor::EVENT_HOSTS, &all);
+    sup.start(stored, iv);
+    let _ = app.emit(EVENT_HOSTS, &all);
 
     Ok(all)
 }
@@ -49,7 +69,7 @@ fn add_host(
 #[tauri::command]
 fn remove_host(
     app: AppHandle,
-    sup: tauri::State<'_, Supervisor>,
+    sup: tauri::State<'_, std::sync::Arc<Supervisor>>,
     name: String,
 ) -> Result<Vec<HostConfig>, String> {
     let mut all = hosts::load(&app)?;
@@ -59,7 +79,7 @@ fn remove_host(
     sup.stop(&name);
     sup.forget(&name);
     app.state::<HistoryStore>().forget_host(&name);
-    let _ = app.emit(supervisor::EVENT_HOSTS, &all);
+    let _ = app.emit(EVENT_HOSTS, &all);
 
     Ok(all)
 }
@@ -77,7 +97,7 @@ fn reorder_hosts(
     tuxtop_core::hostlist::reorder(&mut all, &names);
     hosts::save(&app, &all)?;
 
-    let _ = app.emit(supervisor::EVENT_HOSTS, &all);
+    let _ = app.emit(EVENT_HOSTS, &all);
     Ok(all)
 }
 
@@ -95,8 +115,8 @@ fn get_settings(app: AppHandle) -> Result<Settings, String> {
 #[tauri::command]
 fn set_settings(
     app: AppHandle,
-    sup: tauri::State<'_, Supervisor>,
-    store: tauri::State<'_, HistoryStore>,
+    sup: tauri::State<'_, std::sync::Arc<Supervisor>>,
+    store: tauri::State<'_, std::sync::Arc<HistoryStore>>,
     settings: Settings,
 ) -> Result<Settings, String> {
     let mut f = hosts::load_file(&app)?;
@@ -113,11 +133,11 @@ fn set_settings(
 
     for h in &f.hosts {
         if effective_interval(h, &before) != effective_interval(h, &f.settings) {
-            sup.start(app.clone(), h.clone(), effective_interval(h, &f.settings));
+            sup.start(h.clone(), effective_interval(h, &f.settings));
         }
     }
 
-    let _ = app.emit(supervisor::EVENT_SETTINGS, &f.settings);
+    let _ = app.emit(EVENT_SETTINGS, &f.settings);
     Ok(f.settings)
 }
 
@@ -125,7 +145,7 @@ fn set_settings(
 #[tauri::command]
 fn set_host_interval(
     app: AppHandle,
-    sup: tauri::State<'_, Supervisor>,
+    sup: tauri::State<'_, std::sync::Arc<Supervisor>>,
     name: String,
     interval_secs: Option<u32>,
 ) -> Result<Vec<HostConfig>, String> {
@@ -140,9 +160,9 @@ fn set_host_interval(
     hosts::save_file(&app, &f)?;
 
     // Restart only the host that changed, at its own effective interval.
-    sup.start(app.clone(), updated.clone(), effective_interval(&updated, &f.settings));
+    sup.start(updated.clone(), effective_interval(&updated, &f.settings));
 
-    let _ = app.emit(supervisor::EVENT_HOSTS, &f.hosts);
+    let _ = app.emit(EVENT_HOSTS, &f.hosts);
     Ok(f.hosts.clone())
 }
 
@@ -164,7 +184,7 @@ fn set_host_group(
     }
 
     hosts::save_file(&app, &f)?;
-    let _ = app.emit(supervisor::EVENT_HOSTS, &f.hosts);
+    let _ = app.emit(EVENT_HOSTS, &f.hosts);
     Ok(f.hosts.clone())
 }
 
@@ -177,7 +197,7 @@ fn set_host_group(
 #[tauri::command]
 fn set_host_os(
     app: AppHandle,
-    sup: tauri::State<'_, Supervisor>,
+    sup: tauri::State<'_, std::sync::Arc<Supervisor>>,
     name: String,
     os: String,
 ) -> Result<Vec<HostConfig>, String> {
@@ -194,14 +214,14 @@ fn set_host_os(
     let updated = h.clone();
 
     hosts::save_file(&app, &f)?;
-    sup.start(app.clone(), updated.clone(), effective_interval(&updated, &f.settings));
-    let _ = app.emit(supervisor::EVENT_HOSTS, &f.hosts);
+    sup.start(updated.clone(), effective_interval(&updated, &f.settings));
+    let _ = app.emit(EVENT_HOSTS, &f.hosts);
     Ok(f.hosts.clone())
 }
 
 /// Measured cost per host, for the settings meter.
 #[tauri::command]
-fn traffic_stats(sup: tauri::State<'_, Supervisor>) -> Vec<supervisor::HostTraffic> {
+fn traffic_stats(sup: tauri::State<'_, std::sync::Arc<Supervisor>>) -> Vec<tuxtop_core::supervisor::HostTraffic> {
     sup.traffic()
 }
 
@@ -213,14 +233,14 @@ fn traffic_stats(sup: tauri::State<'_, Supervisor>) -> Vec<supervisor::HostTraff
 /// the data is, so the webview only receives what it can draw.
 #[tauri::command]
 fn query_history(
-    store: tauri::State<'_, HistoryStore>,
+    store: tauri::State<'_, std::sync::Arc<HistoryStore>>,
     host: String,
     metric: String,
     from_secs_ago: u64,
     to_secs_ago: u64,
     max_points: usize,
 ) -> Vec<tuxtop_core::history::Point> {
-    let now = history_store::now_secs();
+    let now = tuxtop_core::history_store::now_secs();
     let from = now.saturating_sub(from_secs_ago);
     let to = now.saturating_sub(to_secs_ago);
     store.query(&host, &metric, from, to, max_points.clamp(1, 4096))
@@ -233,14 +253,14 @@ fn query_history(
 /// same lock.
 #[tauri::command]
 fn query_history_many(
-    store: tauri::State<'_, HistoryStore>,
+    store: tauri::State<'_, std::sync::Arc<HistoryStore>>,
     host: String,
     metrics: Vec<String>,
     from_secs_ago: u64,
     to_secs_ago: u64,
     max_points: usize,
 ) -> std::collections::HashMap<String, Vec<tuxtop_core::history::Point>> {
-    let now = history_store::now_secs();
+    let now = tuxtop_core::history_store::now_secs();
     let from = now.saturating_sub(from_secs_ago);
     let to = now.saturating_sub(to_secs_ago);
     let budget = max_points.clamp(1, 4096);
@@ -256,7 +276,7 @@ fn query_history_many(
 
 /// How much the history store is currently holding.
 #[tauri::command]
-fn history_usage(store: tauri::State<'_, HistoryStore>) -> HistoryUsage {
+fn history_usage(store: tauri::State<'_, std::sync::Arc<HistoryStore>>) -> HistoryUsage {
     store.usage()
 }
 
@@ -268,12 +288,12 @@ fn history_usage(store: tauri::State<'_, HistoryStore>) -> HistoryUsage {
 #[tauri::command]
 fn set_processes_enabled(
     app: AppHandle,
-    sup: tauri::State<'_, Supervisor>,
+    sup: tauri::State<'_, std::sync::Arc<Supervisor>>,
     enabled: bool,
 ) -> Result<(), String> {
     if enabled {
         let hosts = hosts::load(&app)?;
-        sup.start_procs(app.clone(), hosts);
+        sup.start_procs(hosts);
     } else {
         sup.stop_procs();
     }
@@ -282,7 +302,7 @@ fn set_processes_enabled(
 
 /// Every host's processes, merged and sorted as one fleet list.
 #[tauri::command]
-fn process_list(sup: tauri::State<'_, Supervisor>) -> Vec<tuxtop_core::procs::ProcInfo> {
+fn process_list(sup: tauri::State<'_, std::sync::Arc<Supervisor>>) -> Vec<tuxtop_core::procs::ProcInfo> {
     sup.fleet_procs()
 }
 
@@ -291,14 +311,13 @@ fn process_list(sup: tauri::State<'_, Supervisor>) -> Vec<tuxtop_core::procs::Pr
 /// Sampled on the same channel as the processes, so the two describe the same
 /// instant rather than two moments that could disagree.
 #[tauri::command]
-fn cgroup_list(sup: tauri::State<'_, Supervisor>) -> Vec<supervisor::HostCgroup> {
+fn cgroup_list(sup: tauri::State<'_, std::sync::Arc<Supervisor>>) -> Vec<tuxtop_core::supervisor::HostCgroup> {
     sup.fleet_cgroups()
 }
 
 fn main() {
     tauri::Builder::default()
-        .manage(Supervisor::default())
-        .manage(HistoryStore::new())
+        .manage(std::sync::Arc::new(HistoryStore::new()))
         .invoke_handler(tauri::generate_handler![
             list_hosts,
             add_host,
@@ -320,6 +339,34 @@ fn main() {
         .setup(|app| {
             let handle = app.handle().clone();
 
+            // The supervisor is framework-free now: it takes the history store
+            // and a channel, and this task is the only thing that knows those
+            // events end up in a webview.
+            let history = app.state::<std::sync::Arc<HistoryStore>>().inner().clone();
+            let (tx, mut rx) = tokio::sync::mpsc::channel(256);
+            let sup = Supervisor::new(history, tx);
+            app.manage(sup.clone());
+
+            let emitter = handle.clone();
+            tauri::async_runtime::spawn(async move {
+                use tuxtop_core::supervisor::Event;
+                while let Some(ev) = rx.recv().await {
+                    let sent = match ev {
+                        Event::Sample(s) => emitter.emit(EVENT_SAMPLE, &*s),
+                        Event::Fault { host, fault } => emitter.emit(
+                            EVENT_FAULT,
+                            FaultEvent { host, fault },
+                        ),
+                        Event::Processes(h) => emitter.emit(EVENT_PROCS, &h),
+                    };
+                    if sent.is_err() {
+                        // The webview is gone; the samplers keep running and
+                        // history keeps filling, which is what a reload wants.
+                        continue;
+                    }
+                }
+            });
+
             if let Some(window) = app.get_webview_window("main") {
                 apply_backdrop(&window);
             }
@@ -340,15 +387,15 @@ fn main() {
             // to start over a stray comma.
             match hosts::load_file(&handle) {
                 Ok(f) => {
-                    let sup = handle.state::<Supervisor>();
+                    let sup = handle.state::<std::sync::Arc<Supervisor>>();
                     for cfg in f.hosts {
                         let iv = effective_interval(&cfg, &f.settings);
-                        sup.start(handle.clone(), cfg, iv);
+                        sup.start(cfg, iv);
                     }
                 }
                 Err(e) => {
                     eprintln!("could not load hosts: {e}");
-                    let _ = handle.emit(supervisor::EVENT_FAULT, e);
+                    let _ = handle.emit(EVENT_FAULT, e);
                 }
             }
 
