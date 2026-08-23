@@ -210,6 +210,15 @@ body{
    about 1,175px, so the breakpoint sits above that with room for a longer
    host tally. */
 @media (max-width:1240px){ .toolbar{flex-wrap:wrap} }
+/* Nothing in the toolbar shrinks except the filter.
+   `nowrap` stopped the row breaking but left flex free to squeeze the items
+   instead, so "Add host" lost width and broke its own label onto two lines -
+   the button changing shape between views, which is the same inconsistency
+   in a new place. Buttons, tab groups and select labels are all intrinsic
+   widths; only the filter has slack to give. */
+.toolbar .btn, .toolbar .seg, .toolbar .sortwrap{flex-shrink:0}
+.toolbar .btn, .toolbar .seg button{white-space:nowrap}
+
 /* The tally never shrinks. It is the identity line, and letting it lose
    characters to make room for a dropdown both clips the host count and moves
    the view tabs - the very inconsistency this section exists to remove. The
@@ -1070,7 +1079,7 @@ body[data-bands="off"] .legend span:not(:last-child){display:none}
    slack instead, so every control sits in the same place in every view. It
    still shrinks when the row is genuinely tight, which is what stops the row
    wrapping. */
-.hostfilterwrap{display:flex;align-items:center;flex:0 1 220px;min-width:104px}
+.hostfilterwrap{display:flex;align-items:center;flex:0 1 190px;min-width:104px}
 .hostfilterwrap .procfilter{width:100%;min-width:0}
 /* Selects have intrinsic widths that resist shrinking; letting them give a
    little keeps the row intact one breakpoint longer. */
