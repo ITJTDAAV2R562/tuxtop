@@ -78,7 +78,7 @@ fn remove_host(
 
     sup.stop(&name);
     sup.forget(&name);
-    app.state::<HistoryStore>().forget_host(&name);
+    app.state::<std::sync::Arc<HistoryStore>>().forget_host(&name);
     let _ = app.emit(EVENT_HOSTS, &all);
 
     Ok(all)
@@ -344,7 +344,13 @@ fn main() {
             // events end up in a webview.
             let history = app.state::<std::sync::Arc<HistoryStore>>().inner().clone();
             let (tx, mut rx) = tokio::sync::mpsc::channel(256);
-            let sup = Supervisor::new(history, tx);
+            // Tauri's runtime, not `Handle::current()`: `setup` runs on the
+            // main thread outside it, so asking for the current handle here
+            // panics — which it did, on launch, after compiling cleanly.
+            let rt = tauri::async_runtime::block_on(async {
+                tokio::runtime::Handle::current()
+            });
+            let sup = Supervisor::new(history, tx, rt);
             app.manage(sup.clone());
 
             let emitter = handle.clone();
@@ -377,7 +383,7 @@ fn main() {
                 apply_always_on_top(&handle, s.always_on_top);
                 // Before any sampling starts, so the store is never briefly
                 // uncapped on a fleet large enough to need the limit.
-                handle.state::<HistoryStore>().set_cap_mb(s.history_cap_mb);
+                handle.state::<std::sync::Arc<HistoryStore>>().set_cap_mb(s.history_cap_mb);
             }
 
             // Start a sampler for every configured host.

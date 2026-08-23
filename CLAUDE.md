@@ -274,6 +274,13 @@ bash scripts/verify.sh          # everything CI runs, locally
 bash scripts/verify.sh --quick  # without the browser suite
 ```
 
+**Compiling is not running, and `verify.sh` now launches the app.** Two startup
+panics shipped past a green build in one afternoon: `Handle::current()` taken
+in Tauri's `setup`, which runs outside the runtime, and a `state()` lookup for
+a type registered under a different one. Neither is visible to a compiler and
+both are obvious a second after launch. If you change anything about
+construction, state registration or the runtime, run the smoke test.
+
 **Run `verify.sh` before pushing, and do not rely on CI being available.** It
 runs the same gates, including `cargo clippy --all-targets -- -D warnings`
 (stricter than a bare `cargo clippy`) — and it builds `src-tauri` through the

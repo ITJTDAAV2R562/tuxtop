@@ -52,9 +52,13 @@ pub struct Supervisor {
     history: Arc<HistoryStore>,
     /// Where events go. The supervisor does not know who is listening.
     events: mpsc::Sender<Event>,
-    /// Captured at construction so `start` works from a synchronous caller -
-    /// `tokio::spawn` panics outside a runtime, and hosts are started from
-    /// application setup as well as from async command handlers.
+    /// The runtime to spawn host tasks on.
+    ///
+    /// Passed in rather than taken from `Handle::current()`, which panics when
+    /// the caller is not inside a runtime — and Tauri's `setup` is not, even
+    /// though the application plainly has one. Capturing it there compiled
+    /// perfectly and panicked on launch, which is the shape of bug a build
+    /// check cannot see.
     rt: tokio::runtime::Handle,
     tasks: Mutex<HashMap<String, tokio::task::JoinHandle<()>>>,
     // Byte counters survive a restart of the host's task, so changing an
@@ -75,12 +79,22 @@ pub struct Supervisor {
 }
 
 impl Supervisor {
-    /// Build a supervisor. Must be called from inside a Tokio runtime.
-    pub fn new(history: Arc<HistoryStore>, events: mpsc::Sender<Event>) -> Arc<Self> {
+    /// Build a supervisor.
+    ///
+    /// `rt` is the runtime host tasks are spawned on. It is a parameter and
+    /// not `Handle::current()` because the caller is often *not* inside a
+    /// runtime — Tauri's `setup` runs on the main thread — and taking it
+    /// implicitly turns that into a panic at launch rather than an error at
+    /// the call site.
+    pub fn new(
+        history: Arc<HistoryStore>,
+        events: mpsc::Sender<Event>,
+        rt: tokio::runtime::Handle,
+    ) -> Arc<Self> {
         Arc::new(Self {
             history,
             events,
-            rt: tokio::runtime::Handle::current(),
+            rt,
             tasks: Mutex::new(HashMap::new()),
             traffic: Mutex::new(HashMap::new()),
             intervals: Mutex::new(HashMap::new()),
@@ -372,7 +386,11 @@ mod tests {
     fn sup() -> (Arc<Supervisor>, mpsc::Receiver<Event>) {
         let (tx, rx) = mpsc::channel(16);
         (
-            Supervisor::new(Arc::new(crate::history_store::HistoryStore::new()), tx),
+            Supervisor::new(
+                Arc::new(crate::history_store::HistoryStore::new()),
+                tx,
+                tokio::runtime::Handle::current(),
+            ),
             rx,
         )
     }

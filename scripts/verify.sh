@@ -47,8 +47,33 @@ if [ -x "$WIN_CARGO" ] && [ -d "$WIN_SRC" ]; then
   printf '   note: builds the Windows checkout, so `git pull` there first\n'
   if (cd "$WIN_SRC" && "$WIN_CARGO" build --quiet); then printf '   ok\n'
   else printf '\033[31m   FAILED\033[0m\n'; FAIL=1; fi
+  # Compiling is not running. Two startup panics shipped past a green build
+  # in one afternoon - a runtime handle taken where there was no runtime, and
+  # a state lookup for a type registered under a different one. Neither is
+  # visible to a compiler; both are obvious a second after launch.
+  #
+  # This opens the window briefly and closes it.
+  printf '\n\033[1m== windows smoke test (does it survive startup?)\033[0m\n'
+  EXE="$WIN_SRC/target/debug/tuxtop.exe"
+  LOG=$(mktemp)
+  if [ -x "$EXE" ]; then
+    ( "$EXE" >"$LOG" 2>&1 & )
+    sleep 8
+    if /mnt/c/Windows/System32/tasklist.exe /FI "IMAGENAME eq tuxtop.exe" 2>/dev/null | grep -q tuxtop.exe; then
+      printf '   ok\n'
+    else
+      printf '\033[31m   FAILED — exited during startup:\033[0m\n'
+      sed -n '1,6p' "$LOG" | sed 's/^/     /'
+      FAIL=1
+    fi
+    /mnt/c/Windows/System32/taskkill.exe /IM tuxtop.exe /F >/dev/null 2>&1
+  else
+    printf '   no binary to run\n'
+  fi
+  rm -f "$LOG"
 else
   skip "windows build" "no Windows toolchain reachable — CI covers this"
+  skip "windows smoke test" "same"
 fi
 
 printf '\n'
