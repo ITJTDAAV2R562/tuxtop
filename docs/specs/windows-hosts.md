@@ -96,9 +96,37 @@ so is one word.
 - [x] A Windows host added to `hosts.toml` shows a card with per-core CPU
 - [x] Its memory reads the machine's, not a guest's
 
-## Out of scope for now
+## Processes, and why there is no services view
 
-- **Processes and services.** A second pass; the Linux versions are the model.
+**Processes** rank on the far side, as they do for Linux — 409 processes are
+16 KB per sample and the top twenty are about 1 KB. The delta is obtained
+differently: Linux takes two snapshots inside one iteration, while here the
+loop is persistent, so it keeps the previous snapshot in a variable and
+differentiates against that. One CIM query per cycle instead of two, which on
+a measured ~574 ms query is real CPU on somebody's workstation.
+
+The consequence is worth stating because it differs: a Windows process figure
+is averaged over the sampling interval where a Linux one is averaged over a
+fixed second. Both are percentages of the whole box; the Windows one is
+smoother.
+
+Measured on N1: **1,061 bytes per frame**, top twenty of 409.
+
+**Ownership comes from `Win32_Service`**, joined on process id — the Windows
+equivalent of the cgroup unit, and it lands in the same Owner column. One
+`svchost` frequently hosts several services, so all of them are named:
+attributing a spike to whichever service WMI happened to list first is a coin
+toss dressed as a fact. The query is cheap when filtered
+(`WHERE ProcessId <> 0` is 97 ms against 783 ms unfiltered).
+
+**There is no services view**, for the same reason Phase 10 has no systemd
+one. A browsable table of 333 service states is `Get-Service` with more
+clicks, and surfacing "auto-start but not running" is alerting-shaped — its
+value is noticing a failure, and Tuxtop is opened when you want to look. See
+[ADR-010](../DECISIONS.md#adr-010--tuxtop-only-observes-it-never-changes-a-monitored-host)
+and the ownership spec.
+
+## Out of scope for now
 - **Temperature and GPU.** Windows exposes neither through a stable
   first-party API worth trusting.
 - **Auto-detection of the OS.** See above.

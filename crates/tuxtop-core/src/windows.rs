@@ -109,6 +109,127 @@ pub fn win_sampler_command(interval_secs: u32) -> String {
     )
 }
 
+/// The process-sampling script, run as its own persistent loop.
+///
+/// Ranking happens on the far side, as it does for Linux: 409 processes are
+/// 16 KB per sample and the top twenty are about 650 bytes. The difference is
+/// how the delta is obtained. Linux takes two snapshots inside one iteration;
+/// here the loop is persistent, so it keeps the previous snapshot in a
+/// variable and differentiates against that — one CIM query per cycle rather
+/// than two. Measured on N1: ~574 ms per query against 409 processes, so the
+/// saving is real remote CPU on somebody's workstation.
+///
+/// The consequence, stated because it differs from the Linux path: the window
+/// is the sampling interval rather than a fixed second, so a Windows process
+/// figure is averaged over five seconds where a Linux one is averaged over
+/// one. Both are percentages of the whole box; the Windows one is smoother.
+pub fn win_process_command(top_n: usize, interval_secs: u32) -> String {
+    let secs = interval_secs.max(1);
+    let script = format!(
+        "$ErrorActionPreference='SilentlyContinue'\n\
+         $ncpu=(Get-CimInstance Win32_ComputerSystem).NumberOfLogicalProcessors\n\
+         $prev=@{{}}\n\
+         $prevTs=0\n\
+         while($true){{\n\
+           $q='SELECT IDProcess,Name,PercentProcessorTime,WorkingSetPrivate,Timestamp_Sys100NS FROM Win32_PerfRawData_PerfProc_Process'\n\
+           $rows=Get-CimInstance -Query $q | Where-Object {{ $_.Name -ne '_Total' -and $_.Name -ne 'Idle' }}\n\
+           $ts=0; if($rows){{ $ts=$rows[0].Timestamp_Sys100NS }}\n\
+           $cur=@{{}}\n\
+           foreach($r in $rows){{ $cur[[string]$r.IDProcess]=$r.PercentProcessorTime }}\n\
+           if($prevTs -gt 0 -and $ts -gt $prevTs){{\n\
+             $win=$ts-$prevTs\n\
+             $svc=@{{}}\n\
+             foreach($s in Get-CimInstance -Query 'SELECT Name,ProcessId FROM Win32_Service WHERE ProcessId <> 0'){{\n\
+               $k=[string]$s.ProcessId\n\
+               if($svc.ContainsKey($k)){{ $svc[$k]=$svc[$k]+','+$s.Name }} else {{ $svc[$k]=$s.Name }}\n\
+             }}\n\
+             'TXWPT|'+$ncpu+'|'+$win\n\
+             $rows | ForEach-Object {{\n\
+               $k=[string]$_.IDProcess\n\
+               $d=0; if($prev.ContainsKey($k)){{ $d=$cur[$k]-$prev[$k] }}\n\
+               [pscustomobject]@{{ pid=$k; d=$d; ws=$_.WorkingSetPrivate; n=$_.Name }}\n\
+             }} | Sort-Object -Property d,ws -Descending | Select-Object -First {top_n} | ForEach-Object {{\n\
+               $sv=''; if($svc.ContainsKey($_.pid)){{ $sv=$svc[$_.pid] }}\n\
+               'TXWP|'+$_.pid+'|'+$_.d+'|'+$_.ws+'|'+$_.n+'|'+$sv\n\
+             }}\n\
+             '{delim}'\n\
+           }}\n\
+           $prev=$cur; $prevTs=$ts\n\
+           Start-Sleep -Seconds {secs}\n\
+         }}\n",
+        delim = crate::sampler::FRAME_DELIMITER,
+    );
+    format!(
+        "powershell -NoProfile -NonInteractive -EncodedCommand {}",
+        encode_command(&script)
+    )
+}
+
+/// Parse a Windows process frame into the same `ProcInfo` the Linux path
+/// produces, so the fleet list, filter, sort and owner column need no changes.
+pub fn parse_win_processes(host: &str, text: &str) -> Vec<crate::procs::ProcInfo> {
+    use crate::procs::{OwnerKind, ProcInfo};
+
+    let mut ncpu: u64 = 0;
+    let mut window: u64 = 0;
+    for line in text.lines() {
+        if let Some(rest) = line.trim_end_matches('\r').strip_prefix("TXWPT|") {
+            let f: Vec<&str> = rest.split('|').collect();
+            if f.len() >= 2 {
+                ncpu = f[0].trim().parse().unwrap_or(0);
+                window = f[1].trim().parse().unwrap_or(0);
+            }
+        }
+    }
+    // Without a window and a core count every percentage would be a guess, so
+    // report nothing rather than something plausible — the same rule the
+    // Linux parser follows when the jiffy denominator is missing.
+    if ncpu == 0 || window == 0 {
+        return Vec::new();
+    }
+
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let Some(rest) = line.trim_end_matches('\r').strip_prefix("TXWP|") else {
+            continue;
+        };
+        let f: Vec<&str> = rest.split('|').collect();
+        if f.len() < 5 {
+            continue;
+        }
+        let (Ok(pid), Ok(delta)) = (f[0].trim().parse::<u32>(), f[1].trim().parse::<i64>()) else {
+            continue;
+        };
+        // A process that started during the window has no previous counter and
+        // is reported at zero rather than with its whole lifetime's CPU.
+        let delta = delta.max(0) as u64;
+        let ws: u64 = f[2].trim().parse().unwrap_or(0);
+        let service = f[4..].join("|").trim().to_string();
+
+        out.push(ProcInfo {
+            host: host.to_string(),
+            pid,
+            cpu_pct: ((delta as f64 / (window as f64 * ncpu as f64)) * 100.0).clamp(0.0, 100.0)
+                as f32,
+            rss_kb: ws / 1024,
+            // Win32_Process would give the owner, at a query per process.
+            // Empty is honest; a guess would not be.
+            user: String::new(),
+            comm: f[3].trim().to_string(),
+            cmd: String::new(),
+            owner_kind: if service.is_empty() {
+                OwnerKind::None
+            } else {
+                OwnerKind::Service
+            },
+            owner: service,
+            // Windows has no kernel threads in the Linux sense.
+            kernel: false,
+        });
+    }
+    out
+}
+
 /// One host's raw Windows counters, before differentiation.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct WinFrame {
@@ -317,6 +438,113 @@ TXWD|_Total|226471680000|497699580416
         let f = parse_win_frame(&noisy);
         assert_eq!(f.mem_total_kb, 66_890_464);
         assert_eq!(f.cores.len(), 2);
+    }
+
+    /// Real shapes from N1: a service-hosted process, one hosting several
+    /// services, and one belonging to none.
+    const PROCS: &str = "\
+TXWPT|16|10000000
+TXWP|2452|8000000|52428800|svchost|Appinfo,AppMgmt
+TXWP|4092|1600000|10485760|AdobeARMservice|AdobeARMservice
+TXWP|9100|0|4194304|explorer|
+";
+
+    #[test]
+    fn a_process_percentage_is_of_the_whole_box() {
+        // 0.8s of CPU over a 1s window on 16 cores is 5%, matching the Linux
+        // convention. Forgetting the core count would report 80%.
+        let p = parse_win_processes("n1", PROCS);
+        let sv = p.iter().find(|x| x.pid == 2452).unwrap();
+        assert!((sv.cpu_pct - 5.0).abs() < 0.01, "got {}", sv.cpu_pct);
+    }
+
+    #[test]
+    fn a_process_is_attributed_to_its_service() {
+        let p = parse_win_processes("n1", PROCS);
+        assert_eq!(
+            p.iter().find(|x| x.pid == 4092).unwrap().owner,
+            "AdobeARMservice"
+        );
+    }
+
+    #[test]
+    fn one_svchost_hosting_several_services_names_them_all() {
+        // Naming only the first would attribute a spike to whichever service
+        // WMI happened to list first, which is a coin toss dressed as a fact.
+        let p = parse_win_processes("n1", PROCS);
+        assert_eq!(
+            p.iter().find(|x| x.pid == 2452).unwrap().owner,
+            "Appinfo,AppMgmt"
+        );
+    }
+
+    #[test]
+    fn a_process_belonging_to_no_service_has_no_owner() {
+        let p = parse_win_processes("n1", PROCS);
+        let e = p.iter().find(|x| x.pid == 9100).unwrap();
+        assert_eq!(e.owner, "");
+        assert_eq!(e.owner_kind, crate::procs::OwnerKind::None);
+    }
+
+    #[test]
+    fn a_frame_with_no_window_reports_nothing_rather_than_zeroes() {
+        // Without a window and a core count every percentage is a guess. The
+        // Linux parser refuses the same way when its jiffy denominator is
+        // missing.
+        assert!(parse_win_processes("n1", "TXWP|1|100|4096|x|\n").is_empty());
+        assert!(parse_win_processes("n1", "TXWPT|16|0\nTXWP|1|100|4096|x|\n").is_empty());
+    }
+
+    #[test]
+    fn a_process_that_started_during_the_window_is_not_charged_its_lifetime() {
+        // It has no previous counter, so the remote side emits a negative or
+        // absent delta. Charging it everything since boot would put every new
+        // process at the top of the list.
+        let t = "TXWPT|16|10000000\nTXWP|77|-5000000|4096|new|\n";
+        assert_eq!(parse_win_processes("n1", t)[0].cpu_pct, 0.0);
+    }
+
+    #[test]
+    fn the_process_script_keeps_its_own_previous_snapshot() {
+        // The point of the design: one CIM query per cycle instead of two,
+        // because the loop is persistent and can remember.
+        let c = win_process_command(20, 5);
+        assert!(c.starts_with("powershell -NoProfile"));
+        let script = String::from_utf16(
+            &base64_decode(c.rsplit(' ').next().unwrap())
+                .chunks(2)
+                .map(|p| u16::from_le_bytes([p[0], *p.get(1).unwrap_or(&0)]))
+                .collect::<Vec<_>>(),
+        )
+        .unwrap();
+        assert!(script.contains("$prev"), "no previous snapshot kept");
+        assert!(script.contains("Sort-Object"), "not ranked on the far side");
+        assert!(
+            !script.contains("Get-Counter"),
+            "counter paths are localised"
+        );
+    }
+
+    /// Minimal decoder, for the test above only.
+    fn base64_decode(s: &str) -> Vec<u8> {
+        const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let idx = |c: u8| T.iter().position(|&t| t == c).unwrap_or(0) as u32;
+        let b: Vec<u8> = s.bytes().filter(|&c| c != b'=').collect();
+        let mut out = Vec::new();
+        for c in b.chunks(4) {
+            let mut n = 0u32;
+            for (i, &ch) in c.iter().enumerate() {
+                n |= idx(ch) << (18 - 6 * i);
+            }
+            out.push((n >> 16) as u8);
+            if c.len() > 2 {
+                out.push((n >> 8) as u8);
+            }
+            if c.len() > 3 {
+                out.push(n as u8);
+            }
+        }
+        out
     }
 
     #[test]

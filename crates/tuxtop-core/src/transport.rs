@@ -262,7 +262,12 @@ impl ProcSampler {
         interval_secs: u32,
         tx: mpsc::Sender<crate::procs::ProcFrame>,
     ) -> std::io::Result<Self> {
-        let cmd = crate::procs::process_loop_command(top_n, window_ms, interval_secs);
+        let windows = host.os.eq_ignore_ascii_case("windows");
+        let cmd = if windows {
+            crate::windows::win_process_command(top_n, interval_secs)
+        } else {
+            crate::procs::process_loop_command(top_n, window_ms, interval_secs)
+        };
         let args = ssh_args(&host, &cmd);
 
         let mut child = Command::new("ssh")
@@ -274,7 +279,11 @@ impl ProcSampler {
             .spawn()?;
 
         let stdout = child.stdout.take().expect("stdout was piped");
-        tokio::spawn(proc_pump(host, stdout, tx));
+        if windows {
+            tokio::spawn(win_proc_pump(host, stdout, tx));
+        } else {
+            tokio::spawn(proc_pump(host, stdout, tx));
+        }
 
         Ok(Self { child })
     }
@@ -399,6 +408,50 @@ fn first_useful_line(s: &str) -> String {
         .rfind(|l| !l.is_empty())
         .unwrap_or("unknown error")
         .to_string()
+}
+
+/// Read a Windows host's process frames.
+///
+/// Simpler than the Linux pump: the ranking and the delta both happen on the
+/// far side, because the persistent loop can hold its own previous snapshot.
+/// There are no cgroups and no unit restart counts on Windows, so those parts
+/// of the frame stay empty rather than being faked.
+async fn win_proc_pump(
+    host: HostConfig,
+    stdout: tokio::process::ChildStdout,
+    tx: mpsc::Sender<crate::procs::ProcFrame>,
+) {
+    let mut reader = BufReader::new(stdout);
+    let mut buf = String::new();
+    let mut chunk = vec![0u8; 16 * 1024];
+
+    loop {
+        let n = match reader.read(&mut chunk).await {
+            Ok(0) | Err(_) => break,
+            Ok(n) => n,
+        };
+        buf.push_str(&String::from_utf8_lossy(&chunk[..n]));
+
+        let (frames, rest) = sampler::split_frames(&buf);
+        let texts: Vec<String> = frames.into_iter().map(str::to_string).collect();
+        buf = rest.to_string();
+
+        for text in texts {
+            let procs = crate::windows::parse_win_processes(&host.name, &text);
+            if procs.is_empty() {
+                continue;
+            }
+            let frame = crate::procs::ProcFrame {
+                host: host.name.clone(),
+                procs,
+                cgroups: Vec::new(),
+                restarts: Vec::new(),
+            };
+            if tx.send(frame).await.is_err() {
+                return;
+            }
+        }
+    }
 }
 
 /// Read a Windows host's frames and emit samples.

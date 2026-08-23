@@ -445,8 +445,9 @@ Work that arrived from design conversation rather than the plan:
   [specs/windows-hosts.md](specs/windows-hosts.md). N1 runs on the fleet with
   16 cores and its own 63.8 GB, at 997 bytes per frame, over Windows' own
   first-party OpenSSH. The inverse-counter trap, the localised-counter trap
-  and the base64 command are all documented there. Processes and services for
-  Windows hosts remain a second pass.
+  and the base64 command are all documented there. Processes landed too, with
+  service ownership in the same column Linux uses for systemd units - and
+  no services view, for the same reason there is no systemd one.
 
 - **Browser access, not only the desktop app.** The frontend is already static
   HTML/CSS/JS against a small command surface, and the backend is already Rust
