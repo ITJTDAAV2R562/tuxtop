@@ -12,7 +12,7 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::mpsc;
 use tuxtop_core::fleet::{watch_host, HostEvent};
-use tuxtop_core::procs::{CgroupUsage, ProcInfo};
+use tuxtop_core::procs::{CgroupUsage, ProcInfo, UnitRestarts};
 use tuxtop_core::{HostConfig, HostFault, ProcSampler, TrafficCounter, TrafficStats};
 
 /// Event names the frontend subscribes to.
@@ -56,6 +56,10 @@ pub struct Supervisor {
     latest: Mutex<HashMap<String, Vec<ProcInfo>>>,
     // Latest cgroup accounting per host, keyed the same way.
     cgroups: Mutex<HashMap<String, Vec<CgroupUsage>>>,
+    // Latest restart counts per host. Kept across frames rather than replaced,
+    // because the sweep runs on a slower cycle and an empty list means "no new
+    // information", never "nothing has restarted".
+    restarts: Mutex<HashMap<String, Vec<UnitRestarts>>>,
 }
 
 impl Supervisor {
@@ -113,6 +117,7 @@ impl Supervisor {
         self.stop_procs_for(name);
         self.latest.lock().unwrap().remove(name);
         self.cgroups.lock().unwrap().remove(name);
+        self.restarts.lock().unwrap().remove(name);
     }
 
     /// Begin process sampling on every host.
@@ -139,9 +144,19 @@ impl Supervisor {
         }
     }
 
-    pub fn record_procs(&self, host: &str, list: Vec<ProcInfo>, cgroups: Vec<CgroupUsage>) {
+    pub fn record_procs(
+        &self,
+        host: &str,
+        list: Vec<ProcInfo>,
+        cgroups: Vec<CgroupUsage>,
+        restarts: Vec<UnitRestarts>,
+    ) {
         self.latest.lock().unwrap().insert(host.to_string(), list);
         self.cgroups.lock().unwrap().insert(host.to_string(), cgroups);
+        // Only replace on a cycle that actually swept.
+        if !restarts.is_empty() {
+            self.restarts.lock().unwrap().insert(host.to_string(), restarts);
+        }
     }
 
     /// Every host's cgroup accounting, tagged with its host.
@@ -154,10 +169,19 @@ impl Supervisor {
             .unwrap()
             .iter()
             .flat_map(|(host, v)| {
-                v.iter().map(move |u| HostCgroup {
-                    host: host.clone(),
-                    usage: u.clone(),
-                })
+                let r = self.restarts.lock().unwrap();
+                let units = r.get(host).cloned().unwrap_or_default();
+                v.iter()
+                    .map(|u| {
+                        let hit = units.iter().find(|x| x.unit == u.name);
+                        HostCgroup {
+                            host: host.clone(),
+                            restarts: hit.map(|x| x.total).unwrap_or(0),
+                            restarts_since_seen: hit.map(|x| x.since_seen).unwrap_or(0),
+                            usage: u.clone(),
+                        }
+                    })
+                    .collect::<Vec<_>>()
             })
             .collect()
     }
@@ -205,7 +229,7 @@ async fn watch_procs(app: AppHandle, cfg: HostConfig) {
 
         while let Some(frame) = rx.recv().await {
             app.state::<Supervisor>()
-                .record_procs(&cfg.name, frame.procs, frame.cgroups);
+                .record_procs(&cfg.name, frame.procs, frame.cgroups, frame.restarts);
             // The view pulls; this only says something changed.
             let _ = app.emit(EVENT_PROCS, &cfg.name);
         }
@@ -219,6 +243,10 @@ async fn watch_procs(app: AppHandle, cfg: HostConfig) {
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct HostCgroup {
     pub host: String,
+    /// `NRestarts` as systemd reports it — no recency at all.
+    pub restarts: u32,
+    /// Restarts since Tuxtop first saw the unit. The actionable half.
+    pub restarts_since_seen: u32,
     #[serde(flatten)]
     pub usage: CgroupUsage,
 }

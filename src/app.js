@@ -2123,7 +2123,7 @@
         <td class="num" title="cgroup charge, which counts page cache — not the sum of the processes' memory">${u ? fmtBytes(u.memory_bytes) : '—'}</td>
         <td class="num">${u ? u.pids : r.procs.length}</td>
         <td></td>
-        <td class="owner" colspan="2">${esc(r.owner)}</td>
+        <td class="owner" colspan="2">${esc(r.owner)}${restartBadge(u)}</td>
       </tr>${kids}`;
     }).join('');
 
@@ -2135,6 +2135,25 @@
       `${hosts_seen} host${hosts_seen === 1 ? '' : 's'} \u00b7 ` +
       `CPU is % of the whole machine \u00b7 memory is the cgroup charge, ` +
       `which includes page cache`;
+  }
+
+  /// A unit's restart count, shown only when it has restarted.
+  ///
+  /// `NRestarts` carries no recency - it counts since the unit was last
+  /// started explicitly, which may be months ago - so a bare "7 restarts"
+  /// beside a live CPU chart implies a today it does not mean. The badge is
+  /// warning-toned only when restarts happened *while Tuxtop was watching*,
+  /// which is the half that means flapping now.
+  function restartBadge(u) {
+    if (!u || !u.restarts) return '';
+    const since = u.restarts_since_seen || 0;
+    const label = since
+      ? `${u.restarts} restarts · +${since} while watching`
+      : `${u.restarts} restart${u.restarts === 1 ? '' : 's'}`;
+    const title = since
+      ? `Restarted ${since} time${since === 1 ? '' : 's'} since Tuxtop started watching — this unit is flapping now`
+      : `systemd reports ${u.restarts} automatic restart${u.restarts === 1 ? '' : 's'} since this unit was last started by hand, which may have been long ago`;
+    return ` <span class="restarts${since ? ' live' : ''}" title="${esc(title)}">${esc(label)}</span>`;
   }
 
   /// Bytes, for cgroup memory. Distinct from fmtKb, which takes kilobytes.

@@ -307,7 +307,7 @@ because identity is read once and `df` every thirtieth frame.
 
 ---
 
-## Phase 10 — Ownership: what a process belongs to, and what a unit costs — **specced**
+## Phase 10 — Ownership: what a process belongs to, and what a unit costs — **done**
 
 Full spec: **[specs/ownership.md](specs/ownership.md)**.
 
@@ -323,19 +323,19 @@ unit name, state and enabled-ness. Three findings killed that version:
   and a table of strings has no spike in it.
 
 What survived is **ownership**, in three parts, all landing on the existing
-Processes view rather than a new tab:
+Processes view rather than a new tab. Built and verified against dove:
 
-- **A — every process says what it belongs to.** `/proc/[pid]/cgroup` is 15
+- [x] **A — every process says what it belongs to.** `/proc/[pid]/cgroup` is 15
   bytes and names the owner: `manticore.service`, `docker-<id>.scope`, a login
   session. ~300 bytes for the top twenty. Turns `python 39%` into
   `python 39% · transcribe-worker.service`. Covers containers incidentally,
   with no daemon socket and no `docker` group.
-- **B — units that keep restarting.** One `systemctl show` call, 108 ms. A
+- [x] **B — units that keep restarting.** One `systemctl show` call, 108 ms. A
   flapping service is *active and not failed*: invisible to `--state=failed`,
   to an endpoint check, and to the process list, because the PID just changes.
   `NRestarts` carries no recency, so Tuxtop records it at first sight and shows
   the delta — the half that means "flapping now".
-- **C — what a unit actually costs.** Per-cgroup `cpu.stat`, `memory.current`,
+- [x] **C — what a unit actually costs.** Per-cgroup `cpu.stat`, `memory.current`,
   `pids.current`: 45 cgroups, 2,549 bytes, 154 ms on dove, no privileges. This
   is the part a process list *cannot* do — summing RSS is banned because shared
   pages are counted once per process, so "how much memory does manticore use?"

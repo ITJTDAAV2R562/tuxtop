@@ -145,6 +145,14 @@
                        cpu_pct: 34.2, memory_bytes: 483102720, pids: 59 });
             out.push({ host: h.name, name: 'unattended-upgrades.service',
                        cpu_pct: 0, memory_bytes: 6291456, pids: 2 });
+            // Both restart shapes: an old count with no recency, and one that
+            // is climbing while you watch.
+            out.push({ host: h.name, name: 'indexer-post.service',
+                       cpu_pct: 1.1, memory_bytes: 87031808, pids: 3,
+                       restarts: 4, restarts_since_seen: 0 });
+            out.push({ host: h.name, name: 'flapper.service',
+                       cpu_pct: 0.4, memory_bytes: 20971520, pids: 1,
+                       restarts: 9, restarts_since_seen: 3 });
           }
           return out;
         }

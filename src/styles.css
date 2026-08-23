@@ -1097,3 +1097,17 @@ body[data-bands="off"] .legend span:not(:last-child){display:none}
 @media (prefers-reduced-motion:reduce){.proctable tr.owner-row .owner::after{transition:none}}
 .proctable tr.owner-child td{opacity:.82}
 .proctable tr.owner-child .cmd{padding-left:18px}
+
+/* A unit's restart count. Quiet by default: NRestarts may be months old.
+   Warning-toned only when restarts happened while Tuxtop was watching, which
+   is the half that means the unit is flapping now. */
+.restarts{
+  font-family:var(--font-mono);font-size:10px;font-weight:600;
+  padding:1px 6px;border-radius:99px;margin-left:8px;
+  color:var(--text-3);background:var(--surface-sunk);border:1px solid var(--stroke);
+}
+.restarts.live{
+  color:var(--warn);
+  background:color-mix(in srgb,var(--warn) 14%,transparent);
+  border-color:color-mix(in srgb,var(--warn) 45%,transparent);
+}

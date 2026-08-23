@@ -286,6 +286,7 @@ async fn proc_pump(
     // reason `RateTracker` is: the configured interval is what we asked for,
     // not what we got.
     let mut rates = crate::procs::CgroupRates::new();
+    let mut restarts = crate::procs::RestartTracker::new();
     let mut last_at: Option<std::time::Instant> = None;
 
     loop {
@@ -315,10 +316,14 @@ async fn proc_pump(
             // cgroups still carry memory and pid counts, which need no delta.
             let cgroups = rates.update(&cg, elapsed.unwrap_or(0.0));
 
+            // Empty on cycles that did not sweep, which the consumer keeps
+            // rather than reading as "nothing has restarted".
+            let seen = crate::procs::parse_restarts(&text);
             let frame = crate::procs::ProcFrame {
                 host: host.name.clone(),
                 procs,
                 cgroups,
+                restarts: restarts.update(&seen),
             };
             if tx.send(frame).await.is_err() {
                 return;

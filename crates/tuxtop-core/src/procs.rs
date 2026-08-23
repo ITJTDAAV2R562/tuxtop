@@ -8,6 +8,72 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
+/// Restarts of one unit, and how many of them Tuxtop has watched happen.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UnitRestarts {
+    pub unit: String,
+    /// `NRestarts` as systemd reports it: automatic restarts since the unit
+    /// was last started explicitly, which may have been months ago.
+    pub total: u32,
+    /// Restarts since Tuxtop first saw this unit. **This is the actionable
+    /// half** - it means the unit is flapping now, and unlike `total` it
+    /// carries a recency we observed rather than one we inferred.
+    pub since_seen: u32,
+}
+
+/// Parse the restart lines out of a frame. Absent on cycles that did not sweep.
+pub fn parse_restarts(text: &str) -> Vec<(String, u32)> {
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let Some(rest) = line.strip_prefix("TXR|") else {
+            continue;
+        };
+        let Some((unit, n)) = rest.rsplit_once('|') else {
+            continue;
+        };
+        let Ok(n) = n.trim().parse::<u32>() else {
+            continue;
+        };
+        let unit = unit.trim();
+        if !unit.is_empty() {
+            out.push((unit.to_string(), n));
+        }
+    }
+    out
+}
+
+/// Remembers what each unit's restart count was when first seen.
+///
+/// `NRestarts` alone carries no recency: "7 restarts" beside a live CPU chart
+/// implies a today the number does not mean. The baseline is a thing we
+/// observed, so the delta is honestly ours to report.
+#[derive(Debug, Default)]
+pub struct RestartTracker {
+    first: HashMap<String, u32>,
+}
+
+impl RestartTracker {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn update(&mut self, seen: &[(String, u32)]) -> Vec<UnitRestarts> {
+        seen.iter()
+            .map(|(unit, total)| {
+                let base = *self.first.entry(unit.clone()).or_insert(*total);
+                UnitRestarts {
+                    unit: unit.clone(),
+                    total: *total,
+                    // A counter below the baseline means systemd reset it -
+                    // the unit was started explicitly. Re-baseline rather than
+                    // underflow.
+                    since_seen: total.saturating_sub(base),
+                }
+            })
+            .collect()
+    }
+}
+
 /// One host's process sample: the ranked processes and the cgroup accounting
 /// that arrived with them.
 ///
@@ -19,6 +85,9 @@ pub struct ProcFrame {
     pub host: String,
     pub procs: Vec<ProcInfo>,
     pub cgroups: Vec<CgroupUsage>,
+    /// Present only on cycles that swept; empty otherwise, which the consumer
+    /// must treat as "no new information", not as "nothing has restarted".
+    pub restarts: Vec<UnitRestarts>,
 }
 
 /// One cgroup's resource use, as the host reports it.
@@ -427,13 +496,37 @@ pub fn parse_processes(host: &str, text: &str) -> Vec<ProcInfo> {
 /// needs two snapshots separated by a real interval, and doing that inside
 /// the metric loop would stall 1 Hz sampling for the whole window.
 pub fn process_loop_command(top_n: usize, window_ms: u32, interval_secs: u32) -> String {
+    // Restart counts ride the same connection but on a slower cycle. A unit
+    // that restarts is news for hours, and the `systemctl show` call costs
+    // ~108 ms of remote CPU against ~0 for everything else in the frame - so
+    // paying it every five seconds would be the most expensive part of the
+    // sample, for the slowest-moving number in it.
+    let every = RESTART_EVERY_N_CYCLES;
     format!(
-        "while :; do {}; echo '{}'; sleep {}; done",
+        "i=0; while :; do {}; \
+         if [ $((i % {every})) -eq 0 ]; then {} ; fi; \
+         i=$((i+1)); echo '{}'; sleep {}; done",
         process_command(top_n, window_ms),
+        RESTART_SNIPPET,
         crate::sampler::FRAME_DELIMITER,
         interval_secs.max(1),
     )
 }
+
+/// How many process cycles pass between restart-count sweeps. At the 5 s
+/// process cadence this is once a minute.
+pub const RESTART_EVERY_N_CYCLES: u32 = 12;
+
+/// Emit `TXR|unit|count` for every service that has restarted.
+///
+/// Only non-zero counts cross the wire. On dove that is two units out of 137,
+/// and a zero says nothing anyone needs.
+const RESTART_SNIPPET: &str =
+    "systemctl show --property=Id --property=NRestarts '*.service' 2>/dev/null \
+     | awk -v RS='' -F'\\n' '{{ id=\"\"; n=0; \
+         for (i=1; i<=NF; i++) {{ split($i, kv, \"=\"); \
+           if (kv[1]==\"Id\") id=kv[2]; if (kv[1]==\"NRestarts\") n=kv[2]+0 }} \
+         if (n>0 && id!=\"\") print \"TXR|\" id \"|\" n }}'";
 
 /// Kernel threads are conventionally named for their subsystem, and are the
 /// only processes with no resident memory.
@@ -880,5 +973,64 @@ TXG|cron.service|1000|4194304|1
             "stale cgroups still held: {:?}",
             r.prev.keys()
         );
+    }
+}
+
+#[cfg(test)]
+mod restart_tests {
+    use super::*;
+
+    #[test]
+    fn only_units_that_have_restarted_cross_the_wire() {
+        let t = parse_restarts("TXR|transcribe-app.service|1\nTXR|indexer-post.service|4\n");
+        assert_eq!(
+            t,
+            vec![
+                ("transcribe-app.service".to_string(), 1),
+                ("indexer-post.service".to_string(), 4),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_unit_first_seen_at_seven_restarts_reports_no_new_ones() {
+        // NRestarts counts since the unit was last started explicitly, which
+        // may be months ago. Reporting 7 as though it just happened, beside a
+        // live CPU chart, implies a recency the number does not carry.
+        let mut r = RestartTracker::new();
+        let out = r.update(&[("flapper.service".into(), 7)]);
+        assert_eq!(out[0].total, 7);
+        assert_eq!(out[0].since_seen, 0, "nothing has happened while watching");
+    }
+
+    #[test]
+    fn restarts_while_watching_are_the_actionable_number() {
+        let mut r = RestartTracker::new();
+        r.update(&[("flapper.service".into(), 7)]);
+        let out = r.update(&[("flapper.service".into(), 11)]);
+        assert_eq!(out[0].total, 11);
+        assert_eq!(out[0].since_seen, 4, "four restarts while Tuxtop watched");
+    }
+
+    #[test]
+    fn a_counter_reset_by_an_explicit_start_does_not_underflow() {
+        // systemd zeroes NRestarts when a unit is started by hand. Subtracting
+        // the old baseline would wrap to four billion.
+        let mut r = RestartTracker::new();
+        r.update(&[("x.service".into(), 9)]);
+        let out = r.update(&[("x.service".into(), 0)]);
+        assert_eq!(out[0].since_seen, 0);
+    }
+
+    #[test]
+    fn the_sweep_runs_on_a_slower_cycle_than_the_processes() {
+        // ~108 ms of remote CPU for the slowest-moving number in the frame;
+        // paying it every five seconds would make it the most expensive part.
+        let cmd = process_loop_command(20, 1000, 5);
+        assert!(
+            cmd.contains(&format!("% {RESTART_EVERY_N_CYCLES}")),
+            "no cycle gate"
+        );
+        assert!(cmd.contains("NRestarts"));
     }
 }
