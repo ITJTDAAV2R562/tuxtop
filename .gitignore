@@ -21,3 +21,8 @@ Thumbs.db
 
 # Cross-compiled binaries dropped next to the source.
 *.exe
+
+# Test tooling only; the app itself has no build step.
+.harness/
+test-results/
+playwright-report/

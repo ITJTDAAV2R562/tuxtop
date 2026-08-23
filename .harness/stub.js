@@ -1,1 +1,0 @@
-/home/sam/tuxtop/tests/harness/stub.js
