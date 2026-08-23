@@ -460,3 +460,67 @@ history view would have reintroduced it one plane over.
 Someone wants history older than seven days, on hosts that already run a Beszel
 agent, badly enough to accept that the feature will be missing on every host
 that does not.
+
+---
+
+## ADR-010 — Tuxtop only observes; it never changes a monitored host
+
+**Date:** 2026-08-23 · **Status:** accepted
+
+### Context
+
+Phase 5 shipped the process list read-only and deferred kill and renice as
+"the decision to take first", on the grounds that it would be the first
+feature to *change* a remote machine rather than read it. Phase 10 deferred
+systemd start/stop to the same decision rather than answer it twice.
+
+The decision is taken: **no.**
+
+### Decision
+
+Tuxtop is a pure observation tool. It runs no command on a monitored host that
+alters its state — no kill, no renice, no `systemctl start|stop|restart`, no
+writes of any kind. Every remote command remains a read: `cat`, `awk`,
+`getconf`, `df`, `systemctl list-units`, `nvidia-smi` queries.
+
+This sits alongside [ADR-004](#adr-004--nothing-gets-installed-on-the-monitored-host)
+as its natural pair. Nothing is installed on the host; nothing is changed on it
+either.
+
+### Rationale
+
+The framing was never privilege. Tuxtop connects with the user's own SSH
+credentials and grants no capability they do not already have from a terminal
+— everything it could offer to do, they can do themselves in less time than
+the confirmation dialog would take to read.
+
+What it would add is **the chance to do it to the wrong machine.** The entire
+design points that way: a fleet view exists so nineteen hosts look alike at a
+glance, cards are packed and reorderable, groups collapse several machines
+into one row. Every one of those choices is good for seeing and bad for
+aiming. `kill 1` on the card you thought was `owl` is a class of mistake this
+UI would actively help you make, and no amount of confirmation copy fixes a
+target selected correctly and misidentified.
+
+There is also a plainer reason: a tool that only reads cannot break anything.
+"Safe by construction" has held since Phase 0 and is worth more than the
+feature.
+
+### Consequences
+
+- **Phase 5 closes complete.** The process list is finished as read-only, and
+  the drill-down is the last of it.
+- **Phase 10 loses its blocking question.** systemd, if built, is a view of
+  unit state — no start, stop or restart. Nothing about it is now deferred.
+- **Group-level actions are settled too**, having been listed as out of scope
+  in the grouping spec on the assumption the question was still open. It is
+  not.
+- Anything wanting to *change* a host belongs in a terminal, or in a tool that
+  was designed for it. Adding a "safe" exception later reopens all of the
+  above, so treat this as load-bearing rather than a default.
+
+### Revisit when
+
+Someone is repeatedly reaching for a terminal *while looking at Tuxtop* to do
+the same small thing, and the risk of doing it to the wrong host has been
+designed out rather than confirmed away.

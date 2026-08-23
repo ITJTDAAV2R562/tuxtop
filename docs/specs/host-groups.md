@@ -232,3 +232,5 @@ the same bug as a 60-second bucket averaging away a spike.
   Guessing a grouping and being wrong is worse than asking for one.
 - **Group-level actions** — killing a process across a group, restarting a unit
   on every member. That is a fleet orchestration tool, and it is not this.
+  Settled beyond this spec by [ADR-010](../DECISIONS.md#adr-010--tuxtop-only-observes-it-never-changes-a-monitored-host):
+  Tuxtop changes nothing on a monitored host, per group or otherwise.

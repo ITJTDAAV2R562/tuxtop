@@ -116,7 +116,7 @@ hosts.
 
 ---
 
-## Phase 5 — The process list — **built, read-only**
+## Phase 5 — The process list — **done, read-only by decision**
 
 The Task Manager half, and the thing nothing off-the-shelf does from Windows.
 
@@ -137,19 +137,20 @@ Full spec: **[specs/process-list.md](specs/process-list.md)**.
       would otherwise dominate a frame. The filter searches the arguments too:
       six processes all called `Runner.Listener` are only tellable apart by
       theirs.
-- [ ] **Kill and renice** - see the spec on why the framing is mistakes, not
-      privilege.
+- [x] **Kill and renice — dropped, 2026-08-23.** Tuxtop stays a pure
+      observation tool. See
+      [ADR-010](DECISIONS.md#adr-010--tuxtop-only-observes-it-never-changes-a-monitored-host).
 - Per-process CPU from `/proc/[pid]/stat` `utime + stime` deltas over
   `sysconf(_SC_CLK_TCK)`. **Do not parse `top`** — its output shifts across
   distros, versions and locales, and a decimal comma will silently break it.
-- Kill and renice, behind a confirmation.
 
-**The decision to take first:** this is the first feature that *changes* a
-remote machine rather than reading it. Everything so far has been `cat`
-against `/proc` — safe by construction, and the reason "nothing is installed
-on the host" has held. Killing a process is not that, and needs an explicit
-answer on privilege: own processes only, sudo when available, or a per-host
-setting. Take it once here; Phase 10's start/stop is the same question.
+**The decision, taken:** this would have been the first feature to *change* a
+remote machine rather than read it. It is not being built. The framing was
+never privilege — Tuxtop uses the user's own SSH credentials and grants no
+capability a terminal does not — it was **aiming**. A fleet view exists so
+nineteen hosts look alike at a glance, which is good for seeing and bad for
+targeting, and `kill 1` on the card you thought was `owl` is a mistake this UI
+would help you make.
 
 **Open design question:** rows shaded by load need a contrast halo on their
 numerals — see [ADR-005](DECISIONS.md#adr-005--load-is-encoded-three-ways-at-once).
@@ -314,8 +315,24 @@ and a runaway process are the same question asked twice.
 
 - Unit name, load/active/sub state, and whether it is enabled.
 - Failed units surfaced without being hunted for.
-- Read-only first. Start and stop are the same trust decision as kill, and
-  should be taken once, in Phase 5, rather than twice.
+- **Read-only, settled.** Start, stop and restart are not being built — see
+  [ADR-010](DECISIONS.md#adr-010--tuxtop-only-observes-it-never-changes-a-monitored-host).
+  This phase no longer has a blocking question in front of it.
+
+Measured on dove: 137 service units, 62 loaded, and the whole compact answer
+(`name|load|active|sub`) is 3.2 KB — small enough to ship entire, so unlike
+the process list it needs no remote ranking. `systemctl list-units` needs no
+root. It does not belong on the 1 Hz stream: unit state changes on the scale
+of deploys, so it is a separate channel fetched while the view is open, as
+the process sampler already works.
+
+**Worth narrowing before building.** A browsable 137-row table per host is
+`ssh host systemctl status` with more clicks, and it is a table of strings —
+there is no spike in it, which is what this app is for. The valuable part is
+*failed units surfaced without being hunted for*: a count per host, red when
+non-zero, expanding to names. That fits the existing card and group shapes and
+answers a real question. Spec it that way; the browsable table can follow if
+it is ever missed.
 
 ---
 

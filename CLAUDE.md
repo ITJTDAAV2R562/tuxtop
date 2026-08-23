@@ -56,6 +56,22 @@ No agent, no binary copied over, no package, no open port, no firewall change.
 If a feature seems to need one, it is collected over the existing SSH stream or
 it does not ship. [ADR-004](docs/DECISIONS.md#adr-004--nothing-gets-installed-on-the-monitored-host).
 
+**Nothing is *changed* on the monitored host either — Tuxtop only observes.**
+No kill, no renice, no `systemctl start|stop|restart`, no writes. Every remote
+command is a read. This was decided deliberately, not left undone:
+[ADR-010](docs/DECISIONS.md#adr-010--tuxtop-only-observes-it-never-changes-a-monitored-host).
+
+The argument is not privilege — Tuxtop uses the user's own SSH credentials and
+grants no capability a terminal does not. It is **aiming**. This UI exists to
+make nineteen machines look alike at a glance; that is good for seeing and bad
+for targeting, and `kill 1` on the card you thought was another host is a
+mistake it would help you make. A confirmation dialog does not help when the
+target was selected correctly and misidentified.
+
+If a future phase seems to want a "safe" exception, it reopens Phase 5's
+process actions, Phase 10's start/stop and group-level actions all at once.
+Treat it as load-bearing.
+
 **Never let one data plane's absence blank a card.**
 No Beszel agent means no history — the live grid still works. SSH down means no
 live data — history still renders, marked stale. Always state which part is

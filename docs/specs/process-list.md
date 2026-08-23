@@ -15,7 +15,7 @@ from seeing a spike.
   has the host column, filter and sort, so a second view would have
   duplicated them for no gain)*.
 - **CPU as a percentage of the whole box**, not of one core.
-- **Read-only first.** No kill, no renice in this phase.
+- **Read-only, permanently.** No kill, no renice — ADR-010.
 
 ---
 
@@ -111,14 +111,20 @@ A third view alongside Hosts and Fleet, sharing their conventions:
   lines.
 - Same load bands as everywhere else, so a hot process reads hot.
 
-## Deliberately later
+## Deliberately never — kill and renice
 
-Kill and renice. Read-only ships sooner and keeps the "nothing but `cat`"
-property, which has held since Phase 0, a while longer. When it does land, the
-framing is not privilege — Tuxtop connects with the user's own SSH credentials
-and grants no capability they lack — but **mistakes**: killing PID 1 on the
-wrong host because two cards look alike. The work is confirmation and context,
-not a permission model.
+*(Settled 2026-08-23. This section previously read "deliberately later".)*
+
+Not being built. Tuxtop stays a pure observation tool; see
+[ADR-010](../DECISIONS.md#adr-010--tuxtop-only-observes-it-never-changes-a-monitored-host).
+
+The reasoning that made it look merely deferred is the reasoning that closes
+it. The framing was never privilege — Tuxtop connects with the user's own SSH
+credentials and grants no capability they lack. It was **mistakes**: killing
+PID 1 on the wrong host because two cards look alike. And that is not a
+confirmation-dialog problem, because the target was selected correctly and
+misidentified. This UI is built to make nineteen machines look alike at a
+glance, which is exactly what makes it a poor place to aim from.
 
 ---
 
