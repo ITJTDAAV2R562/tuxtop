@@ -8,6 +8,198 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
+/// One cgroup's resource use, as the host reports it.
+///
+/// The counter is cumulative; `CgroupRates` turns consecutive samples into a
+/// percentage. Kept raw here so the delta is computed once, against real
+/// elapsed time, rather than assumed from the configured interval.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CgroupSample {
+    pub name: String,
+    /// Cumulative CPU microseconds across all cores.
+    pub cpu_usec: u64,
+    /// `memory.current` — the cgroup's charged memory.
+    ///
+    /// **This includes page cache**, so it reads higher than the sum of its
+    /// processes' RSS and is not comparable to the process list's memory
+    /// column. Whatever displays it must say which it is.
+    pub memory_bytes: u64,
+    pub pids: u32,
+}
+
+/// Everything the cgroup sweep reported in one frame.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct CgroupFrame {
+    /// Cores on the host, for turning CPU-microseconds into a percentage of
+    /// the whole box — the same convention the process list uses.
+    pub ncpu: u32,
+    pub groups: Vec<CgroupSample>,
+}
+
+/// Parse the cgroup lines out of a process frame.
+///
+/// A host with no `system.slice` — or cgroup v1, where these files do not
+/// exist — yields an empty frame rather than zeroes, which would render as a
+/// fleet of idle services.
+pub fn parse_cgroups(text: &str) -> CgroupFrame {
+    let mut out = CgroupFrame::default();
+
+    for line in text.lines() {
+        if let Some(rest) = line.strip_prefix("TXGT|") {
+            out.ncpu = rest.trim().parse().unwrap_or(0);
+            continue;
+        }
+        let Some(rest) = line.strip_prefix("TXG|") else {
+            continue;
+        };
+        let f: Vec<&str> = rest.split('|').collect();
+        if f.len() < 4 {
+            continue;
+        }
+        let Ok(cpu_usec) = f[1].trim().parse::<u64>() else {
+            continue;
+        };
+        out.groups.push(CgroupSample {
+            name: f[0].trim().to_string(),
+            cpu_usec,
+            memory_bytes: f[2].trim().parse().unwrap_or(0),
+            pids: f[3].trim().parse().unwrap_or(0),
+        });
+    }
+    out
+}
+
+/// One cgroup's usage, differentiated and ready to display.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CgroupUsage {
+    pub name: String,
+    /// Percentage of the whole box, matching the process list's convention.
+    pub cpu_pct: f32,
+    pub memory_bytes: u64,
+    pub pids: u32,
+}
+
+/// Turns consecutive cgroup frames into rates.
+///
+/// Holds the previous counters per cgroup. A cgroup that appears for the first
+/// time reports **no** CPU rather than a spike: its cumulative counter says
+/// how much CPU it has used since it started, which on a long-running service
+/// is hours, and dividing that by one interval would render every newly-seen
+/// unit as pinned.
+#[derive(Debug, Default)]
+pub struct CgroupRates {
+    prev: HashMap<String, u64>,
+}
+
+impl CgroupRates {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Differentiate `frame` against the previous one over `elapsed_secs`.
+    ///
+    /// Real elapsed time, not the configured interval: a sample delayed by a
+    /// slow host would otherwise be divided by a number smaller than the time
+    /// it actually covered, and read high.
+    pub fn update(&mut self, frame: &CgroupFrame, elapsed_secs: f64) -> Vec<CgroupUsage> {
+        let mut out = Vec::with_capacity(frame.groups.len());
+        let ncpu = frame.ncpu.max(1) as f64;
+        let seen: std::collections::HashSet<&str> =
+            frame.groups.iter().map(|g| g.name.as_str()).collect();
+
+        for g in &frame.groups {
+            let prev = self.prev.insert(g.name.clone(), g.cpu_usec);
+            let cpu_pct = match prev {
+                // A counter that went backwards means the cgroup was recreated
+                // — the unit restarted. Report zero rather than a negative or
+                // an enormous wrapped value.
+                Some(p) if g.cpu_usec >= p && elapsed_secs > 0.0 => {
+                    let busy_secs = (g.cpu_usec - p) as f64 / 1_000_000.0;
+                    ((busy_secs / (elapsed_secs * ncpu)) * 100.0).clamp(0.0, 100.0) as f32
+                }
+                _ => 0.0,
+            };
+            out.push(CgroupUsage {
+                name: g.name.clone(),
+                cpu_pct,
+                memory_bytes: g.memory_bytes,
+                pids: g.pids,
+            });
+        }
+
+        // Forget cgroups that are gone, or the map grows for the life of the
+        // process on a host that starts many transient units.
+        self.prev.retain(|k, _| seen.contains(k.as_str()));
+        out
+    }
+}
+
+/// What kind of thing owns a process.
+///
+/// Kept apart from the name because the three read differently: a service is
+/// the interesting case, a container is worth marking as one, and a login
+/// session is noise that should not be mistaken for a unit called
+/// `session-8240`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OwnerKind {
+    /// A systemd service or scope: `manticore.service`.
+    Service,
+    /// A container: `docker-<id>.scope`, `crio-<id>.scope`, `libpod-<id>`.
+    Container,
+    /// A login session or user slice.
+    Session,
+    /// init.scope, or anything else with no useful name.
+    #[default]
+    None,
+}
+
+/// Parse a cgroup path into the thing that owns the process.
+///
+/// The input is one path, already selected remotely from `/proc/[pid]/cgroup`
+/// — cgroup v2 has a single `0::/path` line, v1 has several, and the sampler
+/// picks the one naming a unit or scope so both arrive here identically.
+///
+/// An unrecognised or empty path yields `None` with an empty name rather than
+/// a guess: a process can exit between being ranked and being read, and a
+/// wrong attribution is worse than an absent one.
+pub fn parse_owner(path: &str) -> (String, OwnerKind) {
+    let last = path
+        .trim()
+        .trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .unwrap_or("");
+    if last.is_empty() || last == "init.scope" || last == "-.slice" {
+        return (String::new(), OwnerKind::None);
+    }
+
+    // Containers first: they are also `.scope`, so the service arm would
+    // otherwise swallow them and print a 64-character hex id as a unit name.
+    for p in ["docker-", "crio-", "libpod-", "containerd-"] {
+        if let Some(rest) = last.strip_prefix(p) {
+            let id = rest.trim_end_matches(".scope");
+            // Twelve characters is what `docker ps` shows, and enough to tell
+            // containers apart without a line of hex.
+            let short: String = id.chars().take(12).collect();
+            let runtime = p.trim_end_matches('-');
+            return (format!("{runtime}:{short}"), OwnerKind::Container);
+        }
+    }
+
+    if last.starts_with("session-") || last.starts_with("user-") || path.contains("/user.slice") {
+        // A login session is not a unit. Naming it `session-8240` would put a
+        // meaningless number in a column people scan for services.
+        return ("login session".into(), OwnerKind::Session);
+    }
+
+    if last.ends_with(".service") || last.ends_with(".scope") || last.ends_with(".slice") {
+        return (last.to_string(), OwnerKind::Service);
+    }
+
+    (String::new(), OwnerKind::None)
+}
+
 /// One process, as the UI sees it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProcInfo {
@@ -24,6 +216,10 @@ pub struct ProcInfo {
     /// Full command line, truncated remotely. Empty when the process exited
     /// between ranking and reading it, or for a kernel thread, which has none.
     pub cmd: String,
+    /// What owns this process: a systemd unit, a container, a login session.
+    /// Empty when the cgroup could not be read — never a guess.
+    pub owner: String,
+    pub owner_kind: OwnerKind,
     /// Kernel threads dominate a list sorted by tiny deltas on an idle fleet.
     /// Flagged rather than dropped, so the view can de-emphasise them without
     /// pretending they are absent.
@@ -79,7 +275,16 @@ pub fn process_command(top_n: usize, window_ms: u32) -> String {
              echo \"TXP|$p|$d|$(( ${{r:-0}} * PG / 1024 ))|${{n:-$u}}|${{c:-?}}\"; \
              l=$(tr '\\0' ' ' < /proc/$p/cmdline 2>/dev/null | cut -c1-{cmd_chars}); \
              [ -n \"$l\" ] && echo \"TXC|$p|$l\"; \
-           done"
+             g=$(awk -F: '/\\.(service|scope|slice)/{{print $NF; exit}}' /proc/$p/cgroup 2>/dev/null); \
+             [ -n \"$g\" ] && echo \"TXO|$p|$g\"; \
+           done; \
+         echo \"TXGT|$(nproc 2>/dev/null || echo 1)\"; \
+         for d in /sys/fs/cgroup/system.slice/*/; do \
+           n=${{d%/}}; n=${{n##*/}}; \
+           u=$(awk '/^usage_usec/{{print $2}}' \"$d/cpu.stat\" 2>/dev/null); \
+           [ -n \"$u\" ] || continue; \
+           echo \"TXG|$n|$u|$(cat \"$d/memory.current\" 2>/dev/null || echo 0)|$(cat \"$d/pids.current\" 2>/dev/null || echo 0)\"; \
+         done"
     )
 }
 
@@ -138,6 +343,21 @@ pub fn parse_processes(host: &str, text: &str) -> Vec<ProcInfo> {
         cmds.insert(pid, cmd.trim().to_string());
     }
 
+    // Cgroup paths, keyed by pid, same shape as the command lines above.
+    let mut owners: HashMap<u32, String> = HashMap::new();
+    for line in text.lines() {
+        let Some(rest) = line.strip_prefix("TXO|") else {
+            continue;
+        };
+        let Some((pid, path)) = rest.split_once('|') else {
+            continue;
+        };
+        let Ok(pid) = pid.trim().parse::<u32>() else {
+            continue;
+        };
+        owners.insert(pid, path.trim().to_string());
+    }
+
     for line in text.lines() {
         let Some(rest) = line.strip_prefix("TXP|") else {
             continue;
@@ -151,6 +371,10 @@ pub fn parse_processes(host: &str, text: &str) -> Vec<ProcInfo> {
             continue;
         };
         let rss_kb = f[2].trim().parse::<u64>().unwrap_or(0);
+        let (owner, owner_kind) = owners
+            .remove(&pid)
+            .map(|p| parse_owner(&p))
+            .unwrap_or_default();
         // A command may itself contain a pipe, so the tail rejoins.
         let comm = f[4..].join("|").trim().to_string();
 
@@ -162,6 +386,8 @@ pub fn parse_processes(host: &str, text: &str) -> Vec<ProcInfo> {
             user: f[3].trim().to_string(),
             kernel: rss_kb == 0 && looks_like_kernel_thread(&comm),
             cmd: cmds.remove(&pid).unwrap_or_default(),
+            owner,
+            owner_kind,
             comm,
         });
     }
@@ -412,6 +638,234 @@ TXP|68|32|0|root|migration/8
         assert!(
             cmd.contains(&format!("cut -c1-{CMD_MAX_CHARS}")),
             "no remote truncation"
+        );
+    }
+}
+
+#[cfg(test)]
+mod owner_tests {
+    use super::*;
+
+    #[test]
+    fn a_systemd_unit_is_named_by_its_unit() {
+        // The case that makes the column worth having: "python 39%" becomes
+        // "python 39% - transcribe-worker.service".
+        assert_eq!(
+            parse_owner("/system.slice/transcribe-worker.service"),
+            ("transcribe-worker.service".into(), OwnerKind::Service)
+        );
+        // Real names from dove, which are long and templated.
+        assert_eq!(
+            parse_owner("/system.slice/actions.runner.owner-repo.host-8.service").1,
+            OwnerKind::Service
+        );
+    }
+
+    #[test]
+    fn a_container_is_marked_as_one_and_not_read_as_a_unit() {
+        // Container scopes are also `.scope`, so without an explicit arm the
+        // service branch swallows them and prints 64 characters of hex as a
+        // unit name.
+        let (name, kind) = parse_owner(
+            "/system.slice/docker-4f2b8c1d9e0a3f5b7c2d4e6f8a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b.scope",
+        );
+        assert_eq!(kind, OwnerKind::Container);
+        assert_eq!(
+            name, "docker:4f2b8c1d9e0a",
+            "twelve chars, as docker ps shows"
+        );
+    }
+
+    #[test]
+    fn other_container_runtimes_are_recognised_too() {
+        assert_eq!(
+            parse_owner("/system.slice/crio-abc123def456789.scope").1,
+            OwnerKind::Container
+        );
+        assert_eq!(
+            parse_owner("/machine.slice/libpod-deadbeefcafe0001.scope").1,
+            OwnerKind::Container
+        );
+    }
+
+    #[test]
+    fn a_login_session_is_not_reported_as_a_unit() {
+        // Naming it `session-8240.scope` would put a meaningless number in a
+        // column people scan for services.
+        let (name, kind) = parse_owner("/user.slice/user-1000.slice/session-8240.scope");
+        assert_eq!(kind, OwnerKind::Session);
+        assert_eq!(name, "login session");
+    }
+
+    #[test]
+    fn init_and_an_unreadable_cgroup_yield_no_owner_rather_than_a_guess() {
+        // A process can exit between being ranked and being read, and a wrong
+        // attribution is worse than an absent one.
+        assert_eq!(parse_owner("/init.scope"), (String::new(), OwnerKind::None));
+        assert_eq!(parse_owner(""), (String::new(), OwnerKind::None));
+        assert_eq!(parse_owner("/"), (String::new(), OwnerKind::None));
+        assert_eq!(
+            parse_owner("/some/unknown/path"),
+            (String::new(), OwnerKind::None)
+        );
+    }
+
+    #[test]
+    fn a_frame_carries_each_process_its_own_owner() {
+        let frame = "\
+TXPT|4000|1000|4096
+TXP|1906570|320|483102|root|searchd
+TXO|1906570|/system.slice/manticore.service
+TXP|1141|64|840388|sam|python3
+TXC|1141|python3 /home/sam/app/worker.py
+TXO|1141|/system.slice/transcribe-worker.service
+TXP|68|32|0|root|migration/8
+";
+        let p = parse_processes("dove", frame);
+        let m = p.iter().find(|x| x.pid == 1906570).unwrap();
+        assert_eq!(m.owner, "manticore.service");
+        let t = p.iter().find(|x| x.pid == 1141).unwrap();
+        assert_eq!(t.owner, "transcribe-worker.service");
+        // A kernel thread emits no TXO line at all.
+        let k = p.iter().find(|x| x.pid == 68).unwrap();
+        assert_eq!(k.owner, "");
+        assert_eq!(k.owner_kind, OwnerKind::None);
+    }
+
+    #[test]
+    fn a_frame_from_before_owners_existed_still_parses() {
+        // A reconnect mid-upgrade hands the parser an older frame.
+        let old = "TXPT|4000|1000|4096\nTXP|1024|320|199112|root|tailscaled\n";
+        let p = parse_processes("dove", old);
+        assert_eq!(p.len(), 1);
+        assert_eq!(p[0].owner, "");
+    }
+
+    #[test]
+    fn the_remote_command_reads_the_cgroup_for_both_versions() {
+        // `-F:` with $NF yields the path from cgroup v2's `0::/path` and from
+        // v1's `N:name=systemd:/path` alike, so one expression covers both.
+        let cmd = process_command(20, 1000);
+        assert!(cmd.contains("/proc/$p/cgroup"), "no cgroup read");
+        assert!(cmd.contains("TXO|"), "no owner line emitted");
+    }
+}
+
+#[cfg(test)]
+mod cgroup_tests {
+    use super::*;
+
+    const FRAME: &str = "\
+TXPT|4000|1000|4096
+TXP|1906570|320|483102|root|searchd
+TXGT|32
+TXG|manticore.service|630641758|483102720|59
+TXG|transcribe-worker.service|12000000|104857600|3
+TXG|cron.service|1000|4194304|1
+";
+
+    #[test]
+    fn a_cgroup_sweep_parses_alongside_the_processes() {
+        let f = parse_cgroups(FRAME);
+        assert_eq!(f.ncpu, 32);
+        assert_eq!(f.groups.len(), 3);
+        assert_eq!(f.groups[0].name, "manticore.service");
+        assert_eq!(f.groups[0].memory_bytes, 483_102_720);
+        assert_eq!(f.groups[0].pids, 59);
+        // The processes must still parse from the same frame.
+        assert_eq!(parse_processes("dove", FRAME).len(), 1);
+    }
+
+    #[test]
+    fn a_host_with_no_cgroups_yields_nothing_not_zeroes() {
+        // cgroup v1 has no such files. A list of services at 0% would read as
+        // an idle fleet rather than an absent measurement.
+        let f = parse_cgroups("TXPT|4000|1000|4096\n");
+        assert!(f.groups.is_empty());
+    }
+
+    #[test]
+    fn a_cgroup_seen_for_the_first_time_reports_no_cpu() {
+        // Its counter holds hours of accumulated CPU. Dividing that by one
+        // interval would render every newly-seen unit as pinned at 100%.
+        let mut r = CgroupRates::new();
+        let out = r.update(&parse_cgroups(FRAME), 5.0);
+        assert!(out.iter().all(|u| u.cpu_pct == 0.0), "{out:?}");
+        // Memory needs no delta and is reported immediately.
+        assert_eq!(out[0].memory_bytes, 483_102_720);
+    }
+
+    #[test]
+    fn cpu_is_a_delta_expressed_as_a_share_of_the_whole_box() {
+        // Two cores' worth of CPU over 5s on a 32-core host is 2/32 = 6.25%,
+        // the same convention the process list uses.
+        let mut r = CgroupRates::new();
+        r.update(&parse_cgroups(FRAME), 5.0);
+        let later = FRAME.replace("|630641758|", "|640641758|"); // +10s of CPU
+        let out = r.update(&parse_cgroups(&later), 5.0);
+        let m = out.iter().find(|u| u.name == "manticore.service").unwrap();
+        assert!((m.cpu_pct - 6.25).abs() < 0.01, "got {}", m.cpu_pct);
+    }
+
+    #[test]
+    fn identical_samples_report_zero_not_nan() {
+        let mut r = CgroupRates::new();
+        r.update(&parse_cgroups(FRAME), 5.0);
+        let out = r.update(&parse_cgroups(FRAME), 5.0);
+        assert!(out
+            .iter()
+            .all(|u| u.cpu_pct == 0.0 && u.cpu_pct.is_finite()));
+    }
+
+    #[test]
+    fn a_restarted_unit_does_not_report_a_negative_or_wrapped_spike() {
+        // The cgroup is recreated on restart and its counter starts again, so
+        // the new value is below the old one.
+        let mut r = CgroupRates::new();
+        r.update(&parse_cgroups(FRAME), 5.0);
+        let restarted = FRAME.replace("|630641758|", "|12|");
+        let out = r.update(&parse_cgroups(&restarted), 5.0);
+        let m = out.iter().find(|u| u.name == "manticore.service").unwrap();
+        assert_eq!(m.cpu_pct, 0.0);
+    }
+
+    #[test]
+    fn elapsed_time_is_honoured_rather_than_the_configured_interval() {
+        // A sample delayed by a slow host covers more time than the interval
+        // claims; dividing by the interval would read high.
+        let mut a = CgroupRates::new();
+        let mut b = CgroupRates::new();
+        a.update(&parse_cgroups(FRAME), 5.0);
+        b.update(&parse_cgroups(FRAME), 5.0);
+        let later = FRAME.replace("|630641758|", "|640641758|");
+        let fast = a.update(&parse_cgroups(&later), 5.0);
+        let slow = b.update(&parse_cgroups(&later), 10.0);
+        let f = fast
+            .iter()
+            .find(|u| u.name == "manticore.service")
+            .unwrap()
+            .cpu_pct;
+        let s = slow
+            .iter()
+            .find(|u| u.name == "manticore.service")
+            .unwrap()
+            .cpu_pct;
+        assert!((f - 2.0 * s).abs() < 0.01, "{f} vs {s}");
+    }
+
+    #[test]
+    fn cgroups_that_disappear_are_forgotten() {
+        // A host that starts many transient units would otherwise grow the
+        // map for the life of the process.
+        let mut r = CgroupRates::new();
+        r.update(&parse_cgroups(FRAME), 5.0);
+        let fewer = "TXGT|32\nTXG|cron.service|1000|4194304|1\n";
+        r.update(&parse_cgroups(fewer), 5.0);
+        assert_eq!(
+            r.prev.len(),
+            1,
+            "stale cgroups still held: {:?}",
+            r.prev.keys()
         );
     }
 }
