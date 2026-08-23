@@ -168,6 +168,37 @@ fn set_host_group(
     Ok(f.hosts.clone())
 }
 
+/// Set a host's operating system, and restart its sampler.
+///
+/// Unlike the group, this changes the remote command itself — a Linux command
+/// against cmd.exe fails with "the system cannot find the path specified",
+/// which explains nothing — so the host is restarted rather than left running
+/// the wrong sampler until something else happens to restart it.
+#[tauri::command]
+fn set_host_os(
+    app: AppHandle,
+    sup: tauri::State<'_, Supervisor>,
+    name: String,
+    os: String,
+) -> Result<Vec<HostConfig>, String> {
+    let mut f = hosts::load_file(&app)?;
+
+    let Some(h) = f.hosts.iter_mut().find(|h| h.name == name) else {
+        return Err(format!("no host named {name}"));
+    };
+    h.os = if os.eq_ignore_ascii_case("windows") {
+        "windows".into()
+    } else {
+        String::new()
+    };
+    let updated = h.clone();
+
+    hosts::save_file(&app, &f)?;
+    sup.start(app.clone(), updated.clone(), effective_interval(&updated, &f.settings));
+    let _ = app.emit(supervisor::EVENT_HOSTS, &f.hosts);
+    Ok(f.hosts.clone())
+}
+
 /// Measured cost per host, for the settings meter.
 #[tauri::command]
 fn traffic_stats(sup: tauri::State<'_, Supervisor>) -> Vec<supervisor::HostTraffic> {
@@ -277,6 +308,7 @@ fn main() {
             set_settings,
             set_host_interval,
             set_host_group,
+            set_host_os,
             traffic_stats,
             set_processes_enabled,
             process_list,

@@ -167,7 +167,7 @@
     <details class="perhost" open>
       <summary>Per-host interval and group</summary>
       <table class="meter-table">
-        <thead><tr><th>Host</th><th>Interval</th><th>Group</th></tr></thead>
+        <thead><tr><th>Host</th><th>Interval</th><th>Group</th><th>OS</th></tr></thead>
         <tbody data-perhost-rows></tbody>
       </table>
       <datalist id="phGroups"></datalist>
@@ -193,6 +193,16 @@
     <div class="field">
       <label for="f-addr">Address</label>
       <input id="f-addr" name="addr" value="macaw.example.ts.net" autocomplete="off">
+    </div>
+    <div class="field">
+      <label for="f-os">Operating system</label>
+      <select id="f-os" name="os">
+        <option value="">Linux</option>
+        <option value="windows">Windows</option>
+      </select>
+      <p class="hint">Windows needs OpenSSH Server enabled and key auth, the same
+        as Linux. It is asked rather than probed: guessing wrong fails in a way
+        the error cannot explain.</p>
     </div>
     <div class="field">
       <label for="f-group">Group <span class="opt">optional</span></label>

@@ -124,6 +124,17 @@ and neither side can see that the other never calls it. This is the failure
 mode of building a backend and a frontend in the same sitting, and it is worth
 a check rather than care.
 
+**A new field on `HostConfig` needs a control, not just a parser.** The
+reachability check above covers commands and cannot cover fields: `HostFacts`
+also has an `os`, so nothing automated can tell `cfg.os` from `facts.os`.
+Host `os` shipped with a backend, a `hosts.toml` entry and a documented
+example — and no way to set it, so a Windows host added through the UI was
+created as a Linux one and failed with "the system cannot find the path
+specified", an error explaining nothing. When adding a field, wire **both**
+paths: the Add host dialog for new hosts, and the per-host table in Settings
+for the ones that already exist. The second is the one that gets forgotten,
+and it is the one that matters for a fleet already running.
+
 Two related habits:
 
 - **Prefer a measurement to an estimate whenever one exists.** This project was

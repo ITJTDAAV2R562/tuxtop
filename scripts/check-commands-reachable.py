@@ -11,6 +11,13 @@ settings panel showed an estimate while the measurement sat unused), and
 None of that is visible from either side alone, which is exactly why it needs
 a check rather than care.
 
+**This checks commands, not config fields.** Host `os` shipped unreachable —
+the backend had it, `hosts.toml` had it, and the Add host dialog simply never
+sent it — and no automated check can catch that reliably: `HostFacts` also has
+an `os`, so a search cannot tell `cfg.os` from `facts.os`. A check that cannot
+decide would give false confidence, which is worse than none. The rule lives
+in CLAUDE.md instead, where it can be read by whoever adds the next field.
+
 Run: python3 scripts/check-commands-reachable.py
 """
 

@@ -349,6 +349,20 @@ async fn proc_pump(
 /// thirty-second fix and an hour of guessing, so these are never collapsed
 /// into a generic "offline".
 pub fn classify_ssh_error(stderr: &str) -> HostFault {
+    // A Linux sampler command handed to cmd.exe produces this, and nothing
+    // about it suggests the cause. Naming it turns a dead end into a fix.
+    let low = stderr.to_ascii_lowercase();
+    if low.contains("the system cannot find the path specified")
+        || low.contains("is not recognized as an internal or external command")
+    {
+        return HostFault::SamplerFailed(
+            "the remote shell rejected the sampler command \u{2014} this looks like a \
+             Windows host being sampled as a Linux one. Set its OS to Windows in \
+             Settings, or `os = \"windows\"` in hosts.toml."
+                .into(),
+        );
+    }
+
     let lower = stderr.to_ascii_lowercase();
 
     if lower.contains("permission denied")

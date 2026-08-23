@@ -2507,6 +2507,11 @@
         <input class="ph-group" list="phGroups" data-host-group="${esc(h.name)}"
                value="${esc(h.group || '')}" placeholder="none" autocomplete="off"
                aria-label="Group for ${esc(h.name)}">
+        </td><td>
+        <select data-host-os="${esc(h.name)}" aria-label="Operating system for ${esc(h.name)}">
+          <option value=""${h.os ? '' : ' selected'}>Linux</option>
+          <option value="windows"${h.os === 'windows' ? ' selected' : ''}>Windows</option>
+        </select>
         </td></tr>`).join('');
   }
 
@@ -2575,6 +2580,16 @@
   // rewrites hosts.toml and re-renders the fleet, and doing that once per
   // typed letter would rearrange the view under the cursor.
   setDlg.addEventListener('change', async e => {
+    const sel = e.target.closest('[data-host-os]');
+    if (sel && LIVE) {
+      const name = sel.dataset.hostOs;
+      try {
+        await TAURI.core.invoke('set_host_os', { name, os: sel.value });
+        const h = hosts.find(x => x.name === name);
+        if (h) h.os = sel.value;
+      } catch (err) { showError(String(err)); }
+      return;
+    }
     const inp = e.target.closest('[data-host-group]');
     if (!inp || !LIVE) return;
     const name = inp.dataset.hostGroup;
@@ -2706,6 +2721,7 @@
         const c = cfgs.get(h.name);
         h.intervalOverride = c ? c.interval_secs ?? null : null;
         h.group = c ? c.group ?? null : null;
+        h.os = c ? c.os ?? '' : '';
       };
       hosts.forEach(apply);
       // Reconcile both ways. Filtering alone only ever removed, so a newly
@@ -2725,6 +2741,7 @@
         const h = ensure(cfg.name, 0);
         h.intervalOverride = cfg.interval_secs ?? null;
         h.group = cfg.group ?? null;
+        h.os = cfg.os ?? '';
       }
     } catch (e) {
       showError(`Could not read hosts.toml: ${e}`);
@@ -2745,6 +2762,11 @@
           user: '', port: 22, beszel_url: null,
           // Empty means ungrouped, never a group literally named "".
           group: group || null,
+          // Empty means Linux. Sent explicitly rather than defaulted here,
+          // because a Windows host created as a Linux one runs a POSIX shell
+          // command against cmd.exe and fails with "the system cannot find
+          // the path specified" - an error that explains nothing.
+          os: (f.get('os') || '').toString(),
         }});
       } catch (err) { showError(String(err)); }
     });
