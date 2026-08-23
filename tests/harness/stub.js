@@ -2,13 +2,20 @@
 // so the real app.js live path can be driven in a browser.
 (() => {
   const listeners = {};
-  let hosts = [
-    { name: 'dove',  addr: 'dove',  user: '', port: 22, beszel_url: null, group: 'workstations' },
-    { name: 'coot',  addr: 'coot',  user: '', port: 22, beszel_url: null, group: 'workstations' },
-    { name: 'heron', addr: 'heron', user: '', port: 22, beszel_url: null, group: 'servers' },
-    { name: 'wader', addr: 'wader', user: '', port: 22, beszel_url: null, group: 'servers' },
-    { name: 'owl',   addr: 'owl',   user: '', port: 22, beszel_url: null, group: null },
+  // The fleet, from tests/harness/fleet.json via scripts/harness.py, so the
+  // harness tests the shape that actually exists. Falls back to a small fleet
+  // when opened directly without the generator.
+  const FLEET = (typeof window !== 'undefined' && window.__FLEET__) || [
+    { name: 'dove', group: 'physical', cores: 32, virt: 'none' },
+    { name: 'heron', group: 'VM', cores: 4, virt: 'kvm' },
   ];
+  const CORES = Object.fromEntries(FLEET.map(h => [h.name, h.cores]));
+  const VIRT = Object.fromEntries(FLEET.map(h => [h.name, h]));
+  let hosts = FLEET.map(h => ({
+    name: h.name, addr: h.name, user: '', port: 22, beszel_url: null,
+    group: h.group || null, os: h.os || '',
+  }));
+
   const settings = { interval_secs: 1, history_cap_mb: 256, always_on_top: false };
   const emit = (ev, payload) => (listeners[ev] || []).forEach(f => f({ payload }));
 
@@ -25,15 +32,17 @@
     cpu_breakdown: {
       user: 8 + Math.random() * 4, system: 3 + Math.random() * 2,
       iowait: Math.random() * 2,
-      steal: (name === 'heron' || name === 'owl') ? 2 + Math.random() * 3 : 0,
+      steal: ((VIRT[name] || {}).virt || 'none') !== 'none' ? 2 + Math.random() * 3 : 0,
     },
     // Mirrors the real fleet: mostly bare metal, one KVM guest, one WSL guest
     // that systemd reports as a container.
     facts: {
       kernel: 'Linux 6.12', os: 'Debian GNU/Linux 13', arch: 'x86_64',
       cpu_model: 'AMD Ryzen 9 5950X 16-Core Processor',
-      virt: name === 'heron' ? 'kvm' : name === 'owl' ? 'wsl' : 'none',
-      virt_kind: name === 'owl' ? 'container' : 'vm',
+      virt: (VIRT[name] || {}).virt || 'none',
+      // systemd really does report WSL as a container; the fleet profile
+      // carries that so the classification is exercised, not assumed.
+      virt_kind: (VIRT[name] || {}).virt_kind || 'vm',
     },
     // Mirrors dove: the NVMe runs far hotter than the CPU, and the board
     // exposes several unlabelled inputs. Both are the cases the UI has to get
@@ -228,7 +237,7 @@
     },
   };
   // dove reports continuously, like a healthy host.
-  const CORES = { dove: 32, coot: 32, heron: 4, wader: 24, owl: 16 };
+
   // dove is pinned so the group aggregate and its worst member disagree - the
   // case the whole feature exists to render correctly.
   setInterval(() => {

@@ -1,0 +1,234 @@
+<!--
+  Tuxtop frontend.
+
+  Runs in two modes from one file:
+
+    * Under Tauri (window.__TAURI__ present) it consumes real samples from
+      the Rust backend over `tuxtop://sample` and `tuxtop://fault` events.
+    * Opened as a plain file in a browser it falls back to the built-in
+      simulator, so this page stays usable as the design mockup it began as.
+
+  See startLive() and startSim() at the bottom. Everything above them --
+  tokens, layout, the core-tile encoding, the chart drawing -- is shared.
+
+  Rules that apply when editing this file are in CLAUDE.md:
+    - no literal colours; every colour is a CSS custom property
+    - every token defined in ALL THREE theme states (see the :root blocks)
+    - numerals over load-coloured surfaces need --tile-halo
+-->
+<meta charset="utf-8">
+<title>Tuxtop</title>
+<link rel="stylesheet" href="styles.css">
+
+
+<div class="wall" aria-hidden="true"><i></i><i></i><i></i></div>
+
+<div class="app">
+  <!-- Phase 2: drop this in favour of the real OS titlebar. -->
+  <div class="titlebar">
+    <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <rect x="1" y="2" width="14" height="11" rx="2" stroke="currentColor" stroke-width="1.3" opacity=".55"/>
+      <path d="M3.6 9.4l1.8-2.6 1.7 1.8 1.6-3 1.6 2.3 1.9-1.3" stroke="var(--accent)" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+    <span class="name">Tuxtop</span>
+    <span class="sub" id="tbsub">&mdash; dove.example.ts.net</span>
+    <span class="tb-spacer"></span>
+    <div class="winbtns" aria-hidden="true">
+      <button tabindex="-1"><svg width="10" height="10" viewBox="0 0 10 10"><path d="M0 5h10" stroke="currentColor" stroke-width="1"/></svg></button>
+      <button tabindex="-1"><svg width="10" height="10" viewBox="0 0 10 10"><rect x=".5" y=".5" width="9" height="9" stroke="currentColor" fill="none" stroke-width="1"/></svg></button>
+      <button tabindex="-1"><svg width="10" height="10" viewBox="0 0 10 10"><path d="M0 0l10 10M10 0L0 10" stroke="currentColor" stroke-width="1"/></svg></button>
+    </div>
+  </div>
+
+  <div class="toolbar">
+    <span class="tally"><b id="nhosts">4</b> hosts &middot; <b id="ncores">52</b> cores &middot; <b id="nup">4</b> up</span>
+    <div class="seg" role="group" aria-label="View">
+      <button id="viewHosts" aria-pressed="true">Hosts</button>
+      <button id="viewAll" aria-pressed="false">Fleet</button>
+      <button id="viewHist" aria-pressed="false">History</button>
+      <button id="viewProcs" aria-pressed="false">Processes</button>
+    </div>
+    <label class="sortwrap" id="metricWrap" hidden>
+      <span>Metric</span>
+      <select id="metricSel" aria-label="Fleet metric"></select>
+    </label>
+    <label class="sortwrap" id="histWrap" hidden>
+      <span data-hist-label>Metric</span>
+      <select id="histSubject" aria-label="History subject"></select>
+    </label>
+    <label class="hostfilterwrap" id="hostFilterWrap" hidden>
+      <input type="search" id="hostFilter" class="procfilter" spellcheck="false"
+             placeholder="Filter hosts" aria-label="Filter hosts">
+    </label>
+    <label class="sortwrap">
+      <span>Sort</span>
+      <select id="sortSel" aria-label="Card order">
+        <option value="manual">Manual</option>
+        <option value="load">Busiest first</option>
+        <option value="name">Name</option>
+      </select>
+    </label>
+    <div class="seg" role="group" aria-label="Sampling cadence">
+      <button id="rateFast" aria-pressed="true">Direct &middot; 1 Hz</button>
+      <button id="rateSlow" aria-pressed="false">Beszel &middot; 60 s</button>
+    </div>
+    <span class="tb-grow"></span>
+    <button class="btn" id="settingsBtn">Settings</button>
+    <button class="btn" id="themeBtn">Theme</button>
+    <button class="btn primary" id="addBtn">Add host</button>
+  </div>
+
+  <p class="filter-note" id="filterNote" hidden></p>
+
+  <p class="cadence-note" id="cadNote">Sampling at the Beszel agent's cadence &mdash; the grid now refreshes once a minute. This is the lag the direct <code>/proc/stat</code> path removes.</p>
+
+  <div class="histbar" id="histbar" hidden>
+    <button class="btn ghost hist-swap" id="histSwap"></button>
+    <span class="tb-grow"></span>
+    <label class="hist-range">
+      <span data-hist-span></span>
+      <input type="range" id="histWindow" min="0" max="1000" value="0"
+             aria-label="History window">
+    </label>
+  </div>
+
+  <div class="histbar" id="procbar" hidden>
+    <span class="hist-title" data-proc-title>Fleet processes</span>
+    <input type="search" id="procFilter" class="procfilter" spellcheck="false"
+           placeholder="Filter host, user, command or arguments" aria-label="Filter processes">
+    <label class="checkinline">
+      <input type="checkbox" id="procByOwner">
+      <span>Group by owner</span>
+    </label>
+    <label class="checkinline">
+      <input type="checkbox" id="procKernel">
+      <span>Show kernel threads</span>
+    </label>
+    <span class="tb-grow"></span>
+    <span class="proc-note" data-proc-note></span>
+  </div>
+
+  <div class="grid" id="grid"></div>
+
+  <div class="legend">
+    <span><b class="sw-cool"></b>0&ndash;74% core load</span>
+    <span><b class="sw-warn"></b>75&ndash;89%</span>
+    <span><b class="sw-crit"></b>90%+</span>
+    <span class="legend-note" data-mode-note>simulated data &middot; design mockup</span>
+  </div>
+</div>
+
+<dialog id="setDlg">
+  <form method="dialog" class="dlg-body" id="setForm">
+    <h2>Settings</h2>
+
+    <div class="field">
+      <label for="s-interval">Sample interval</label>
+      <select id="s-interval">
+        <option value="1">1 second</option>
+        <option value="2">2 seconds</option>
+        <option value="5">5 seconds</option>
+        <option value="10">10 seconds</option>
+        <option value="30">30 seconds</option>
+        <option value="60">1 minute</option>
+      </select>
+      <p class="hint">Applies to hosts without their own override.</p>
+    </div>
+
+    <div class="meter" id="meter">
+      <div class="meter-head">
+        <span>What this costs</span>
+        <span class="meter-now" data-meter-now></span>
+      </div>
+      <table class="meter-table"><tbody data-meter-rows></tbody></table>
+      <p class="hint" data-meter-note></p>
+    </div>
+
+    <div class="field">
+      <label for="s-cap">History limit</label>
+      <select id="s-cap">
+        <option value="64">64 MB</option>
+        <option value="128">128 MB</option>
+        <option value="256">256 MB</option>
+        <option value="512">512 MB</option>
+        <option value="1024">1 GB</option>
+      </select>
+      <p class="hint" data-cap-hint></p>
+    </div>
+
+    <label class="checkfield">
+      <input type="checkbox" id="s-ontop">
+      <span>
+        Always on top
+        <em>Keep the window above others, like Task Manager's option.</em>
+      </span>
+    </label>
+
+    <details class="perhost" open>
+      <summary>Per-host interval and group</summary>
+      <table class="meter-table">
+        <thead><tr><th>Host</th><th>Interval</th><th>Group</th><th>OS</th></tr></thead>
+        <tbody data-perhost-rows></tbody>
+      </table>
+      <datalist id="phGroups"></datalist>
+      <p class="hint">Hosts sharing a group are summarised as one row in the
+        fleet view and one chart in history. Leave blank for none.</p>
+    </details>
+
+    <div class="dlg-actions">
+      <button class="btn ghost" value="cancel" formnovalidate>Close</button>
+      <button class="btn primary" value="save">Save</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="addDlg">
+  <form method="dialog" class="dlg-body" id="addForm">
+    <h2>Add host</h2>
+    <p>Connects over SSH using your existing agent or key. Nothing is installed on the target.</p>
+    <div class="field">
+      <label for="f-name">Hostname</label>
+      <input id="f-name" name="name" value="macaw" required autocomplete="off">
+    </div>
+    <div class="field">
+      <label for="f-addr">Address</label>
+      <input id="f-addr" name="addr" value="macaw.example.ts.net" autocomplete="off">
+    </div>
+    <div class="field">
+      <label for="f-os">Operating system</label>
+      <select id="f-os" name="os">
+        <option value="">Linux</option>
+        <option value="windows">Windows</option>
+      </select>
+      <p class="hint">Windows needs OpenSSH Server enabled and key auth, the same
+        as Linux. It is asked rather than probed: guessing wrong fails in a way
+        the error cannot explain.</p>
+    </div>
+    <div class="field">
+      <label for="f-group">Group <span class="opt">optional</span></label>
+      <input id="f-group" name="group" list="groupList" autocomplete="off"
+             placeholder="e.g. workstations">
+      <datalist id="groupList"></datalist>
+      <p class="hint">Hosts sharing a group are summarised as one row in the fleet view.</p>
+    </div>
+    <div class="field">
+      <label for="f-cores">Logical cores</label>
+      <select id="f-cores" name="cores">
+        <option>4</option><option selected>8</option><option>16</option><option>32</option><option>64</option>
+      </select>
+    </div>
+    <div class="dlg-actions">
+      <button class="btn ghost" value="cancel" formnovalidate>Cancel</button>
+      <button class="btn primary" value="add">Add host</button>
+    </div>
+  </form>
+</dialog>
+<!-- Pure logic first: app.js binds these at the top of its IIFE. -->
+<script src="fleet.js" charset="utf-8"></script>
+<script src="stub.js" charset="utf-8"></script>
+<script src="format.js" charset="utf-8"></script>
+<script src="scale.js" charset="utf-8"></script>
+<script src="pick.js" charset="utf-8"></script>
+<script src="filter.js" charset="utf-8"></script>
+<script src="agg.js" charset="utf-8"></script>
+<script src="app.js" charset="utf-8"></script>

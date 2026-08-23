@@ -1,0 +1,12 @@
+{
+  "name": "tuxtop-tests",
+  "private": true,
+  "description": "Test tooling only. The app itself has no build step and no runtime dependencies: index.html loads plain scripts, exactly as it always has. Nothing here ships.",
+  "scripts": {
+    "test": "node --test 'tests/*.test.js'",
+    "test:e2e": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.62.1"
+  }
+}

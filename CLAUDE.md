@@ -185,7 +185,8 @@ dark only is unverified.
 cargo test        # 136 tests, no GUI toolchain needed, runs anywhere
 cargo clippy --all-targets
 cargo fmt
-node --test 'tests/*.test.js'           # group aggregation rules (ADR-008)
+node --test 'tests/*.test.js'           # pure logic: aggregation, scale, filters
+npx playwright test                     # the browser: load order, layout, controls
 python3 scripts/check-theme-tokens.py   # CSS tokens in all three theme states
 python3 scripts/check-agg-declared.py   # every metric declares how it aggregates
 python3 scripts/check-commands-reachable.py   # no command shipped unreachable
@@ -215,6 +216,22 @@ Load order in `index.html` matters: the modules come first and `app.js` binds
 them at the top of its IIFE. Adding logic to `app.js` that could be in a module
 means adding logic nothing can test — the frontend went 2,792 lines with zero
 coverage that way, and shipped two bugs in one session because of it.
+
+**The harness mirrors the real fleet, and links rather than copies.**
+`tests/harness/fleet.json` holds the shape — nineteen hosts, the physical and
+virtual mix, the group names, the Windows host — because twice in one session a
+harness built around five convenient hosts let a real bug reach the user: a
+nineteen-host tally is ~70px wider, which was exactly the margin the toolbar
+had. `scripts/harness.py` symlinks `src/` rather than copying it; a copy goes
+stale and a suite that passes against code that no longer exists is worse than
+no suite.
+
+**A browser test can pass without testing anything.** The core-column test ran
+at a width where eight charts fit and eleven did not — so "snap to a multiple
+of eight" and "as many as fit" both answered 8, and it passed against a
+deliberately broken implementation. It now runs at a width where the two rules
+disagree, and asserts that they could have. When a test compares two rules,
+check the inputs actually distinguish them.
 
 **When a rule matters, check that breaking it fails the test.** A test written
 against already-correct code can pass for the wrong reason. Both aggregation
