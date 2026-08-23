@@ -261,8 +261,17 @@ more than once: `src-tauri` is deliberately outside the workspace (ADR-006), so
 nothing on the development box ever compiles it, and the error only surfaced
 when someone built on Windows. Before CI, "someone" was the user.
 
-Run the same things locally before pushing — `cargo clippy --all-targets -- -D
-warnings` is stricter than a bare `cargo clippy` and is what CI uses.
+```sh
+bash scripts/verify.sh          # everything CI runs, locally
+bash scripts/verify.sh --quick  # without the browser suite
+```
+
+**Run `verify.sh` before pushing, and do not rely on CI being available.** It
+runs the same gates, including `cargo clippy --all-targets -- -D warnings`
+(stricter than a bare `cargo clippy`) — and it builds `src-tauri` through the
+Windows toolchain at `/mnt/c`, which is the one gate a Linux box cannot
+otherwise close. It skips loudly rather than passing quietly when something is
+unavailable.
 
 ## Commit style
 
