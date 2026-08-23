@@ -188,8 +188,22 @@ session should learn the rule from the failure message alone.
 
 **JS tests use node's built-in runner** (`node --test`), which needs no npm,
 no package.json and no bundler — matching how the frontend is already built.
-Pure logic that can produce a wrong number belongs in a UMD module beside
-`src/agg.js` and gets tested there, not left to E2E.
+
+**Pure logic goes in a module beside `app.js`, not inside it.** `app.js` keeps
+the DOM; everything that decides a *value* lives in a UMD module and is tested:
+
+| module | decides |
+| --- | --- |
+| `src/format.js` | numbers → the strings on screen |
+| `src/scale.js` | value → position, band, column count |
+| `src/pick.js` | which of a host's many readings matters (fullest mount, hottest sensor) |
+| `src/filter.js` | what to show and in what order |
+| `src/agg.js` | how a group combines (ADR-008) |
+
+Load order in `index.html` matters: the modules come first and `app.js` binds
+them at the top of its IIFE. Adding logic to `app.js` that could be in a module
+means adding logic nothing can test — the frontend went 2,792 lines with zero
+coverage that way, and shipped two bugs in one session because of it.
 
 **When a rule matters, check that breaking it fails the test.** A test written
 against already-correct code can pass for the wrong reason. Both aggregation

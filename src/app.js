@@ -7,6 +7,14 @@
 // script-src 'self' and work under any CSP.
 //
 (() => {
+  // Pure logic lives in modules beside this file so it can be tested; app.js
+  // keeps the DOM. Bound here rather than referenced as TuxScale.band(...)
+  // everywhere, so the call sites read the same as before the extraction.
+  const { bps, gb, fmtKb, fmtSpan, humanUptime, shortGpu } = TuxFormat;
+  const { band, logWindow, normalise, sliderToSecs, niceCols } = TuxScale;
+  const { fullestFs, fsPct, sensorName, sensorMetric, hottestSensor } = TuxPick;
+  const { matchesHost, matchesProcess } = TuxFilter;
+
   const $ = s => document.querySelector(s);
   const grid = $('#grid');
   const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -126,40 +134,6 @@
     c.beginPath(); c.arc(lx, ly, 5.2, 0, 7); c.strokeStyle = color + '55'; c.lineWidth = 1.4; c.stroke();
   }
 
-  const band = v => v >= 90 ? 'crit' : v >= 75 ? 'warn' : 'cool';
-  const gb = v => v.toFixed(1);
-
-  /// Name one sensor. Mirrors `TempSensor::name` in the sampler.
-  ///
-  /// Unlabelled sensors are numbered within their driver: dove's board exposes
-  /// four `gigabyte_wmi` inputs, and calling them all "gigabyte_wmi" would
-  /// silently show one reading and hide three.
-  function sensorName(t, indexWithinDriver) {
-    if (!t.label) {
-      return indexWithinDriver > 0 ? `${t.driver} ${indexWithinDriver + 1}` : t.driver;
-    }
-    return `${t.driver} ${t.label}`;
-  }
-
-  /// History series key for one sensor. Mirrors `sensor_key` in
-  /// `history_store.rs`; the two must agree or a chart asks for a series
-  /// nothing writes and renders "no history yet" forever.
-  function sensorMetric(t) {
-    return t.label
-      ? `temp.${t.driver}.${t.label.replace(/ /g, '_')}`
-      : `temp.${t.driver}.${t.idx || 0}`;
-  }
-
-  /// The hottest sensor on a host, whatever it is attached to.
-  ///
-  /// Always returned with its name. "72C" is alarming for a CPU and
-  /// unremarkable for an NVMe under load, so the number alone is not
-  /// actionable - and on dove the hottest sensor really is an NVMe, 40 degrees
-  /// above the CPU.
-  function hottestSensor(h) {
-    if (!h.temps || !h.temps.length) return null;
-    return h.temps.reduce((a, b) => (b.celsius > a.celsius ? b : a));
-  }
 
   // ---- groups -------------------------------------------------------------
   //
@@ -267,13 +241,6 @@
   /// a complete one, which is the failure this whole project guards against.
   let hostFilter = '';
 
-  /// Matches name, group and distro, so typing a group name narrows to it.
-  /// That composes with Phase 11 rather than duplicating it.
-  function matchesHost(h, q) {
-    if (!q) return true;
-    return `${h.name} ${h.group || ''} ${h.distro || ''}`.toLowerCase().includes(q);
-  }
-
   /// Hosts to draw: ordered, then filtered.
   ///
   /// Separate from `ordered()` on purpose. That one feeds drag-reorder
@@ -311,23 +278,6 @@
   }
 
   const last = a => (a.length ? a[a.length - 1] : 0);
-
-  /// "NVIDIA GeForce RTX 3080" -> "RTX 3080". The vendor and product line are
-  /// the same across a fleet; the model is the part that identifies the card.
-  function shortGpu(name) {
-    return String(name)
-      .replace(/^NVIDIA\s+/i, '')
-      .replace(/^GeForce\s+/i, '')
-      .replace(/^Tesla\s+/i, '')
-      .trim() || 'GPU';
-  }
-
-  function bps(v) {
-    const U = ['B', 'KB', 'MB', 'GB'];
-    let n = v || 0, i = 0;
-    while (n >= 1024 && i < U.length - 1) { n /= 1024; i++; }
-    return `${i ? n.toFixed(1) : Math.round(n)} ${U[i]}/s`;
-  }
 
   // ---- metric registry ----------------------------------------------------
   //
@@ -447,26 +397,6 @@
       has: h => !!(h.gpu && h.gpuTotal),
     },
   };
-
-  /// Map a value to 0..1 for the given metric, using a fleet-wide peak so
-  /// bars are comparable between hosts.
-  ///
-  /// Log metrics span a fixed window of decades below the fleet peak rather
-  /// than starting at zero. Anchoring the scale at 1 byte crushed everything
-  /// above a megabyte into the top third - a 600x difference rendered as 69%
-  /// against 100%. Four decades gives the range real visual separation, and
-  /// anything quieter than that reads as the negligible traffic it is.
-  function logWindow(m, peak) {
-    const top = Math.max(peak || 0, m.floor || 1);
-    return { top, bottom: top / Math.pow(10, m.decades || 4) };
-  }
-
-  function normalise(m, v, peak) {
-    if (m.scale === 'absolute') return Math.min(1, (v || 0) / (m.max || 100));
-    const { top, bottom } = logWindow(m, peak);
-    if (!v || v <= bottom) return 0;
-    return Math.min(1, Math.log10(v / bottom) / Math.log10(top / bottom));
-  }
 
   const metric = () => METRICS[prefs.metric] || METRICS.cores;
 
@@ -1391,21 +1321,6 @@
   // entered. The user is already looking at a host or a metric when they ask
   // for its history, so re-asking would be a question the app can answer.
 
-  /// Window spans the slider maps onto, log-spaced from a minute to a week.
-  /// Continuous rather than preset buttons: tiers are storage, the window is
-  /// a view, and crossing a tier boundary should be invisible.
-  const WIN_MIN = 60, WIN_MAX = 604800;
-
-  const sliderToSecs = v => Math.round(
-    WIN_MIN * Math.pow(WIN_MAX / WIN_MIN, v / 1000));
-
-  function fmtSpan(s) {
-    if (s < 90) return `${Math.round(s)} sec`;
-    if (s < 5400) return `${Math.round(s / 60)} min`;
-    if (s < 172800) return `${(s / 3600).toFixed(s < 36000 ? 1 : 0)} hr`;
-    return `${(s / 86400).toFixed(1)} days`;
-  }
-
   /// Enter history showing `slice`, remembering it for a direct return.
   function openHistory(slice) {
     if (slice) { prefs.slice = slice; savePrefs(); }
@@ -1556,26 +1471,6 @@
   /// tiles, and for the same reason: a core on a 2-core box must not look
   /// bigger than a core on a 32-core box.
   const CORE_CHART_W = 126;
-
-  /// How many core charts to put in a row.
-  ///
-  /// "As many as fit" lands on whatever the window happens to allow - 9 on a
-  /// typical screen - and 9 divides none of the counts real machines have.
-  /// Core counts are 2, 4, 8, 16, 24, 32, so rows of 8 leave a clean
-  /// rectangle where rows of 9 leave a ragged tail: 32 cores is 9+9+9+5
-  /// against 8+8+8+8.
-  ///
-  /// Small hosts keep a single row - a 6-core box reads better as one row of
-  /// six than as 4+2 - and above that the count snaps down to a multiple of
-  /// eight, so a wide window gives 16 per row rather than 19.
-  function niceCols(n, maxCols) {
-    const fit = Math.max(1, Math.min(n || 1, maxCols));
-    if (n <= 8 && n <= maxCols) return n;
-    if (fit >= 8) return Math.floor(fit / 8) * 8;
-    if (fit >= 4) return 4;
-    if (fit >= 2) return 2;
-    return 1;
-  }
 
   function coreChartsEl(h, packed) {
     const sec = document.createElement('section');
@@ -1996,41 +1891,6 @@
     c.strokeStyle = dot + '55'; c.lineWidth = 1.4; c.stroke();
   }
 
-  /// The fullest filesystem. An average across mounts would let a roomy
-  /// /home hide a full /.
-  function fullestFs(h) {
-    if (!h.fs || !h.fs.length) return null;
-    return h.fs.reduce((worst, f) => {
-      const pct = f.total_kb ? f.used_kb / f.total_kb * 100 : 0;
-      const wp = worst ? (worst.total_kb ? worst.used_kb / worst.total_kb * 100 : 0) : -1;
-      return pct > wp ? f : worst;
-    }, null);
-  }
-
-  /// Percentage of the fullest mount, or null if the host reports none.
-  ///
-  /// A function declaration, not a `const` arrow, and deliberately so: the
-  /// metric registry closes over this and `availableMetrics()` runs during
-  /// startup, before this point in the file is reached. As a `const` it sat in
-  /// the temporal dead zone and threw `Cannot access 'fsPct' before
-  /// initialization` — which happened at module scope, so the *entire* UI came
-  /// up inert with one console line explaining it.
-  ///
-  /// It only fired when a host object already existed as the metric list was
-  /// first built, which is why it survived so long: with an empty fleet the
-  /// `.some()` never reaches `has`, and the bug hides.
-  function fsPct(h) {
-    const f = fullestFs(h);
-    return f && f.total_kb ? f.used_kb / f.total_kb * 100 : null;
-  }
-
-  function humanUptime(secs) {
-    if (secs == null) return '';
-    const d = Math.floor(secs / 86400), hh = Math.floor((secs % 86400) / 3600);
-    const m = Math.floor((secs % 3600) / 60);
-    return d > 0 ? `${d}d ${hh}h` : hh > 0 ? `${hh}h ${m}m` : `${m}m`;
-  }
-
   const bandColour = v =>
     css(v >= 90 ? '--crit' : v >= 75 ? '--warn' : '--accent');
 
@@ -2178,28 +2038,12 @@
   /// process happened to land in that position next.
   const procOpen = new Set();
 
-  function matchesFilter(p, q) {
-    if (!q) return true;
-    // The command line is included: it is where the distinguishing detail
-    // lives. Five processes all called "Runner.Listener" are only tellable
-    // apart by their arguments, so filtering on "pdr-3" has to reach them.
-    return `${p.host} ${p.user} ${p.comm} ${p.pid} ${p.cmd || ''}`
-      .toLowerCase().includes(q);
-  }
-
+  /// Current sort preferences applied to a list. The comparison itself lives
+  /// in the filter module; this only supplies which column and which way.
   function sortProcs(list) {
     const key = prefs.procSort || 'cpu_pct';
-    const desc = prefs.procDesc !== false;
     const col = PROC_COLS.find(c => c.key === key) || PROC_COLS[1];
-    return list.slice().sort((a, b) => {
-      let r = col.num
-        ? (a[key] - b[key])
-        : String(a[key]).localeCompare(String(b[key]));
-      if (desc) r = -r;
-      // Equal values keep a stable, meaningful order rather than whatever
-      // the merge happened to produce.
-      return r || (b.cpu_pct - a.cpu_pct) || (b.rss_kb - a.rss_kb);
-    });
+    return TuxFilter.sortProcs(list, key, prefs.procDesc !== false, col.num);
   }
 
   async function refreshProcs() {
@@ -2215,7 +2059,7 @@
 
     const total = list.length;
     const q = procFilter.trim().toLowerCase();
-    if (q) list = list.filter(p => matchesFilter(p, q));
+    if (q) list = list.filter(p => matchesProcess(p, q));
     list = sortProcs(list);
 
     const body = $('[data-proc-rows]');
@@ -2267,12 +2111,6 @@
     $('[data-proc-note]').textContent =
       `${shown} across ${hosts_seen} host${hosts_seen === 1 ? '' : 's'} ` +
       `\u00b7 CPU is % of the whole machine`;
-  }
-
-  function fmtKb(kb) {
-    return kb >= 1048576 ? `${(kb / 1048576).toFixed(1)} GB`
-         : kb >= 1024 ? `${(kb / 1024).toFixed(0)} MB`
-         : `${kb} KB`;
   }
 
   /// Browser-mode processes, so the page still demonstrates itself.
