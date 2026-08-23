@@ -66,6 +66,7 @@ mod tests {
             port: 22,
             beszel_url: None,
             interval_secs: None,
+            os: String::new(),
             group: None,
         }
     }
@@ -264,6 +265,7 @@ addr = "dove"
                 port: 22,
                 beszel_url: None,
                 interval_secs: None,
+                os: String::new(),
                 group: None,
             },
         )
@@ -294,6 +296,7 @@ addr = "dove"
                     port: 22,
                     beszel_url: None,
                     interval_secs: None,
+                    os: String::new(),
                     group: None,
                 },
             )
@@ -315,6 +318,7 @@ addr = "dove"
                 port: 22,
                 beszel_url: Some("https://dove.example".into()),
                 interval_secs: None,
+                os: String::new(),
                 group: None,
             },
             HostConfig {
@@ -324,6 +328,7 @@ addr = "dove"
                 port: 22,
                 beszel_url: None,
                 interval_secs: None,
+                os: String::new(),
                 group: None,
             },
         ];
@@ -401,6 +406,7 @@ mod reorder_tests {
                 port: 22,
                 beszel_url: None,
                 interval_secs: None,
+                os: String::new(),
                 group: None,
             })
             .collect()
@@ -453,6 +459,7 @@ mod settings_tests {
             port: 22,
             beszel_url: None,
             interval_secs: iv,
+            os: String::new(),
             group: None,
         }
     }
@@ -554,6 +561,7 @@ mod group_tests {
             port: 22,
             beszel_url: None,
             interval_secs: None,
+            os: String::new(),
             group: group.map(str::to_string),
         }
     }

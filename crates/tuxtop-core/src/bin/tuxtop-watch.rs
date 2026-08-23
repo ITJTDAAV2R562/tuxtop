@@ -101,6 +101,7 @@ async fn main() -> ExitCode {
         port: 22,
         beszel_url: None,
         interval_secs: None,
+        os: String::new(),
         group: None,
     };
 

@@ -31,6 +31,16 @@ pub struct HostConfig {
     /// watched, 10 s on the twelve that only need to be noticed going down.
     #[serde(default)]
     pub interval_secs: Option<u32>,
+    /// Which operating system this host runs: `linux` (the default) or
+    /// `windows`.
+    ///
+    /// Explicit rather than probed. Detection costs a round trip on every
+    /// connect, and guessing wrong produces a host that fails in a way the
+    /// fault text cannot explain — "sampler failed" when the truth is "that
+    /// machine has no /proc". Adding a Windows host is a deliberate act, and
+    /// saying so is one word.
+    #[serde(default)]
+    pub os: String,
     /// Which group this host belongs to, if any.
     ///
     /// One optional label rather than several, or a tree: both are widenings

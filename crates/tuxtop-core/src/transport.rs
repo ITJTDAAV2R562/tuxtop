@@ -85,7 +85,14 @@ impl SshSampler {
         tx: mpsc::Sender<Result<Sample, HostFault>>,
         traffic: Arc<TrafficCounter>,
     ) -> std::io::Result<Self> {
-        let cmd = sampler::sampler_command(interval_secs);
+        // Windows has no /proc. Same transport, same loop, same frame
+        // delimiter - only the remote command and its parser differ.
+        let windows = host.os.eq_ignore_ascii_case("windows");
+        let cmd = if windows {
+            crate::windows::win_sampler_command(interval_secs)
+        } else {
+            sampler::sampler_command(interval_secs)
+        };
         let args = ssh_args(&host, &cmd);
 
         let mut child = Command::new("ssh")
@@ -110,7 +117,11 @@ impl SshSampler {
             let _ = etx.send(buf);
         });
 
-        tokio::spawn(pump(host, stdout, erx, tx, traffic));
+        if windows {
+            tokio::spawn(win_pump(host, stdout, erx, tx, traffic));
+        } else {
+            tokio::spawn(pump(host, stdout, erx, tx, traffic));
+        }
 
         Ok(Self { child })
     }
@@ -376,6 +387,140 @@ fn first_useful_line(s: &str) -> String {
         .to_string()
 }
 
+/// Read a Windows host's frames and emit samples.
+///
+/// The Linux pump's shape, with the counters that differ. CPU comes from an
+/// inverse idle counter differentiated against its own timestamp; network and
+/// disk are cumulative byte counters differentiated against real elapsed
+/// time, exactly as `RateTracker` does for `/proc`.
+async fn win_pump(
+    host: HostConfig,
+    stdout: tokio::process::ChildStdout,
+    stderr: tokio::sync::oneshot::Receiver<String>,
+    tx: mpsc::Sender<Result<Sample, HostFault>>,
+    traffic: Arc<TrafficCounter>,
+) {
+    use crate::windows::{busy_pct, parse_win_frame, WinFrame};
+
+    let mut reader = BufReader::new(stdout);
+    let mut buf = String::new();
+    let mut chunk = vec![0u8; 16 * 1024];
+
+    let mut prev: Option<WinFrame> = None;
+    let mut prev_at: Option<std::time::Instant> = None;
+    // Facts arrive once, before the loop, so they are carried forward rather
+    // than re-read from every frame.
+    let mut facts = crate::facts::HostFacts::default();
+
+    loop {
+        let n = match reader.read(&mut chunk).await {
+            Ok(0) | Err(_) => break,
+            Ok(n) => n,
+        };
+        traffic.add_bytes(n as u64);
+        buf.push_str(&String::from_utf8_lossy(&chunk[..n]));
+
+        let (frames, rest) = sampler::split_frames(&buf);
+        let texts: Vec<String> = frames.into_iter().map(str::to_string).collect();
+        buf = rest.to_string();
+
+        for text in texts {
+            traffic.add_frame(text.len() as u64);
+            let f = parse_win_frame(&text);
+            if !f.facts.is_empty() {
+                facts = f.facts.clone();
+            }
+            // A frame with no processor rows is not a measurement. PowerShell
+            // can emit a warning-only frame if a class query is refused.
+            if f.cores.is_empty() {
+                continue;
+            }
+
+            let now = std::time::Instant::now();
+            let elapsed = prev_at.map(|t| now.duration_since(t).as_secs_f64());
+            prev_at = Some(now);
+
+            let (cpu, cores) = match &prev {
+                // The first frame has nothing to differentiate against. It is
+                // skipped rather than reported as zero, the same way the
+                // Linux path treats its first /proc/stat read as a baseline.
+                None => (0.0, Vec::new()),
+                Some(p) => {
+                    let mut cs = Vec::with_capacity(f.cores.len());
+                    for (name, v, t) in &f.cores {
+                        let before = p.cores.iter().find(|c| &c.0 == name);
+                        cs.push(
+                            before
+                                .and_then(|b| busy_pct((b.1, b.2), (*v, *t)))
+                                .unwrap_or(0.0),
+                        );
+                    }
+                    // The aggregate is Windows' own `_Total`, not a mean of
+                    // the cores: it is computed by the same counters at the
+                    // same instant, and averaging ours would drift from it.
+                    let agg = match (p.total, f.total) {
+                        (Some(a), Some(b)) => busy_pct(a, b).unwrap_or(0.0),
+                        _ if !cs.is_empty() => cs.iter().sum::<f32>() / cs.len() as f32,
+                        _ => 0.0,
+                    };
+                    (agg, cs)
+                }
+            };
+
+            let rate = |a: u64, b: u64| -> f64 {
+                match (elapsed, b.checked_sub(a)) {
+                    (Some(e), Some(d)) if e > 0.0 => d as f64 / e,
+                    _ => 0.0,
+                }
+            };
+            let sum = |v: &[(String, u64, u64)]| -> (u64, u64) {
+                v.iter().fold((0, 0), |acc, x| (acc.0 + x.1, acc.1 + x.2))
+            };
+            let (nr, nt) = sum(&f.nets);
+            let (dr, dw) = sum(&f.disks);
+            let (pnr, pnt) = prev.as_ref().map(|p| sum(&p.nets)).unwrap_or((0, 0));
+            let (pdr, pdw) = prev.as_ref().map(|p| sum(&p.disks)).unwrap_or((0, 0));
+
+            let ready = prev.is_some();
+            prev = Some(f.clone());
+            if !ready {
+                continue;
+            }
+
+            let sample = Sample {
+                host: host.name.clone(),
+                cpu,
+                cores,
+                mem_used_kb: f.mem_total_kb.saturating_sub(f.mem_free_kb),
+                mem_total_kb: f.mem_total_kb,
+                net_rx_bps: rate(pnr, nr) as u64,
+                net_tx_bps: rate(pnt, nt) as u64,
+                disk_read_bps: rate(pdr, dr) as u64,
+                disk_write_bps: rate(pdw, dw) as u64,
+                gpu: None,
+                // Windows has no load average. Reporting zeros would claim a
+                // measurement; the UI hides the metric when no host has it.
+                load: [0.0; 3],
+                cpu_temp_c: None,
+                temps: Vec::new(),
+                swap_used_kb: 0,
+                swap_total_kb: 0,
+                uptime_secs: f.uptime_secs,
+                cpu_breakdown: Default::default(),
+                facts: Some(facts.clone()),
+                filesystems: Vec::new(),
+            };
+
+            if tx.send(Ok(sample)).await.is_err() {
+                return;
+            }
+        }
+    }
+
+    let msg = stderr.await.unwrap_or_default();
+    let _ = tx.send(Err(classify_ssh_error(&msg))).await;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -388,6 +533,7 @@ mod tests {
             port: 22,
             beszel_url: None,
             interval_secs: None,
+            os: String::new(),
             group: None,
         }
     }

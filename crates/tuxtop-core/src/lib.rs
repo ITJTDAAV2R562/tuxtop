@@ -24,6 +24,7 @@ pub mod procs;
 pub mod sampler;
 pub mod traffic;
 pub mod transport;
+pub mod windows;
 
 pub use fleet::{backoff_secs, watch_host, HostEvent};
 pub use hostlist::{

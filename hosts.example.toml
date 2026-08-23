@@ -21,3 +21,14 @@ name = "example-b"
 addr = "example-b"     # resolved through ~/.ssh/config
 user = "root"
 port = 22
+
+# A Windows host. Needs OpenSSH Server enabled — a first-party optional
+# Windows feature, not an agent — and key auth set up, the same as any Linux
+# host. `os` is explicit rather than probed: guessing wrong produces a host
+# that fails in a way the fault text cannot explain.
+#
+# [[host]]
+# name = "n1"
+# addr = "n1"
+# port = 2222        # if WSL already holds 22 on the same machine
+# os = "windows"
