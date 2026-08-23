@@ -1,0 +1,72 @@
+# Every push and pull request. The point is to catch what has actually broken
+# here: a commit that does not compile reaching `main`, and a frontend change
+# that breaks a layout nobody re-checks by hand.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  core:
+    name: core — tests, lints, checkers
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+
+      # tuxtop-core builds and tests anywhere, which is the whole reason it is
+      # a separate crate outside the Tauri workspace (ADR-006).
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: JS unit tests
+        run: node --test 'tests/*.test.js'
+
+      # These three encode rules that are otherwise silent when broken: a theme
+      # token missing from one of three states, a metric with no aggregation
+      # rule, a command no frontend code calls.
+      - run: python3 scripts/check-theme-tokens.py
+      - run: python3 scripts/check-agg-declared.py
+      - run: python3 scripts/check-commands-reachable.py
+
+  browser:
+    name: browser — layout and load order
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npx playwright test
+
+  windows:
+    name: windows — the Tauri shell compiles
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      # src-tauri is deliberately not a workspace member - it pulls webkit2gtk
+      # on Linux, which the development box does not have - so it is only ever
+      # compiled here. A commit that does not build has reached main more than
+      # once because this step did not exist.
+      - name: Build the desktop app
+        working-directory: src-tauri
+        run: cargo build --locked

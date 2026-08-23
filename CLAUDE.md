@@ -246,6 +246,24 @@ that catches a plausible-but-wrong result.
 
 ---
 
+## CI
+
+`.github/workflows/ci.yml` runs on every push to `main` and every pull request:
+
+| job | runs on | covers |
+| --- | --- | --- |
+| `core` | ubuntu | `cargo fmt --check`, `clippy -D warnings`, `cargo test`, JS unit tests, the three checkers |
+| `browser` | ubuntu | the Playwright suite — layout and load order |
+| `windows` | windows | **`cargo build` in `src-tauri`** |
+
+That last job exists because a commit that does not compile has reached `main`
+more than once: `src-tauri` is deliberately outside the workspace (ADR-006), so
+nothing on the development box ever compiles it, and the error only surfaced
+when someone built on Windows. Before CI, "someone" was the user.
+
+Run the same things locally before pushing — `cargo clippy --all-targets -- -D
+warnings` is stricter than a bare `cargo clippy` and is what CI uses.
+
 ## Commit style
 
 - Subject ≤70 chars, imperative, no trailing period.
