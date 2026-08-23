@@ -1,6 +1,6 @@
 # Spec — Windows hosts
 
-**Status:** core built, transport wiring in progress · **Depends on:** nothing
+**Status:** **built** · Shipped 2026-08-23
 
 **Goal:** a Windows machine appears on the fleet view beside the Linux ones,
 with per-core CPU, memory and uptime that mean what they say.
@@ -93,8 +93,8 @@ so is one word.
 - [x] `cargo test` passes, including the inverse-counter and encoding tests
 - [x] Real N1 output parses, with `_Total` excluded from both cores and disks
 - [x] The generated command runs on N1 and yields frames
-- [ ] A Windows host added to `hosts.toml` shows a card with per-core CPU
-- [ ] Its memory reads the machine's, not a guest's
+- [x] A Windows host added to `hosts.toml` shows a card with per-core CPU
+- [x] Its memory reads the machine's, not a guest's
 
 ## Out of scope for now
 
@@ -102,3 +102,19 @@ so is one word.
 - **Temperature and GPU.** Windows exposes neither through a stable
   first-party API worth trusting.
 - **Auto-detection of the OS.** See above.
+
+---
+
+## Built
+
+N1 runs on the fleet as a Windows host: `os = "windows"` in `hosts.toml`,
+16 cores, 63.8 GB — the machine's own memory, not the 31 GB its WSL guest
+reports. 997 bytes per frame.
+
+One thing this spec did not anticipate: the `os` field shipped with no way to
+set it. The backend had it and `hosts.example.toml` documented it, but the
+Add host dialog never sent it, so a Windows host created through the UI was
+sampled as a Linux one and failed with "the system cannot find the path
+specified". A field needs a control in **both** places — the Add dialog and
+the per-host table in Settings — and the second is the one that gets
+forgotten. Recorded in CLAUDE.md.

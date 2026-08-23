@@ -1,6 +1,6 @@
 # Spec — grouping hosts
 
-**Status:** design, nothing built · **Phase:** 11 · **Depends on:** the metric
+**Status:** **built** · **Phase:** 11 · Shipped 2026-08-22
 registry (landed), the history plane (Phase 8)
 
 **Goal:** a fleet of nineteen reads as five things. Group hosts by role, site
@@ -209,18 +209,18 @@ the same bug as a 60-second bucket averaging away a spike.
 
 ## Exit criteria
 
-- [ ] `cargo test` passes, including aggregation tests
-- [ ] A test named after the rule — `mean_of_ratios_is_not_the_group_percentage`
+- [x] `cargo test` passes, including aggregation tests
+- [x] A test named after the rule — `mean_of_ratios_is_not_the_group_percentage`
       — pins the dove/heron 88.9%-not-50% case
-- [ ] A test pins that a group containing a 97% host renders in the critical
+- [x] A test pins that a group containing a 97% host renders in the critical
       band while its aggregate is 40%
-- [ ] A test pins that a metric with no `agg` declaration is absent from group
+- [x] A test pins that a metric with no `agg` declaration is absent from group
       views rather than defaulted
-- [ ] Assigning `group` to hosts in `hosts.toml` produces collapsible group
+- [x] Assigning `group` to hosts in `hosts.toml` produces collapsible group
       blocks; a file with no groups renders identically to today
-- [ ] A group's history chart marks spans where a member was silent, and the
+- [x] A group's history chart marks spans where a member was silent, and the
       tooltip states how many contributed
-- [ ] Verified against the real five-host fleet with two groups
+- [x] Verified against the real five-host fleet with two groups
 
 ---
 
@@ -234,3 +234,13 @@ the same bug as a 60-second bucket averaging away a spike.
   on every member. That is a fleet orchestration tool, and it is not this.
   Settled beyond this spec by [ADR-010](../DECISIONS.md#adr-010--tuxtop-only-observes-it-never-changes-a-monitored-host):
   Tuxtop changes nothing on a monitored host, per group or otherwise.
+
+---
+
+## Built
+
+All three stages shipped (11a aggregation core, 11b fleet rendering,
+11c group history). Two decisions in this document were revised while
+building and are marked *revised during 11b* in place: the separate-axis rule
+was wrong, and collapse state lives in `localStorage` rather than
+`hosts.toml`.

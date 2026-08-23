@@ -1,6 +1,6 @@
 # Spec — History plane (Phase 8)
 
-**Status:** settled. Ready to implement. No code yet.
+**Status:** **built** · **Phase:** 8 · Shipped 2026-08-22
 
 Metrics over time, not only in the moment. A third view alongside Hosts and
 Fleet, with charts over a scrubable window.

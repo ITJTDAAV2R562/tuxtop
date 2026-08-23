@@ -1,6 +1,6 @@
 # Spec — ownership: what each process belongs to, and what each unit costs
 
-**Status:** design, nothing built · **Phase:** 10 · **Depends on:** Phase 5 (the
+**Status:** **built** · **Phase:** 10 · Shipped 2026-08-23
 process list)
 
 **Goal:** answer "what *is* this?" about a spike, and "what does this service
@@ -164,19 +164,19 @@ of cgroup accounting, against 7.3 KB/s for the metric stream at 1 Hz.
 
 ## Exit criteria
 
-- [ ] `cargo test` passes, including parser tests
-- [ ] A test parses all four real cgroup line shapes from this fleet, plus a
+- [x] `cargo test` passes, including parser tests
+- [x] A test parses all four real cgroup line shapes from this fleet, plus a
       cgroup v1 multi-line sample
-- [ ] A test pins that an unreadable cgroup yields an empty owner, never a
+- [x] A test pins that an unreadable cgroup yields an empty owner, never a
       guessed one
-- [ ] A test pins that cgroup CPU is a delta and that identical samples report
+- [x] A test pins that cgroup CPU is a delta and that identical samples report
       zero rather than NaN
-- [ ] A test pins that the restart delta is measured from first sight, and that
+- [x] A test pins that the restart delta is measured from first sight, and that
       a unit first seen at 7 restarts reports `+0`
-- [ ] The Processes view shows an Owner column, filterable
-- [ ] Group-by-owner shows `manticore.service` as one row with cgroup memory,
+- [x] The Processes view shows an Owner column, filterable
+- [x] Group-by-owner shows `manticore.service` as one row with cgroup memory,
       expanding to its 21 processes
-- [ ] Verified against dove, whose numbers are quoted throughout
+- [x] Verified against dove, whose numbers are quoted throughout
 
 ---
 
@@ -191,3 +191,13 @@ of cgroup accounting, against 7.3 KB/s for the metric stream at 1 Hz.
   a host turns out to run real work under a user manager.
 - **Unit enabled/disabled state and dependency graphs.** That is configuration,
   not behaviour, and it does not change while you watch.
+
+---
+
+## Built
+
+All three parts shipped. Measured on dove: ownership adds ~550 bytes per
+sample, the cgroup sweep 2,558 bytes across 45 cgroups, and the restart sweep
+runs every twelfth process cycle. `transcribe-worker.service` reads 395 MB
+across 43 processes — the figure a process list structurally cannot produce,
+since summing RSS double-counts shared pages.

@@ -1,6 +1,6 @@
 # Spec — Fleet-wide process list (Phase 5)
 
-**Status:** settled. Ready to implement.
+**Status:** **built** · **Phase:** 5 · Read-only by decision — see ADR-010
 
 *"What is the busiest process anywhere in my fleet right now?"* — a question
 neither Task Manager nor Beszel can answer, and the one that follows directly
