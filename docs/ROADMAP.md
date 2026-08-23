@@ -307,32 +307,44 @@ because identity is read once and `df` every thirtieth frame.
 
 ---
 
-## Phase 10 — systemd services — **planned**
+## Phase 10 — Ownership: what a process belongs to, and what a unit costs — **specced**
 
-Both reference apps have this: Task Manager has a Services tab, and Beszel
-tracks 70 units on dove. Pairs naturally with the process list — a failed unit
-and a runaway process are the same question asked twice.
+Full spec: **[specs/ownership.md](specs/ownership.md)**.
 
-- Unit name, load/active/sub state, and whether it is enabled.
-- Failed units surfaced without being hunted for.
-- **Read-only, settled.** Start, stop and restart are not being built — see
-  [ADR-010](DECISIONS.md#adr-010--tuxtop-only-observes-it-never-changes-a-monitored-host).
-  This phase no longer has a blocking question in front of it.
+**Reframed after measuring the fleet.** This was "systemd services": a table of
+unit name, state and enabled-ness. Three findings killed that version:
 
-Measured on dove: 137 service units, 62 loaded, and the whole compact answer
-(`name|load|active|sub`) is 3.2 KB — small enough to ship entire, so unlike
-the process list it needs no remote ranking. `systemctl list-units` needs no
-root. It does not belong on the 1 Hz stream: unit state changes on the scale
-of deploys, so it is a separate channel fetched while the view is open, as
-the process sampler already works.
+- **Zero failed units across all five hosts** — 773 units, 162 running, none
+  failed. A failed-unit view would render an empty row permanently.
+- **It is alerting-shaped**, and Tuxtop is opened when you want to look. A
+  signal that only fires while a window is open is what [Non-goals](#non-goals)
+  rejects; Kuma and Proxmox already watch unattended.
+- A browsable 137-row table is `ssh host systemctl status` with more clicks,
+  and a table of strings has no spike in it.
 
-**Worth narrowing before building.** A browsable 137-row table per host is
-`ssh host systemctl status` with more clicks, and it is a table of strings —
-there is no spike in it, which is what this app is for. The valuable part is
-*failed units surfaced without being hunted for*: a count per host, red when
-non-zero, expanding to names. That fits the existing card and group shapes and
-answers a real question. Spec it that way; the browsable table can follow if
-it is ever missed.
+What survived is **ownership**, in three parts, all landing on the existing
+Processes view rather than a new tab:
+
+- **A — every process says what it belongs to.** `/proc/[pid]/cgroup` is 15
+  bytes and names the owner: `manticore.service`, `docker-<id>.scope`, a login
+  session. ~300 bytes for the top twenty. Turns `python 39%` into
+  `python 39% · transcribe-worker.service`. Covers containers incidentally,
+  with no daemon socket and no `docker` group.
+- **B — units that keep restarting.** One `systemctl show` call, 108 ms. A
+  flapping service is *active and not failed*: invisible to `--state=failed`,
+  to an endpoint check, and to the process list, because the PID just changes.
+  `NRestarts` carries no recency, so Tuxtop records it at first sight and shows
+  the delta — the half that means "flapping now".
+- **C — what a unit actually costs.** Per-cgroup `cpu.stat`, `memory.current`,
+  `pids.current`: 45 cgroups, 2,549 bytes, 154 ms on dove, no privileges. This
+  is the part a process list *cannot* do — summing RSS is banned because shared
+  pages are counted once per process, so "how much memory does manticore use?"
+  is only answerable from the cgroup. On dove that is 21 processes as one row.
+
+**Docker gets no tab.** One running container across five hosts, on the one
+host where reading it would need the user added to the `docker` group — which
+is root-equivalent, and so a change to a monitored host that ADR-004 and
+ADR-010 both rule out. Container attribution comes free with A regardless.
 
 ---
 
