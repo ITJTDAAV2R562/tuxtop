@@ -140,6 +140,13 @@
    showed empty on every healthy card, then the temperature chip showed an
    empty TEMP on every host without a sensor. One rule, once, for all of it. */
 [hidden]{display:none !important}
+/* Reserve the scrollbar gutter always.
+   Without it, a rebuild that makes the page taller adds a scrollbar, which
+   narrows the content, which can change the column count, which rebuilds
+   again - the layout observer would ping-pong between two widths forever.
+   Reserving the space removes the feedback loop rather than damping it. */
+html{scrollbar-gutter:stable}
+
 body{
   margin:0;
   font-family:var(--font-ui);

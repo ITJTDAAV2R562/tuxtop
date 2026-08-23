@@ -1346,8 +1346,44 @@
   $('#sortSel').closest('.sortwrap').hidden = prefs.view === 'procs';
   $('#histbar').hidden = prefs.view !== 'history';
 
-  // Tile sizing in all-cores mode depends on window width.
-  addEventListener('resize', () => { if (prefs.view === 'all') build(); });
+  /// How many columns currently fit, for each of the two grid shapes.
+  ///
+  /// The layout key, not the width: rebuilding on every pixel would thrash,
+  /// and rebuilding on width alone oscillates when a scrollbar appears and
+  /// disappears across the threshold. What actually matters is whether the
+  /// number of columns changed.
+  function layoutKey() {
+    const avail = Math.max(240, grid.clientWidth - 28);
+    const coreCols = Math.max(1, Math.floor((avail - 26 + 5) / (CORE_CHART_W + 5)));
+    const tileCols = Math.max(1, Math.floor((avail - 28 + 3) / (TILE_PX + 3)));
+    return `${coreCols}:${tileCols}`;
+  }
+
+  let laidOutAt = '';
+
+  /// Rebuild the width-sensitive views when the space they measured changes.
+  ///
+  /// Both grids size themselves from the container at build time, so a build
+  /// that runs before the window has settled lays out against the wrong
+  /// width. On first launch History came up four charts to a row and only
+  /// corrected itself when switching tabs happened to rebuild it - the
+  /// resize listener this replaces covered the Fleet view alone, and nothing
+  /// covered the initial paint at all.
+  function relayout() {
+    const key = layoutKey();
+    if (key === laidOutAt) return;
+    laidOutAt = key;
+    if (prefs.view === 'all' || prefs.view === 'history') build();
+  }
+
+  // A ResizeObserver rather than a window resize handler: it also fires for
+  // the first real layout, which is the case that was broken, and for a
+  // container that changes width without the window doing so.
+  if (typeof ResizeObserver === 'function') {
+    new ResizeObserver(() => requestAnimationFrame(relayout)).observe(grid);
+  } else {
+    addEventListener('resize', relayout);
+  }
 
   // ---- history -----------------------------------------------------------
   //
