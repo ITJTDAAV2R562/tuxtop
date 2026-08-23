@@ -124,6 +124,30 @@
           emit('tuxtop://hosts-changed', structuredClone(hosts));
           return structuredClone(hosts);
         }
+        if (cmd === 'cgroup_list') {
+          // Derived from the same process names the process list reports, so
+          // the join between the two is actually exercised - plus two units
+          // whose processes never reach the top twenty, which is the case
+          // this view exists to surface.
+          const out = [];
+          for (const h of hosts) {
+            const names = ['tailscaled','searchd','python','node','postgres',
+                           'dockerd','nginx','redis-server','java'];
+            names.forEach((n, i) => {
+              const owner = n === 'dockerd' ? 'docker:4f2b8c1d9e0a'
+                          : n === 'node' ? 'login session' : `${n}.service`;
+              out.push({ host: h.name, name: owner,
+                         cpu_pct: Math.max(0, 30 - i * 3 + Math.random() * 4),
+                         memory_bytes: (950 - i * 90) * 1024 * 1024 * 1.35,
+                         pids: 40 - i * 3 });
+            });
+            out.push({ host: h.name, name: 'manticore.service',
+                       cpu_pct: 34.2, memory_bytes: 483102720, pids: 59 });
+            out.push({ host: h.name, name: 'unattended-upgrades.service',
+                       cpu_pct: 0, memory_bytes: 6291456, pids: 2 });
+          }
+          return out;
+        }
         if (cmd === 'set_processes_enabled') return null;
         if (cmd === 'process_list') {
           const names = ['tailscaled','searchd','python','node','postgres',
@@ -151,6 +175,15 @@
               user: i % 3 ? 'root' : 'sam', comm: n,
               // Kernel threads have no command line at all.
               cmd: n.startsWith('kworker') ? '' : `${CMDS[n] || n} --host=${h.name}`,
+              // Real shapes: a service, a container scope, a login session,
+              // and a kernel thread with no cgroup at all.
+              owner: n.startsWith('kworker') ? ''
+                   : n === 'dockerd' ? 'docker:4f2b8c1d9e0a'
+                   : n === 'node' ? 'login session'
+                   : `${n}.service`,
+              owner_kind: n.startsWith('kworker') ? 'none'
+                        : n === 'dockerd' ? 'container'
+                        : n === 'node' ? 'session' : 'service',
               kernel: n.startsWith('kworker'),
             }));
           }

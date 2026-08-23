@@ -12,7 +12,7 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::mpsc;
 use tuxtop_core::fleet::{watch_host, HostEvent};
-use tuxtop_core::procs::ProcInfo;
+use tuxtop_core::procs::{CgroupUsage, ProcInfo};
 use tuxtop_core::{HostConfig, HostFault, ProcSampler, TrafficCounter, TrafficStats};
 
 /// Event names the frontend subscribes to.
@@ -54,6 +54,8 @@ pub struct Supervisor {
     procs: Mutex<HashMap<String, tauri::async_runtime::JoinHandle<()>>>,
     // Latest ranking per host, merged into one fleet list on read.
     latest: Mutex<HashMap<String, Vec<ProcInfo>>>,
+    // Latest cgroup accounting per host, keyed the same way.
+    cgroups: Mutex<HashMap<String, Vec<CgroupUsage>>>,
 }
 
 impl Supervisor {
@@ -110,6 +112,7 @@ impl Supervisor {
         self.intervals.lock().unwrap().remove(name);
         self.stop_procs_for(name);
         self.latest.lock().unwrap().remove(name);
+        self.cgroups.lock().unwrap().remove(name);
     }
 
     /// Begin process sampling on every host.
@@ -136,8 +139,27 @@ impl Supervisor {
         }
     }
 
-    pub fn record_procs(&self, host: &str, list: Vec<ProcInfo>) {
+    pub fn record_procs(&self, host: &str, list: Vec<ProcInfo>, cgroups: Vec<CgroupUsage>) {
         self.latest.lock().unwrap().insert(host.to_string(), list);
+        self.cgroups.lock().unwrap().insert(host.to_string(), cgroups);
+    }
+
+    /// Every host's cgroup accounting, tagged with its host.
+    ///
+    /// Not merged into one ranking like the processes: a service name is only
+    /// unique within a host, and `nginx.service` on two boxes is two things.
+    pub fn fleet_cgroups(&self) -> Vec<HostCgroup> {
+        self.cgroups
+            .lock()
+            .unwrap()
+            .iter()
+            .flat_map(|(host, v)| {
+                v.iter().map(move |u| HostCgroup {
+                    host: host.clone(),
+                    usage: u.clone(),
+                })
+            })
+            .collect()
     }
 
     /// Every host's latest ranking, merged and re-sorted as one fleet list.
@@ -181,8 +203,9 @@ async fn watch_procs(app: AppHandle, cfg: HostConfig) {
             }
         };
 
-        while let Some(list) = rx.recv().await {
-            app.state::<Supervisor>().record_procs(&cfg.name, list);
+        while let Some(frame) = rx.recv().await {
+            app.state::<Supervisor>()
+                .record_procs(&cfg.name, frame.procs, frame.cgroups);
             // The view pulls; this only says something changed.
             let _ = app.emit(EVENT_PROCS, &cfg.name);
         }
@@ -190,6 +213,14 @@ async fn watch_procs(app: AppHandle, cfg: HostConfig) {
         sampler.stop().await;
         tokio::time::sleep(Duration::from_secs(5)).await;
     }
+}
+
+/// One cgroup, tagged with the host it lives on.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct HostCgroup {
+    pub host: String,
+    #[serde(flatten)]
+    pub usage: CgroupUsage,
 }
 
 /// One host's measured cost, for the settings meter.

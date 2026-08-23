@@ -27,7 +27,9 @@
   /// all called "Runner.Listener" are only tellable apart by their arguments.
   function matchesProcess(p, q) {
     if (!q) return true;
-    return `${p.host} ${p.user} ${p.comm} ${p.pid} ${p.cmd || ''}`
+    // Owner is included so a unit name finds its processes even when the
+    // command line never mentions it - `manticore.service` runs `searchd`.
+    return `${p.host} ${p.user} ${p.comm} ${p.pid} ${p.cmd || ''} ${p.owner || ''}`
       .toLowerCase().includes(q);
   }
 

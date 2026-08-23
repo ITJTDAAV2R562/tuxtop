@@ -39,6 +39,16 @@ test('a_process_filter_reaches_the_command_line', () => {
   assert.ok(!matchesProcess(p, 'pdr-4'));
 });
 
+test('a_unit_name_finds_its_processes_even_when_the_command_differs', () => {
+  // manticore.service runs a binary called searchd. Without the owner in the
+  // haystack, filtering by the unit you are investigating finds nothing.
+  const p = { host: 'dove', user: 'root', comm: 'searchd', pid: 1906570,
+              cmd: '/usr/bin/searchd --config /etc/sphinxsearch/sphinx.conf',
+              owner: 'manticore.service' };
+  assert.ok(matchesProcess(p, 'manticore'));
+  assert.ok(matchesProcess(p, 'searchd'), 'the command still matches too');
+});
+
 test('a_process_with_no_command_line_is_still_searchable', () => {
   // Kernel threads have none; they must not throw or match "undefined".
   const p = { host: 'dove', user: 'root', comm: 'kworker/3:1', pid: 68 };

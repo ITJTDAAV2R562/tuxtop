@@ -255,6 +255,15 @@ fn process_list(sup: tauri::State<'_, Supervisor>) -> Vec<tuxtop_core::procs::Pr
     sup.fleet_procs()
 }
 
+/// Per-cgroup CPU, memory and task counts, for the group-by-owner view.
+///
+/// Sampled on the same channel as the processes, so the two describe the same
+/// instant rather than two moments that could disagree.
+#[tauri::command]
+fn cgroup_list(sup: tauri::State<'_, Supervisor>) -> Vec<supervisor::HostCgroup> {
+    sup.fleet_cgroups()
+}
+
 fn main() {
     tauri::Builder::default()
         .manage(Supervisor::default())
@@ -271,6 +280,7 @@ fn main() {
             traffic_stats,
             set_processes_enabled,
             process_list,
+            cgroup_list,
             query_history,
             query_history_many,
             history_usage

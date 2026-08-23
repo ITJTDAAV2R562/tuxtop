@@ -49,7 +49,7 @@
   const PREFS = 'tuxtop.prefs';
   const prefs = Object.assign(
     { view: 'hosts', sort: 'manual', metric: 'cores', slice: null,
-      procKernel: false, procSort: 'cpu_pct', procDesc: true,
+      procKernel: false, procSort: 'cpu_pct', procDesc: true, procByOwner: false,
       // Slider position, not seconds: the mapping is log-spaced, and storing
       // the position keeps a restored window identical to the one that was
       // set rather than the nearest step to a rounded number of seconds.
@@ -1976,6 +1976,7 @@
     { key: 'rss_kb', label: 'Memory', cls: 'num', num: true },
     { key: 'pid', label: 'PID', cls: 'num', num: true },
     { key: 'user', label: 'User', cls: '', num: false },
+    { key: 'owner', label: 'Owner', cls: 'owner', num: false },
     { key: 'comm', label: 'Command', cls: 'cmd', num: false },
   ];
 
@@ -1986,6 +1987,7 @@
     grid.classList.add('proc-mode');
     $('#procbar').hidden = false;
     $('#procKernel').checked = !!prefs.procKernel;
+    $('#procByOwner').checked = !!prefs.procByOwner;
     $('#procFilter').value = procFilter;
 
     const head = PROC_COLS.map(c => {
@@ -2046,13 +2048,132 @@
     return TuxFilter.sortProcs(list, key, prefs.procDesc !== false, col.num);
   }
 
+  /// Cgroup accounting from the last sample, keyed `host\u2022owner`.
+  ///
+  /// A printable separator, deliberately: a NUL is a fine Map key and is
+  /// silently dropped from an HTML attribute, so the rendered `data-proc`
+  /// never matched the key the expand toggle had stored - the row simply did
+  /// not open, with no error anywhere.
+  let cgroups = new Map();
+
+  /// Render processes grouped by what owns them.
+  ///
+  /// Ranked by the *cgroup's* CPU and memory rather than by the processes we
+  /// happen to hold: a service can be the largest thing on a box while none of
+  /// its individual processes reaches the top twenty. That is precisely the
+  /// case the process list cannot show, and the reason this view exists.
+  function ownerRows(list) {
+    const byOwner = new Map();
+    for (const p of list) {
+      if (!p.owner) continue;
+      const k = `${p.host}\u2022${p.owner}`;
+      if (!byOwner.has(k)) byOwner.set(k, []);
+      byOwner.get(k).push(p);
+    }
+
+    const rows = [];
+    const seen = new Set();
+    for (const [k, u] of cgroups) {
+      rows.push({ key: k, host: u.host, owner: u.name, usage: u, procs: byOwner.get(k) || [] });
+      seen.add(k);
+    }
+    // Owners we have processes for but no cgroup reading - a host on cgroup
+    // v1, or a container outside system.slice. Shown without the numbers
+    // rather than dropped, since the processes are real.
+    for (const [k, ps] of byOwner) {
+      if (!seen.has(k)) rows.push({ key: k, host: ps[0].host, owner: ps[0].owner, usage: null, procs: ps });
+    }
+
+    return rows.sort((a, b) =>
+      ((b.usage?.cpu_pct || 0) - (a.usage?.cpu_pct || 0)) ||
+      ((b.usage?.memory_bytes || 0) - (a.usage?.memory_bytes || 0)) ||
+      a.owner.localeCompare(b.owner));
+  }
+
+  /// Draw the grouped view: one row per owner, expanding to its processes.
+  function renderOwnerRows(list, body, total, q) {
+    const rows = ownerRows(list);
+    if (!rows.length) {
+      body.innerHTML = `<tr><td colspan="7">No owners reported yet — cgroup
+        accounting needs a cgroup v2 host, and the first sample carries no CPU
+        because the counter needs two.</td></tr>`;
+      $('[data-proc-note]').textContent = '';
+      return;
+    }
+
+    body.innerHTML = rows.map(r => {
+      const open = procOpen.has(r.key);
+      const u = r.usage;
+      const kids = open ? sortProcs(r.procs).map(p => `
+        <tr class="owner-child">
+          <td class="host"></td>
+          <td class="num" data-band="${band(p.cpu_pct)}">${p.cpu_pct.toFixed(1)}%</td>
+          <td class="num">${fmtKb(p.rss_kb)}</td>
+          <td class="num">${p.pid}</td>
+          <td>${esc(p.user)}</td>
+          <td class="owner"></td>
+          <td class="cmd">${esc(p.comm)}</td>
+        </tr>`).join('') : '';
+
+      return `
+      <tr class="owner-row${open ? ' open' : ''}" data-proc="${esc(r.key)}"
+          tabindex="0" role="button" aria-expanded="${open}">
+        <td class="host">${esc(r.host)}</td>
+        <td class="num" ${u ? `data-band="${band(u.cpu_pct)}"` : ''}>${u ? u.cpu_pct.toFixed(1) + '%' : '—'}</td>
+        <td class="num" title="cgroup charge, which counts page cache — not the sum of the processes' memory">${u ? fmtBytes(u.memory_bytes) : '—'}</td>
+        <td class="num">${u ? u.pids : r.procs.length}</td>
+        <td></td>
+        <td class="owner" colspan="2">${esc(r.owner)}</td>
+      </tr>${kids}`;
+    }).join('');
+
+    const hosts_seen = new Set(rows.map(r => r.host)).size;
+    // The memory column means something different here, and saying so is the
+    // difference between a useful number and a misleading one.
+    $('[data-proc-note]').textContent =
+      `${rows.length} owner${rows.length === 1 ? '' : 's'} across ` +
+      `${hosts_seen} host${hosts_seen === 1 ? '' : 's'} \u00b7 ` +
+      `CPU is % of the whole machine \u00b7 memory is the cgroup charge, ` +
+      `which includes page cache`;
+  }
+
+  /// Bytes, for cgroup memory. Distinct from fmtKb, which takes kilobytes.
+  function fmtBytes(b) {
+    return b >= 1073741824 ? `${(b / 1073741824).toFixed(1)} GB`
+         : b >= 1048576 ? `${Math.round(b / 1048576)} MB`
+         : `${Math.round(b / 1024)} KB`;
+  }
+
+  /// Browser-mode cgroups, derived from the simulated processes so the two
+  /// agree with each other.
+  function simCgroups(list) {
+    const m = new Map();
+    for (const p of list) {
+      if (!p.owner) continue;
+      const k = `${p.host}\u2022${p.owner}`;
+      const cur = m.get(k) || { host: p.host, name: p.owner, cpu_pct: 0, memory_bytes: 0, pids: 0 };
+      cur.cpu_pct += p.cpu_pct;
+      // Deliberately above the RSS sum: the real memory.current counts page
+      // cache, and a simulator that matched exactly would hide that.
+      cur.memory_bytes += p.rss_kb * 1024 * 1.35;
+      cur.pids += 1;
+      m.set(k, cur);
+    }
+    return m;
+  }
+
   async function refreshProcs() {
     if (prefs.view !== 'procs') return;
     let list = [];
     if (LIVE) {
       try { list = await TAURI.core.invoke('process_list'); } catch { list = []; }
+      try {
+        const cg = await TAURI.core.invoke('cgroup_list');
+        cgroups = new Map(cg.map(u => [`${u.host}\u2022${u.name}`, u]));
+      } catch { cgroups = new Map(); }
     } else {
       list = simProcs();
+      cgroups = simCgroups(list);
     }
 
     if (!prefs.procKernel) list = list.filter(p => !p.kernel);
@@ -2066,18 +2187,20 @@
     if (!body) return;
 
     if (!list.length && q) {
-      body.innerHTML = `<tr><td colspan="6">Nothing matches
+      body.innerHTML = `<tr><td colspan="7">Nothing matches
         \u201c${esc(procFilter)}\u201d among ${total} processes.</td></tr>`;
       $('[data-proc-note]').textContent = `0 of ${total} shown`;
       return;
     }
 
     if (!list.length) {
-      body.innerHTML = `<tr><td colspan="6">Sampling — first results take a
+      body.innerHTML = `<tr><td colspan="7">Sampling — first results take a
         few seconds, since each host measures CPU over a one-second window.</td></tr>`;
       $('[data-proc-note]').textContent = '';
       return;
     }
+
+    if (prefs.procByOwner) return renderOwnerRows(list, body, total, q);
 
     body.innerHTML = list.map(p => {
       const key = `${p.host}:${p.pid}`;
@@ -2087,7 +2210,7 @@
       // the name, expanding shows what it actually is.
       const detail = open ? `
         <tr class="proc-detail">
-          <td colspan="6"><code>${esc(p.cmd || 'no command line — kernel threads have none')}</code></td>
+          <td colspan="7"><code>${esc(p.cmd || 'no command line — kernel threads have none')}</code></td>
         </tr>` : '';
       return `
       <tr class="${p.kernel ? 'kernel' : ''}${p.cmd ? ' has-cmd' : ''}${open ? ' open' : ''}"
@@ -2098,6 +2221,8 @@
         <td class="num">${fmtKb(p.rss_kb)}</td>
         <td class="num">${p.pid}</td>
         <td>${esc(p.user)}</td>
+        <td class="owner" data-kind="${esc(p.owner_kind || 'none')}"
+            title="${esc(p.owner || 'no cgroup — a kernel thread, or the process ended')}">${esc(p.owner || '—')}</td>
         <td class="cmd">${esc(p.comm)}</td>
       </tr>${detail}`;
     }).join('');
@@ -2164,6 +2289,13 @@
   $('#procFilter').addEventListener('input', e => {
     procFilter = e.target.value;
     refreshProcs();
+  });
+
+  $('#procByOwner').addEventListener('change', e => {
+    prefs.procByOwner = e.target.checked;
+    savePrefs();
+    procOpen.clear();   // keys differ between the two shapes
+    build();
   });
 
   $('#procKernel').addEventListener('change', e => {

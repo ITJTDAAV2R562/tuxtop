@@ -249,7 +249,7 @@ impl ProcSampler {
         top_n: usize,
         window_ms: u32,
         interval_secs: u32,
-        tx: mpsc::Sender<Vec<crate::procs::ProcInfo>>,
+        tx: mpsc::Sender<crate::procs::ProcFrame>,
     ) -> std::io::Result<Self> {
         let cmd = crate::procs::process_loop_command(top_n, window_ms, interval_secs);
         let args = ssh_args(&host, &cmd);
@@ -276,11 +276,17 @@ impl ProcSampler {
 async fn proc_pump(
     host: HostConfig,
     stdout: tokio::process::ChildStdout,
-    tx: mpsc::Sender<Vec<crate::procs::ProcInfo>>,
+    tx: mpsc::Sender<crate::procs::ProcFrame>,
 ) {
     let mut reader = BufReader::new(stdout);
     let mut buf = String::new();
     let mut chunk = vec![0u8; 16 * 1024];
+    // Cgroup CPU is a cumulative counter, so it needs the previous frame and
+    // the real time between them. Kept here, per connection, for the same
+    // reason `RateTracker` is: the configured interval is what we asked for,
+    // not what we got.
+    let mut rates = crate::procs::CgroupRates::new();
+    let mut last_at: Option<std::time::Instant> = None;
 
     loop {
         let n = match reader.read(&mut chunk).await {
@@ -290,19 +296,31 @@ async fn proc_pump(
         buf.push_str(&String::from_utf8_lossy(&chunk[..n]));
 
         let (frames, rest) = sampler::split_frames(&buf);
-        let parsed: Vec<_> = frames
-            .into_iter()
-            .map(|f| crate::procs::parse_processes(&host.name, f))
-            .collect();
+        let texts: Vec<String> = frames.into_iter().map(str::to_string).collect();
         buf = rest.to_string();
 
-        for p in parsed {
+        for text in texts {
+            let procs = crate::procs::parse_processes(&host.name, &text);
             // An empty frame means the denominator was missing, which is
             // reported as nothing rather than as an idle machine.
-            if p.is_empty() {
+            if procs.is_empty() {
                 continue;
             }
-            if tx.send(p).await.is_err() {
+
+            let now = std::time::Instant::now();
+            let elapsed = last_at.map(|t| now.duration_since(t).as_secs_f64());
+            last_at = Some(now);
+            let cg = crate::procs::parse_cgroups(&text);
+            // The first frame has nothing to differentiate against; its
+            // cgroups still carry memory and pid counts, which need no delta.
+            let cgroups = rates.update(&cg, elapsed.unwrap_or(0.0));
+
+            let frame = crate::procs::ProcFrame {
+                host: host.name.clone(),
+                procs,
+                cgroups,
+            };
+            if tx.send(frame).await.is_err() {
                 return;
             }
         }

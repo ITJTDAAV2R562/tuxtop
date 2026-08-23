@@ -8,6 +8,19 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
+/// One host's process sample: the ranked processes and the cgroup accounting
+/// that arrived with them.
+///
+/// Both come from the same remote command and the same instant, so they are
+/// delivered together rather than as two streams that could disagree about
+/// which moment they describe.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ProcFrame {
+    pub host: String,
+    pub procs: Vec<ProcInfo>,
+    pub cgroups: Vec<CgroupUsage>,
+}
+
 /// One cgroup's resource use, as the host reports it.
 ///
 /// The counter is cumulative; `CgroupRates` turns consecutive samples into a
