@@ -18,13 +18,18 @@ env:
 jobs:
   core:
     name: core — tests, lints, checkers
-    runs-on: ubuntu-latest
+    # dove: 32 cores, self-hosted. Self-hosted minutes are not billed, which is
+    # why CI runs at all — GitHub-hosted jobs on this account are blocked on a
+    # payment state. See docs/infrastructure-runbook.md for the runner.
+    runs-on: [self-hosted, linux, dove]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
-      - uses: Swatinem/rust-cache@v2
+      # No Swatinem/rust-cache here: the workspace and ~/.cargo persist between
+      # runs on a self-hosted runner, so target/ is already warm. Restoring a
+      # cache over it would be slower, not faster.
 
       # tuxtop-core builds and tests anywhere, which is the whole reason it is
       # a separate crate outside the Tauri workspace (ADR-006).
@@ -50,7 +55,7 @@ jobs:
 
   browser:
     name: browser — layout and load order
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, dove]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -62,6 +67,9 @@ jobs:
 
   windows:
     name: windows — the Tauri shell compiles
+    # Still GitHub-hosted, so still blocked on the payment state: dove is Linux
+    # and cannot build this. Until a Windows runner exists, scripts/verify.sh
+    # closes this gate locally through the toolchain at /mnt/c.
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
