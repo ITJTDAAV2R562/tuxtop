@@ -227,8 +227,15 @@
   function ordered() {
     const list = hosts.slice();
     if (prefs.sort === 'load') {
-      // In the fleet view "busiest" means the metric on screen, not always CPU.
-      const m = prefs.view === 'all' ? metric() : METRICS.cpu;
+      // "Busiest" means the metric on screen, not always CPU - in Heat that is
+      // its own pref. Read from METRICS directly rather than calling
+      // heatMetric(), which is declared further down: ordered() is reachable
+      // from module-scope startup, and a const arrow referenced before its
+      // initialiser throws in the temporal dead zone. That exact shape once
+      // brought the whole UI up inert with one console line.
+      const m = prefs.view === 'all' ? metric()
+        : prefs.view === 'heat' ? (METRICS[prefs.heatMetric] || METRICS.cpu)
+        : METRICS.cpu;
       return list.sort((a, b) => (m.scalar(b) || 0) - (m.scalar(a) || 0));
     }
     if (prefs.sort === 'name') {

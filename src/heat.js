@@ -59,13 +59,22 @@
   }
 
   /**
-   * Order hosts for display: grouped hosts first, by group name, then the
-   * ungrouped. Every host keeps its own row - the heatmap is the one view with
-   * room for all nineteen, so nothing is aggregated and ADR-008 has nothing to
-   * hide behind.
+   * Cluster hosts by group, preserving the caller's order within each group.
+   *
+   * Grouped first, by group name, then the ungrouped. Within a group the
+   * incoming order survives untouched - `Array.sort` is stable - which is what
+   * lets the toolbar's Sort control still mean something here. Sorting by name
+   * inside this function instead would silently override the user's choice,
+   * leaving a visible control that does nothing; grouping is durable
+   * structure, ordering is the transient question, and this decides only the
+   * first.
+   *
+   * Every host keeps its own row - the heatmap is the one view with room for
+   * all nineteen, so nothing is aggregated and ADR-008 has nothing to hide
+   * behind.
    */
   function heatOrder(hosts) {
-    const key = h => (h.group ? '0' + h.group : '1') + ' ' + h.name;
+    const key = h => (h.group ? '0' + h.group : '1');
     return [...hosts].sort((a, b) => key(a).localeCompare(key(b)));
   }
 

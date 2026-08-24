@@ -260,6 +260,22 @@ had. `scripts/harness.py` symlinks `src/` rather than copying it; a copy goes
 stale and a suite that passes against code that no longer exists is worse than
 no suite.
 
+**A slow E2E suite is a bug in the harness, not a reason to raise a timeout.**
+`scripts/harness.py --serve` uses `ThreadingTCPServer`. It was a plain
+`TCPServer` - one request at a time - and the page pulls ten files while
+several Playwright workers load it at once, so requests queued behind each
+other and page loads crept toward the 30 s per-test timeout. That presented as
+three layout tests failing at random, was written off as flaky twice, and was
+neither: the worst test went 23.9 s to 8.0 s and the suite 2.2 m to 1.0 m by
+making the server threaded. Before touching `retries` or a timeout, check what
+the suite is actually waiting on.
+
+**Then check your own machine before blaming the suite.** The residual failures
+after that fix were self-inflicted - a `tuxtop-serve` and a desktop app running
+against nineteen hosts each, 45 ssh sessions on a 16-core box. With those
+stopped: four consecutive clean runs at 1.1 m. Load average is worth a glance
+before a diagnosis.
+
 **A browser test can pass without testing anything.** The core-column test ran
 at a width where eight charts fit and eleven did not — so "snap to a multiple
 of eight" and "as many as fit" both answered 8, and it passed against a

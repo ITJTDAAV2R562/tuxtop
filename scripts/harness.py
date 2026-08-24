@@ -86,9 +86,16 @@ def main() -> int:
         import socketserver
 
         os.chdir(out)
-        socketserver.TCPServer.allow_reuse_address = True
-        with socketserver.TCPServer(("127.0.0.1", a.serve),
-                                    http.server.SimpleHTTPRequestHandler) as srv:
+        # Threaded, deliberately. A single-threaded TCPServer serves one
+        # request at a time, and the page pulls ten files while several
+        # Playwright workers load it at once - so requests queued behind each
+        # other and page loads crept toward the 30 s test timeout. That looked
+        # exactly like flaky layout tests, and was misdiagnosed as one twice.
+        socketserver.ThreadingTCPServer.allow_reuse_address = True
+        # Don't let a hung request keep the process alive after serve_forever.
+        socketserver.ThreadingTCPServer.daemon_threads = True
+        with socketserver.ThreadingTCPServer(("127.0.0.1", a.serve),
+                                             http.server.SimpleHTTPRequestHandler) as srv:
             print(f"serving on http://127.0.0.1:{a.serve}/index.html")
             srv.serve_forever()
     return 0

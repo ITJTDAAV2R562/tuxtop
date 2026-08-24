@@ -56,7 +56,7 @@ test('coverage_distinguishes_a_quiet_host_from_a_silent_one', () => {
   assert.equal(coverage(silent), 0, 'reporting nothing is none');
 });
 
-test('rows_order_grouped_hosts_before_ungrouped', () => {
+test('rows_cluster_by_group_with_ungrouped_last', () => {
   const hosts = [
     { name: 'zebra' }, { name: 'dove', group: 'physical' },
     { name: 'alpha' }, { name: 'coot', group: 'physical' },
@@ -66,7 +66,20 @@ test('rows_order_grouped_hosts_before_ungrouped', () => {
   // Groups sort case-insensitively, so "physical" precedes "VM" -- alphabetical
   // as a reader means it, not as ASCII means it, where every capital sorts
   // ahead of every lowercase and "VM" would jump the list.
-  assert.deepEqual(order, ['coot', 'dove', 'roller', 'alpha', 'zebra']);
+  assert.deepEqual(order, ['dove', 'coot', 'roller', 'zebra', 'alpha']);
+});
+
+test('order_within_a_group_is_the_callers_not_ours', () => {
+  // The caller has already applied the toolbar's Sort control. Re-sorting by
+  // name here would leave a visible control that does nothing -- which is
+  // exactly what shipped in 98472b2 and this pins shut.
+  const byLoad = [
+    { name: 'quiet', group: 'g' },
+    { name: 'busiest', group: 'g' },
+    { name: 'middling', group: 'g' },
+  ];
+  assert.deepEqual(heatOrder(byLoad).map(h => h.name),
+                   ['quiet', 'busiest', 'middling']);
 });
 
 test('group_breaks_mark_every_boundary_and_nothing_else', () => {

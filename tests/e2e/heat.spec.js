@@ -97,3 +97,25 @@ test('Heat keeps its own metric, and does not offer vector ones', async ({ page 
   await page.click('#viewAll');
   await expect(page.locator('#metricSel')).toHaveValue(fleetMetric);
 });
+
+test('the Sort control actually reorders the strip', async ({ page }) => {
+  await openHeat(page);
+  const names = () => page.locator('.heatrow .hl').allTextContents();
+
+  const before = await names();
+  await page.selectOption('#sortSel', 'name');
+  const byName = await names();
+
+  // Grouping is structure and survives any sort, so compare within a group
+  // rather than across the whole list.
+  const firstGroup = byName.slice(0, 3);
+  expect([...firstGroup].sort()).toEqual(firstGroup);
+
+  await page.selectOption('#sortSel', 'load');
+  const byLoad = await names();
+  // A visible control that changes nothing is the bug this guards: every
+  // ordering here must differ from at least one other.
+  expect(new Set([before.join(), byName.join(), byLoad.join()]).size)
+    .toBeGreaterThan(1);
+  expect(byLoad.length).toBe(before.length);
+});
