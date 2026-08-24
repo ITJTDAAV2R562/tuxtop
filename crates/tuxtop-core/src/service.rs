@@ -277,6 +277,41 @@ impl Service {
             .collect()
     }
 
+    /// One metric across the whole fleet, in one call.
+    ///
+    /// The mirror of `query_history_many`, and for the same reason: the
+    /// heatmap draws every host at once, so asking per host would be nineteen
+    /// round trips per redraw - and the slider redraws on every drag - for
+    /// data behind the same lock.
+    ///
+    /// Hosts with no history for the metric are returned as empty vectors
+    /// rather than omitted, so the caller can tell "not reporting" from "not
+    /// configured" without cross-checking the host list.
+    pub fn query_history_fleet(
+        &self,
+        metric: &str,
+        from_secs_ago: u64,
+        to_secs_ago: u64,
+        max_points: usize,
+    ) -> Result<HashMap<String, Vec<Point>>, String> {
+        let now = now_secs();
+        let from = now.saturating_sub(from_secs_ago);
+        let to = now.saturating_sub(to_secs_ago);
+        let budget = max_points.clamp(1, MAX_POINTS);
+        // Propagated, not defaulted: an unreadable host list rendered as an
+        // empty heatmap is a view that says "the fleet is quiet" when what it
+        // means is "I could not find out".
+        Ok(self
+            .config
+            .load()?
+            .into_iter()
+            .map(|h| {
+                let pts = self.history.query(&h.name, metric, from, to, budget);
+                (h.name, pts)
+            })
+            .collect())
+    }
+
     pub fn history_usage(&self) -> HistoryUsage {
         self.history.usage()
     }
@@ -317,6 +352,25 @@ mod tests {
         // It is on disk, not merely in memory: a restart must find it.
         assert_eq!(s.list_hosts().unwrap()[0].name, "dove");
         assert!(matches!(rx.try_recv(), Ok(Event::HostsChanged(h)) if h.len() == 1));
+        let _ = std::fs::remove_file(p);
+    }
+
+    #[tokio::test]
+    async fn a_host_with_no_history_is_an_empty_series_not_a_missing_key() {
+        // The heatmap draws one row per configured host and needs to say "no
+        // data" for a host that is not reporting. If the map simply omitted
+        // it, the row would have to be inferred from a separate host-list
+        // call, and a host that never reported would silently vanish from a
+        // view whose whole job is showing the whole fleet. This is how N1,
+        // misconfigured and delivering nothing, still gets a labelled row.
+        let (s, _rx, p) = svc("fleet-empty");
+        s.add_host(host("dove")).unwrap();
+        s.add_host(host("silent")).unwrap();
+
+        let out = s.query_history_fleet("cpu", 60, 0, 30).unwrap();
+        assert_eq!(out.len(), 2, "every configured host is a key");
+        assert!(out.contains_key("silent"));
+        assert!(out["silent"].is_empty());
         let _ = std::fs::remove_file(p);
     }
 

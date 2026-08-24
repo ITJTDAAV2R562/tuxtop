@@ -117,6 +117,14 @@
           return structuredClone(hosts);
         }
         if (cmd === 'query_history') return invokeHistory(args);
+        if (cmd === 'query_history_fleet') {
+          // Mirrors Service::query_history_fleet: every configured host is a
+          // key, including ones with no history, so the caller can tell "not
+          // reporting" from "not configured".
+          const out = {};
+          for (const h of hosts) out[h.name] = invokeHistory({ ...args, host: h.name });
+          return out;
+        }
         if (cmd === 'query_history_many') {
           const out = {};
           for (const m of args.metrics) {

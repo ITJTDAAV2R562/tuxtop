@@ -215,7 +215,7 @@ one is how a monitoring tool acquires its first remote code execution.
 ## Testing
 
 ```sh
-cargo test        # 221 tests, no GUI toolchain needed, runs anywhere
+cargo test        # 222 tests, no GUI toolchain needed, runs anywhere
 cargo clippy --all-targets
 cargo fmt
 node --test 'tests/*.test.js'           # pure logic: aggregation, scale, filters
@@ -244,6 +244,7 @@ the DOM; everything that decides a *value* lives in a UMD module and is tested:
 | `src/pick.js` | which of a host's many readings matters (fullest mount, hottest sensor) |
 | `src/filter.js` | what to show and in what order |
 | `src/agg.js` | how a group combines (ADR-008) |
+| `src/heat.js` | how a span of time becomes one cell (ADR-011) |
 
 Load order in `index.html` matters: the modules come first and `app.js` binds
 them at the top of its IIFE. Adding logic to `app.js` that could be in a module

@@ -171,6 +171,14 @@ async fn command(
             n("toSecsAgo"),
             n("maxPoints") as usize,
         ))),
+        "query_history_fleet" => svc
+            .query_history_fleet(
+                &s("metric"),
+                n("fromSecsAgo"),
+                n("toSecsAgo"),
+                n("maxPoints") as usize,
+            )
+            .map(|v| json!(v)),
         "query_history_many" => serde_json::from_value::<Vec<String>>(arg("metrics"))
             .map_err(|e| e.to_string())
             .map(|m| {

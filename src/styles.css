@@ -29,6 +29,8 @@
   --viz-net:#0F7B3E;
   --viz-gpu:#A63289;
   --tile-halo:rgba(255,255,255,.85);
+  --heat-ground:#DDE3EC;
+  --heat-gap:#F2F4F8;
   --on-accent:#FFFFFF;
 
   /* metal + reveal */
@@ -75,6 +77,8 @@
     --viz-net:#4ED88A;
     --viz-gpu:#F084CE;
     --tile-halo:rgba(0,0,0,.62);
+    --heat-ground:#26303D;
+    --heat-gap:#161C24;
 
     /* metal + reveal */
     --bevel-top:rgba(255,255,255,.14);
@@ -118,6 +122,8 @@
   --viz-net:#4ED88A;
   --viz-gpu:#F084CE;
   --tile-halo:rgba(0,0,0,.62);
+  --heat-ground:#26303D;
+  --heat-gap:#161C24;
   --on-accent:#07131E;
 
   /* metal + reveal */
@@ -1165,3 +1171,41 @@ body[data-bands="off"] .legend span:not(:last-child){display:none}
 body[data-readonly="yes"] #addBtn,
 body[data-readonly="yes"] .kill,
 body[data-readonly="yes"] .grip { display: none }
+
+/* ============ heat: the fleet over time ============ */
+.grid.heat-mode{
+  display:block;padding:0 14px 14px;
+}
+.heatwrap{
+  display:grid;grid-template-columns:auto 1fr auto;gap:2px 10px;align-items:center;
+}
+.heatrow{display:contents}
+.heatrow .hl{
+  font-size:12px;color:var(--text-2);text-align:right;white-space:nowrap;
+  font-variant-numeric:tabular-nums;
+}
+.heatrow.faulted .hl{color:var(--warn)}
+.heatrow canvas{
+  display:block;width:100%;height:18px;border-radius:3px;cursor:pointer;
+  background:var(--heat-gap);
+}
+.heatrow .hm{
+  font-size:11px;color:var(--text-3);white-space:nowrap;
+  font-variant-numeric:tabular-nums;min-width:6ch;text-align:right;
+}
+.heatrow.gapped .hm{color:var(--warn)}
+/* A ruled line where the group changes, so the ordering is visible as
+   structure rather than something the reader has to infer from names. */
+.heatrow.groupstart .hl,
+.heatrow.groupstart canvas,
+.heatrow.groupstart .hm{margin-top:7px}
+.heatgroup{
+  grid-column:1 / -1;font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;
+  color:var(--text-3);margin-top:9px;border-top:1px solid var(--stroke);padding-top:6px;
+}
+.heatgroup:first-child{margin-top:0;border-top:0;padding-top:0}
+.heataxis{
+  grid-column:2 / 3;display:flex;justify-content:space-between;
+  font-size:10.5px;color:var(--text-3);margin-top:5px;
+}
+.heat-note{font-size:11.5px;color:var(--text-3)}

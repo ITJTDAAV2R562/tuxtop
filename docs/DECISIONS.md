@@ -524,3 +524,70 @@ feature.
 Someone is repeatedly reaching for a terminal *while looking at Tuxtop* to do
 the same small thing, and the risk of doing it to the wrong host has been
 designed out rather than confirmed away.
+
+---
+
+## ADR-011 — A heatmap cell shows the bucket's max, not its mean
+
+**Date:** 2026-08-24 · **Status:** accepted
+
+### Context
+
+Phase 12 draws the fleet as rows of coloured cells over time. A cell is a time
+bucket, and at any window wider than a few minutes a bucket holds many samples:
+at 1 Hz over 24 hours, one cell of a 600-column strip covers 144 samples.
+
+Something has to reduce those samples to one colour. `Point` already carries
+`min`, `mean` and `max`, so the choice is free either way — which is exactly
+why it needs deciding on purpose rather than by whichever field the first
+draft reached for.
+
+**Mean is the obvious default and it is wrong here.** A host pinned at 100% for
+twenty seconds inside a 144-second bucket has a mean of 14%. That renders as a
+pale, unremarkable cell — a confident, well-formatted, wrong impression, and
+the same arithmetic that made the Beszel agent report `0.14%` during 25% load.
+This project exists because of that number. Reproducing it in our own chart,
+in the view whose entire purpose is *seeing spikes*, would be the sharpest
+possible own goal.
+
+### Decision
+
+**A heatmap cell is coloured by `max` over its bucket.** The strip answers
+"did this host spike in this span", not "what was its average".
+
+Consequences, accepted deliberately:
+
+- **Wider windows look busier, not calmer.** Zooming out from 1 h to 24 h makes
+  more cells red, because each cell now covers more chances to spike. This is
+  the correct direction: the alternative is a 7-day view that looks idle
+  because every spike was averaged into its neighbours.
+- **A cell is not comparable to a card's number.** The card shows the latest
+  sample; the cell shows the worst in its span. The view says so in words
+  rather than leaving it to be inferred, the same way the log-scaled fleet bars
+  state their bounds
+  ([ADR-005](#adr-005--load-is-encoded-three-ways-at-once) and the log-scale
+  note in ARCHITECTURE.md).
+- **Hover states the bucket honestly** — `min–max, mean`, and how many samples
+  it covers — so the reduction is inspectable rather than a claim.
+
+This is the same rule as
+[ADR-008](#adr-008--aggregates-must-not-be-able-to-hide-a-member), one axis
+over. ADR-008 says an aggregate across *hosts* must not hide a member; this
+says an aggregate across *time* must not hide a moment. Both exist because the
+failure mode is a plausible number, not a missing one.
+
+### Rejected
+
+**Mean.** Hides exactly what the view is for. Discussed above.
+
+**Mean, with max on hover.** The colour is the whole interface at a glance;
+"available on hover" is not available. A user scanning nineteen rows for
+something red never hovers the cell that looks calm.
+
+**A user-facing mean/max toggle.** Two readings of the same chart, one of which
+is misleading for the task, and a setting that silently changes what a colour
+means between sessions. The strip has one job.
+
+**p95 or similar.** Better than mean and still a reduction that can drop a
+one-sample spike — at 1 Hz a 2-second spike inside a 144-sample bucket is
+below p95. Also needs the raw samples, which the coarser tiers no longer hold.

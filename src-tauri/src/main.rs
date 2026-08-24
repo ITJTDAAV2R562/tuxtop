@@ -137,6 +137,17 @@ fn query_history(
 }
 
 #[tauri::command]
+fn query_history_fleet(
+    svc: Svc<'_>,
+    metric: String,
+    from_secs_ago: u64,
+    to_secs_ago: u64,
+    max_points: usize,
+) -> Result<std::collections::HashMap<String, Vec<tuxtop_core::history::Point>>, String> {
+    svc.query_history_fleet(&metric, from_secs_ago, to_secs_ago, max_points)
+}
+
+#[tauri::command]
 fn query_history_many(
     svc: Svc<'_>,
     host: String,
@@ -171,6 +182,7 @@ fn main() {
             cgroup_list,
             query_history,
             query_history_many,
+            query_history_fleet,
             history_usage
         ])
         .setup(|app| {

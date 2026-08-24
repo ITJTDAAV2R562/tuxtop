@@ -15,6 +15,7 @@
   const { fullestFs, fsPct, sensorName, sensorMetric, hottestSensor,
           machine, machineLabel, stealIsMeaningful } = TuxPick;
   const { matchesHost, matchesProcess } = TuxFilter;
+  const { heatRow, coverage, heatOrder, groupBreaks, ramp, mixHex } = TuxHeat;
 
   const $ = s => document.querySelector(s);
   const grid = $('#grid');
@@ -56,7 +57,11 @@
       // set rather than the nearest step to a rounded number of seconds.
       // 0 is the minimum, 60 s - the live end, which is where someone opening
       // History from a card they are watching almost always wants to be.
-      histWin: 0 },
+      histWin: 0,
+      // Heat excludes vector metrics, so it cannot always honour the Fleet
+      // view's choice. Its own key keeps switching views from silently
+      // rewriting the other's.
+      heatMetric: 'cpu' },
     JSON.parse(localStorage.getItem(PREFS) || '{}')
   );
   const savePrefs = () => localStorage.setItem(PREFS, JSON.stringify(prefs));
@@ -842,7 +847,9 @@
     'dot' + (h.fault ? ' warnstate' : (LIVE && !h.seen ? ' pending' : ''));
 
   function build() {
-    $('#histbar').hidden = prefs.view !== 'history';
+    $('#histbar').hidden = prefs.view !== 'history' && prefs.view !== 'heat';
+    $('#histSwap').hidden = prefs.view === 'heat';
+    $('[data-heat-note]').hidden = prefs.view !== 'heat';
     $('#procbar').hidden = prefs.view !== 'procs';
     $('#hostFilterWrap').hidden = prefs.view === 'procs';
     showFilterNote();
@@ -851,6 +858,7 @@
     stopHistoryTimer();
     grid.classList.remove('hist-mode');
     if (prefs.view === 'procs') return buildProcs();
+    if (prefs.view === 'heat') return buildHeat();
     if (prefs.view === 'all') return buildFleet();
     document.body.dataset.bands = 'on';
     grid.classList.remove('all-mode');
@@ -1026,7 +1034,7 @@
     if (frozen) return;   // a rebuild mid-drag would drop the dragged card
     // History redraws on its own cadence, not on every 1 Hz sample: refetching
     // a week of buckets once a second would be absurd.
-    if (prefs.view === 'history' || prefs.view === 'procs') return;
+    if (prefs.view === 'history' || prefs.view === 'procs' || prefs.view === 'heat') return;
     if (prefs.view === 'all') return paintFleet();
     const A = css('--accent'), MEM = css('--viz-mem'),
           DSK = css('--viz-disk'), NET = css('--viz-net'), GPU = css('--viz-gpu');
@@ -1271,10 +1279,16 @@
   // markup change.
   const msel = $('#metricSel');
 
+  /** Which pref the shared metric picker reads and writes in this view. */
+  const metricPref = () => (prefs.view === 'heat' ? 'heatMetric' : 'metric');
+
   function refreshMetricOptions() {
-    const avail = availableMetrics();
+    // Heat draws one row per host, so a vector metric has nothing to put in
+    // it - the same reason History's compare-across-fleet mode excludes them.
+    const heat = prefs.view === 'heat';
+    const avail = availableMetrics().filter(([, m]) => !heat || m.shape !== 'vector');
     const ids = avail.map(([id]) => id);
-    const current = ids.join(',');
+    const current = (heat ? 'heat|' : 'all|') + ids.join(',');
     if (msel.dataset.ids === current) return;
     msel.dataset.ids = current;
 
@@ -1288,11 +1302,12 @@
     // is rewriting the preference correct - never merely because data has not
     // arrived yet.
     const reporting = hosts.some(h => h.seen || !LIVE);
-    if (reporting && !ids.includes(prefs.metric)) {
-      prefs.metric = ids[0] || 'cores';
+    const key = metricPref();
+    if (reporting && !ids.includes(prefs[key])) {
+      prefs[key] = ids[0] || (heat ? 'cpu' : 'cores');
       savePrefs();
     }
-    msel.value = prefs.metric;
+    msel.value = prefs[key];
   }
   refreshMetricOptions();
 
@@ -1301,8 +1316,10 @@
     $('#viewHosts').setAttribute('aria-pressed', String(v === 'hosts'));
     $('#viewAll').setAttribute('aria-pressed', String(v === 'all'));
     $('#viewHist').setAttribute('aria-pressed', String(v === 'history'));
+    $('#viewHeat').setAttribute('aria-pressed', String(v === 'heat'));
     $('#viewProcs').setAttribute('aria-pressed', String(v === 'procs'));
-    $('#metricWrap').hidden = v !== 'all';
+    // Heat shares the Fleet view's metric picker, reading its own pref.
+    $('#metricWrap').hidden = v !== 'all' && v !== 'heat';
     $('#histWrap').hidden = v !== 'history';
     // Card ordering means nothing to a process table, which sorts itself.
     $('#sortSel').closest('.sortwrap').hidden = v === 'procs';
@@ -1310,7 +1327,7 @@
   }
 
   msel.addEventListener('change', e => {
-    prefs.metric = e.target.value; savePrefs();
+    prefs[metricPref()] = e.target.value; savePrefs();
     build(); paint();
   });
   $('#viewHosts').addEventListener('click', () => setView('hosts'));
@@ -1319,6 +1336,16 @@
   // everywhere", which is the slice already on screen. From Hosts it keeps
   // whatever host was last shown.
   $('#viewProcs').addEventListener('click', () => setView('procs'));
+  $('#viewHeat').addEventListener('click', () => {
+    // Arriving from Fleet with a scalar metric on screen, keep it: "this
+    // metric, everywhere" gains a time axis rather than changing subject.
+    const m = METRICS[prefs.metric];
+    if (prefs.view === 'all' && m && m.shape !== 'vector') {
+      prefs.heatMetric = prefs.metric;
+      savePrefs();
+    }
+    setView('heat');
+  });
   $('#viewHist').addEventListener('click', () => {
     if (prefs.view === 'all') {
       // Vector metrics are valid in history now - "CPU cores across the
@@ -1341,13 +1368,14 @@
   $('#viewAll').setAttribute('aria-pressed', String(prefs.view === 'all'));
   $('#viewHist').setAttribute('aria-pressed', String(prefs.view === 'history'));
   $('#viewProcs').setAttribute('aria-pressed', String(prefs.view === 'procs'));
+  $('#viewHeat').setAttribute('aria-pressed', String(prefs.view === 'heat'));
   // The filter belongs to the views that draw hosts. Processes has its own,
   // which searches different things.
   $('#hostFilterWrap').hidden = prefs.view === 'procs';
-  $('#metricWrap').hidden = prefs.view !== 'all';
+  $('#metricWrap').hidden = prefs.view !== 'all' && prefs.view !== 'heat';
   $('#histWrap').hidden = prefs.view !== 'history';
   $('#sortSel').closest('.sortwrap').hidden = prefs.view === 'procs';
-  $('#histbar').hidden = prefs.view !== 'history';
+  $('#histbar').hidden = prefs.view !== 'history' && prefs.view !== 'heat';
 
   /// How many columns currently fit, for each of the two grid shapes.
   ///
@@ -1647,6 +1675,173 @@
   let histTimer = null;
   let histBusy = false;
 
+  // ---------------------------------------------------------------- HEAT
+  //
+  // The fleet as rows, time as columns. Neither of the other views can show
+  // this: the live grid is every host at one instant, History is a window but
+  // only a few subjects. Here a whole window and the whole fleet are on screen
+  // together, which is what makes "coot spiked twenty minutes ago" a thing you
+  // notice rather than a thing you go looking for.
+  //
+  // Every host keeps its own row. This is the one view with room for all
+  // nineteen, so nothing is aggregated and ADR-008 has nothing to hide behind:
+  // groups are drawn as headings, not as summaries.
+
+  const heatMetric = () => METRICS[prefs.heatMetric] || METRICS.cpu;
+
+  function buildHeat() {
+    stopHistoryTimer();
+    grid.classList.remove('all-mode', 'hist-mode');
+    grid.classList.add('heat-mode');
+    document.body.dataset.bands = 'on';
+    grid.style.removeProperty('--tile');
+    refreshMetricOptions();
+
+    const list = heatOrder(visible());
+    if (!list.length) { grid.innerHTML = ''; return showEmpty('No hosts match the filter.'); }
+
+    const breaks = new Set(groupBreaks(list));
+    let html = '<div class="heatwrap">';
+    list.forEach((h, i) => {
+      if (i === 0 || breaks.has(i)) {
+        html += `<div class="heatgroup">${esc(h.group || 'ungrouped')}</div>`;
+      }
+      html += `<div class="heatrow" data-host="${esc(h.name)}">` +
+              `<span class="hl">${esc(h.name)}</span><canvas></canvas>` +
+              `<span class="hm"></span></div>`;
+    });
+    html += '<div class="heataxis"><span data-heat-from></span><span>now</span></div></div>';
+    grid.innerHTML = html;
+
+    for (const cv of grid.querySelectorAll('.heatrow canvas')) {
+      // A cell that catches the eye is a question about one host, and History
+      // is where it gets answered.
+      cv.addEventListener('click', () => {
+        prefs.slice = { mode: 'host', host: cv.closest('.heatrow').dataset.host };
+        savePrefs();
+        setView('history');
+      });
+      // ADR-011 reduces a bucket to its worst sample, so the reduction has to
+      // be inspectable rather than a claim: hovering states the whole bucket.
+      cv.addEventListener('mousemove', e => {
+        const cells = cv._cells;
+        if (!cells || !cells.length) return;
+        const r = cv.getBoundingClientRect();
+        const i = Math.max(0, Math.min(cells.length - 1,
+          Math.floor((e.clientX - r.left) / r.width * cells.length)));
+        const c = cells[i];
+        const m = heatMetric();
+        cv.title = c.v === null ? 'no sample in this slice'
+          : `${m.fmt(c.min)}–${m.fmt(c.v)}, mean ${m.fmt(c.mean)} ` +
+            `· ${c.n} sample${c.n === 1 ? '' : 's'}`;
+      });
+    }
+
+    startHistoryTimer();
+    refreshHeat();
+  }
+
+  async function refreshHeat() {
+    if (prefs.view !== 'heat') return;
+    const rows = [...grid.querySelectorAll('.heatrow')];
+    if (!rows.length) return;
+
+    const m = heatMetric();
+    const id = prefs.heatMetric;
+    const secs = sliderToSecs(+$('#histWindow').value);
+    $('[data-hist-span]').textContent = 'last ' + fmtSpan(secs);
+    const nowS = Math.floor(Date.now() / 1000);
+    const win = { from: nowS - secs, to: nowS };
+    // Never ask for more columns than the window can actually hold samples.
+    // Sampling is at most 1 Hz, so a 60 s window has at most 60 distinct
+    // readings; drawing it as 1200 pixel-wide cells invents 1140 empty ones
+    // and then reports them as "95% gap" - a missing-data warning manufactured
+    // entirely by the chart's own resolution. Wide windows are bounded by the
+    // pixels instead, at three per cell.
+    const px = rows[0].querySelector('canvas').clientWidth || 320;
+    const cols = Math.max(20, Math.min(Math.round(px / 3), secs));
+
+    let byHost = {};
+    if (LIVE) {
+      // One call for the fleet. Nineteen would be nineteen round trips per
+      // redraw, and the slider redraws on every drag.
+      try {
+        byHost = await TAURI.core.invoke('query_history_fleet', {
+          metric: id, fromSecsAgo: secs, toSecsAgo: 0, maxPoints: cols,
+        });
+      } catch (err) { showError(String(err)); return; }
+    } else {
+      for (const r of rows) byHost[r.dataset.host] = simHistory(r.dataset.host, id, secs, cols);
+    }
+
+    // One peak for the whole strip, so a colour means the same thing on every
+    // row. Normalising each row against its own maximum would draw an idle
+    // host exactly like the busiest one, destroying the comparison this view
+    // exists to make - the same trap the log-scaled fleet bars avoid.
+    const byRow = new Map();
+    let peak = 0;
+    for (const r of rows) {
+      const cells = heatRow(byHost[r.dataset.host] || [], win, cols);
+      byRow.set(r, cells);
+      for (const c of cells) if (c.v !== null && c.v > peak) peak = c.v;
+    }
+    for (const r of rows) drawHeatRow(r, byRow.get(r), m, peak);
+
+    $('[data-heat-from]').textContent = fmtSpan(secs) + ' ago';
+    $('[data-heat-note]').textContent =
+      `${m.label} · each cell is the peak in its slice, not its average`;
+  }
+
+  function drawHeatRow(row, cells, m, peak) {
+    const cv = row.querySelector('canvas');
+    cv._cells = cells;
+    const w = cv.clientWidth, h = cv.clientHeight;
+    if (!w || !h) return;
+    const dpr = devicePixelRatio || 1;
+    cv.width = Math.round(w * dpr);
+    cv.height = Math.round(h * dpr);
+    const ctx = cv.getContext('2d');
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+
+    const gapFill = css('--heat-gap');
+    const cw = w / cells.length;
+    for (let i = 0; i < cells.length; i++) {
+      const c = cells[i];
+      if (c.v === null) {
+        ctx.fillStyle = gapFill;
+      } else {
+        const t = m.scale === 'log' ? normalise(m, c.v, peak) : c.v / (m.max || 100);
+        const r = ramp(t);
+        ctx.fillStyle = mixHex(css(r.a), css(r.b), r.k);
+      }
+      // +1 so neighbours do not leave hairline seams at fractional widths.
+      ctx.fillRect(i * cw, 0, cw + 1, h);
+    }
+
+    const cov = coverage(cells);
+    const seen = cells.filter(c => c.v !== null);
+    const rowPeak = seen.length ? Math.max(...seen.map(c => c.v)) : null;
+
+    // Only a real deficit is called a gap. A column is one second and samples
+    // arrive about once a second, so ordinary sub-second jitter - two landing
+    // in one second, none in the next - leaves 2-10% of columns empty on a
+    // perfectly healthy host. Flagging that made every row shout, which is the
+    // same as no row shouting. Below 90% is a host actually delivering less
+    // than it was asked for, which is worth seeing: measured against the real
+    // fleet, towhee at 31 samples of 60 stands out while its neighbours at
+    // 58-60 stay quiet.
+    const GAP_FLOOR = 0.9;
+    // "Quiet" and "not reporting" must still never look alike - the same rule
+    // that keeps a fault from blanking a card.
+    row.classList.toggle('gapped', cov < GAP_FLOOR);
+    row.querySelector('.hm').textContent = rowPeak === null
+      ? 'no data'
+      : m.fmt(rowPeak) + (cov < GAP_FLOOR ? ` \u00b7 ${Math.round((1 - cov) * 100)}% gap` : '');
+    const host = hosts.find(x => x.name === row.dataset.host);
+    row.classList.toggle('faulted', !!(host && host.fault));
+  }
+
   function startHistoryTimer() {
     clearInterval(histTimer);
     histTimer = setInterval(tickHistory, HIST_REFRESH_MS);
@@ -1662,10 +1857,11 @@
   /// A fleet-wide core view issues a query per host; if a pass takes longer
   /// than the interval, stacking them would queue work faster than it drains.
   async function tickHistory() {
-    if (histBusy || prefs.view !== 'history' || document.hidden) return;
+    if (histBusy || document.hidden) return;
+    if (prefs.view !== 'history' && prefs.view !== 'heat') return;
     histBusy = true;
     try {
-      await refreshHistory();
+      await (prefs.view === 'heat' ? refreshHeat() : refreshHistory());
     } catch (e) {
       console.error('history refresh failed', e);
     } finally {
@@ -1990,7 +2186,8 @@
   });
 
   $('#histWindow').value = String(prefs.histWin ?? 0);
-  $('#histWindow').addEventListener('input', refreshHistory);
+  $('#histWindow').addEventListener('input',
+    () => (prefs.view === 'heat' ? refreshHeat() : refreshHistory()));
   // Saved on `change`, not `input`: dragging fires input per pixel, and
   // writing localStorage on every one of those to record a position the user
   // is still choosing is pure waste.

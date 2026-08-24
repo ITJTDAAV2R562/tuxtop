@@ -45,6 +45,7 @@
     <div class="seg" role="group" aria-label="View">
       <button id="viewHosts" aria-pressed="true">Hosts</button>
       <button id="viewAll" aria-pressed="false">Fleet</button>
+      <button id="viewHeat" aria-pressed="false">Heat</button>
       <button id="viewHist" aria-pressed="false">History</button>
       <button id="viewProcs" aria-pressed="false">Processes</button>
     </div>
@@ -84,6 +85,7 @@
 
   <div class="histbar" id="histbar" hidden>
     <button class="btn ghost hist-swap" id="histSwap"></button>
+    <span class="heat-note" data-heat-note hidden></span>
     <span class="tb-grow"></span>
     <label class="hist-range">
       <span data-hist-span></span>
@@ -230,6 +232,7 @@
 <script src="pick.js" charset="utf-8"></script>
 <script src="filter.js" charset="utf-8"></script>
 <script src="agg.js" charset="utf-8"></script>
+<script src="heat.js" charset="utf-8"></script>
 <!-- Installs a fetch/SSE backend only when neither Tauri nor the test stub has. -->
 <script src="http.js" charset="utf-8"></script>
 <script src="app.js" charset="utf-8"></script>

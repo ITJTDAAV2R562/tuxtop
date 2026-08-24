@@ -186,13 +186,19 @@ ordinary browser against a fake backend. Use it before hunting a UI bug by
 reading code — the "adding a second host removes the first" bug survived
 several rounds of inspection and was found in one pass there.
 
-## Two views, one matrix
+## Three views, one matrix
 
-The fleet is a matrix of **hosts x metrics**. The two views are the two ways to
-slice it:
+The fleet is a matrix of **hosts x metrics**, and time is its third axis. The
+views are the ways to slice it:
 
 - **Host view** - a row: one card per box, every metric for that box.
 - **Fleet view** - a column: one metric, every box.
+- **Heat view** - that same column, extended over time: one metric, every box,
+  the whole retained window. Rows are hosts, columns are time buckets, colour
+  is load. Nothing is aggregated across hosts - this is the one view with room
+  for all nineteen - and each cell is the **peak** of its bucket rather than
+  the mean, because a mean is precisely what hides a spike
+  ([ADR-011](DECISIONS.md#adr-011--a-heatmap-cell-shows-the-buckets-max-not-its-mean)).
 
 `src/app.js` holds a `METRICS` registry so this is a table rather than a pile
 of renderers. Each entry declares two things.

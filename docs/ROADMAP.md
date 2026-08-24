@@ -404,6 +404,47 @@ be kept honest.
 
 ---
 
+## Phase 12 - Heat: the fleet over time - **done**
+
+One row per host, time across, colour by load. Neither existing view can show
+this: the live grid is every host at one instant, History is a window but only
+a few subjects. Here the whole window and the whole fleet are on screen at
+once, which is what turns "coot spiked twenty minutes ago" from something you
+go looking for into something you notice.
+
+- **A cell is the peak of its bucket, never the mean.**
+  [ADR-011](DECISIONS.md#adr-011--a-heatmap-cell-shows-the-buckets-max-not-its-mean).
+  At 1 Hz over a day one cell covers 144 samples; a host pinned at 100% for
+  twenty seconds inside one has a mean of 14%, which is the same arithmetic
+  that made the Beszel agent report 0.14% during real load. Verified by
+  mutation: colouring by mean fails `a_cell_shows_the_bucket_max_not_its_mean`.
+- **Every host keeps its own row.** This is the one view with room for all
+  nineteen, so nothing is aggregated and ADR-008 has nothing to hide behind -
+  groups are headings, not summaries.
+- **Columns are bounded by the sample rate, not by pixels.** Drawing a 60 s
+  window as 1200 pixel-wide cells invents 1140 empty ones and then reports
+  them as "95% gap" - a missing-data warning manufactured entirely by the
+  chart's own resolution. Wide windows fall back to three pixels per cell.
+- **Only a real deficit is called a gap.** A column is one second and samples
+  arrive about once a second, so ordinary jitter empties 2-10% of columns on a
+  healthy host. Flagging that made every row shout. Below 90% is a host
+  genuinely delivering less than asked: against the real fleet, towhee at 31
+  samples of 60 stood out while its neighbours at 58-60 stayed quiet.
+- **One query for the fleet.** `query_history_fleet` is the mirror of
+  `query_history_many` and exists for the same reason - the slider redraws on
+  every drag, and nineteen round trips per redraw is the cost it avoids. Hosts
+  with no history come back as empty vectors rather than missing keys, so
+  "not reporting" stays distinguishable from "not configured": N1 renders as
+  **no data**, which is how its WSL-vs-Windows misconfiguration is visible at
+  a glance.
+- **Clicking a row opens that host in History**, because a cell that catches
+  the eye is a question about one host.
+
+Verified against the real nineteen-host fleet through `tuxtop-serve`, in both
+themes.
+
+---
+
 ## Non-goals
 
 **Alerting.** Deliberately out of scope, not merely unbuilt.

@@ -26,3 +26,6 @@ Thumbs.db
 .harness/
 test-results/
 playwright-report/
+
+# Scratch: screenshots, one-off diagnostic scripts. Never tracked.
+tmp/
