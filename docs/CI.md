@@ -88,22 +88,39 @@ Installed at `C:\actions-runner`, labels `self-hosted, windows, x64, n1`.
 `rustup` is already on the user PATH there, so the job installs no toolchain
 and `src-tauri/target` stays warm between runs.
 
-**It is not yet a Windows service.** Installing one needs Administrator, which
-this session does not have, so it currently runs from `run.cmd` and will not
-survive a reboot or logout. To make it permanent, from an **elevated**
-PowerShell:
+**It is started by a scheduled task at logon, not by a Windows service** -
+the task is named `GitHub Actions runner (tuxtop)`. Two reasons, and the second
+is the one that matters:
+
+- A service needs Administrator to install. The task does not.
+- `config.cmd --runasservice` defaults to running as **NT AUTHORITY\NETWORK
+  SERVICE**, which does not have the user PATH - so `cargo`, which lives in
+  `C:\Users\sam\.cargo\bin`, would not be found. Running it as the user
+  instead needs the account's password stored in the service. The logon task
+  sidesteps both: it runs as the logged-in user with that user's real
+  environment, and stores no password.
+
+There is no `svc.cmd` in the Windows runner package at all - only Linux ships
+one. The Windows equivalent is `config.cmd --runasservice`, with the caveat
+above.
 
 ```powershell
-cd C:\actions-runner
-.\svc.cmd install
-.\svc.cmd start
+Get-ScheduledTask -TaskName 'GitHub Actions runner (tuxtop)'   # check
+Start-ScheduledTask -TaskName 'GitHub Actions runner (tuxtop)' # start now
+Unregister-ScheduledTask -TaskName 'GitHub Actions runner (tuxtop)'  # remove
 ```
 
-Until then, restart it after a reboot with:
+The consequence to know: the runner comes up **at logon**, not at boot. If n1
+is rebooted and nobody logs in, the `windows` job queues until someone does.
 
-```powershell
-Start-Process -FilePath C:\actions-runner\run.cmd -WorkingDirectory C:\actions-runner -WindowStyle Hidden
-```
+### The PATH trap
+
+The first `windows` job failed with *"The term 'cargo' is not recognized"*. The
+runner had been started from a WSL-invoked PowerShell, so it inherited a
+WSL-translated PATH with no `.cargo\bin` in it. A runner inherits the
+environment of whatever launched it, and that environment is not always the
+one you would get by opening a terminal. If a job cannot find a tool that is
+plainly installed, check how the runner was started before checking the tool.
 
 ## A note on the fleet
 
