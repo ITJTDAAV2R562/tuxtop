@@ -1,0 +1,201 @@
+# Tag-driven release. `git tag v0.2.0 && git push --tags` produces a Windows
+# installer and a Linux tuxtop-serve tarball, attached to a GitHub Release.
+#
+# Two shells, two artefacts (see CLAUDE.md "Two shells, one service"): the
+# desktop app for the Windows box, the headless server for a Linux host reached
+# through a browser. Both are built from the same commit the tag points at, so
+# they cannot drift apart between releases.
+#
+# Nothing is code-signed. Windows SmartScreen will warn on first run of the
+# installer, and that is expected rather than a build failure — signing needs a
+# certificate this project does not have. The release notes say so, because an
+# unexplained warning is how a user learns to click through warnings.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  # Manual runs build both artefacts and publish nothing — `publish` is gated
+  # on the ref being a tag. That is the dry run; there is no flag for it,
+  # because a flag that only ever holds one value is a control with no effect.
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Fail before spending twenty minutes of build on a tag that disagrees with
+  # the source. A release whose binaries report a different version than the
+  # tag is worse than no release: the tag is what anyone quotes in a bug report.
+  guard:
+    name: guard — the tag matches the source
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        run: |
+          if [ "${{ github.ref_type }}" = tag ]; then
+            python3 scripts/check-version.py "${{ github.ref_name }}"
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else
+            python3 scripts/check-version.py
+            echo "version=$(python3 -c "import json;print(json.load(open('src-tauri/tauri.conf.json'))['version'])")" >> "$GITHUB_OUTPUT"
+          fi
+
+  # The full CI gate, on the tagged commit. A tag can point at a commit that
+  # never went through CI — pushed together, or moved after the fact — so the
+  # checks run again here rather than being assumed.
+  gate:
+    name: gate — CI on the tagged commit
+    needs: guard
+    uses: ./.github/workflows/ci.yml
+
+  windows:
+    name: windows — installer
+    needs: [guard, gate]
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      # @tauri-apps/cli ships a prebuilt binary, so this is a download rather
+      # than the four-minute `cargo install tauri-cli` it replaces. The version
+      # is pinned by package-lock.json like every other tool here.
+      - run: npm ci
+
+      # Run from the repo root: the CLI finds src-tauri/tauri.conf.json by its
+      # own convention, and that config points frontendDist at ../src.
+      - name: Build installer
+        run: npx tauri build
+
+      # Named by hand rather than globbed into the release, so a bundle that
+      # silently failed to produce one of the two targets fails here instead of
+      # publishing a release that is quietly missing an installer.
+      - name: Collect
+        shell: bash
+        run: |
+          mkdir -p dist
+          msi=$(ls src-tauri/target/release/bundle/msi/*.msi)
+          exe=$(ls src-tauri/target/release/bundle/nsis/*-setup.exe)
+          cp "$msi" "dist/tuxtop-${{ needs.guard.outputs.version }}-x64.msi"
+          cp "$exe" "dist/tuxtop-${{ needs.guard.outputs.version }}-x64-setup.exe"
+          ls -la dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/
+
+  linux:
+    name: linux — tuxtop-serve
+    needs: [guard, gate]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - run: cargo build --release --locked -p tuxtop-serve
+
+      # The binary alone is not runnable: --web defaults to ./src, so the
+      # frontend ships beside it and the default resolves from the extracted
+      # directory. Shipping the binary on its own produces a server that starts
+      # and then 404s every page.
+      - name: Package
+        run: |
+          v=${{ needs.guard.outputs.version }}
+          d=tuxtop-serve-$v-linux-x86_64
+          mkdir -p "$d"
+          cp target/release/tuxtop-serve "$d"/
+          cp -r src "$d"/src
+          cp hosts.example.toml "$d"/
+          cat > "$d"/README.txt <<TXT
+          tuxtop-serve $v
+
+              ./tuxtop-serve --hosts hosts.toml --port 8787
+
+          Binds loopback only and has no authentication. Put \`tailscale serve\`
+          or an SSH tunnel in front of it; do not bind it to a public interface.
+
+          Read-only unless started with --writable, because adding a host makes
+          this machine open an SSH connection with its own keys.
+
+          Run it from this directory, or pass --web /path/to/src.
+          TXT
+          tar czf "$d.tar.gz" "$d"
+          sha256sum "$d.tar.gz"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: tuxtop-serve-*.tar.gz
+
+  publish:
+    name: publish
+    needs: [guard, windows, linux]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      # Checksums, because these binaries are unsigned. Someone who wants to
+      # verify what they downloaded has no certificate to check against.
+      - name: Checksums
+        run: |
+          cd dist
+          sha256sum -- * > ../SHA256SUMS
+          mv ../SHA256SUMS .
+          cat SHA256SUMS
+
+      - name: Release notes
+        run: |
+          v=${{ needs.guard.outputs.version }}
+          cat > notes.md <<TXT
+          ## Install
+
+          **Windows desktop app** — download the \`-setup.exe\` (or the \`.msi\`).
+
+          The installer is **unsigned**, so SmartScreen will show
+          "Windows protected your PC" on first run. More info → Run anyway.
+          Signing needs a certificate this project does not have.
+
+          **Linux headless server** — \`tuxtop-serve-$v-linux-x86_64.tar.gz\`:
+
+          \`\`\`sh
+          tar xzf tuxtop-serve-$v-linux-x86_64.tar.gz
+          cd tuxtop-serve-$v-linux-x86_64
+          ./tuxtop-serve --hosts hosts.toml --port 8787
+          \`\`\`
+
+          Loopback only, no authentication, read-only unless \`--writable\`.
+          Front it with \`tailscale serve\`.
+
+          Neither needs anything installed on a monitored host — SSH and a
+          POSIX shell is the whole requirement.
+
+          Verify downloads against \`SHA256SUMS\`.
+          TXT
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" \
+            --title "Tuxtop ${{ github.ref_name }}" \
+            --notes-file notes.md \
+            dist/*

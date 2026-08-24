@@ -8,6 +8,9 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+  # Called by release.yml, so a tag re-runs the full gate on the exact
+  # commit it points at rather than trusting that the commit passed once.
+  workflow_call:
 
 env:
   CARGO_TERM_COLOR: always
@@ -41,6 +44,9 @@ jobs:
       - run: python3 scripts/check-theme-tokens.py
       - run: python3 scripts/check-agg-declared.py
       - run: python3 scripts/check-commands-reachable.py
+      # Four files carry the version. Catching drift on push is cheaper
+      # than discovering it when a tag fails the release guard.
+      - run: python3 scripts/check-version.py
 
   browser:
     name: browser — layout and load order

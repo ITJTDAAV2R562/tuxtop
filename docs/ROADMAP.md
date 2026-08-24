@@ -449,13 +449,24 @@ Work that arrived from design conversation rather than the plan:
   service ownership in the same column Linux uses for systemd units - and
   no services view, for the same reason there is no systemd one.
 
-- **Browser access, not only the desktop app.** The frontend is already static
-  HTML/CSS/JS against a small command surface, and the backend is already Rust
-  holding all the state. Serving the same commands over HTTP instead of Tauri
-  IPC would make the whole UI reachable from a browser with no second
-  implementation. The work is an HTTP layer beside `invoke`, not a rewrite -
-  but it turns a single-user desktop app into something listening on a port,
-  which is a different security posture and should be a deliberate decision.
+- ~~**Browser access, not only the desktop app.**~~ **Built, 2026-08-24** -
+  `tuxtop-serve`. It was an HTTP layer beside `invoke` rather than a rewrite,
+  as predicted: `src/http.js` installs a `__TAURI__` implementation backed by
+  fetch and EventSource, and only when nothing else has, so the frontend needed
+  no changes at all. The security posture was taken as the deliberate decision
+  it deserved - loopback only with no authentication, fronted by
+  `tailscale serve`; read-only unless `--writable`, because `add_host` makes
+  the serving machine open SSH with its own keys. See CLAUDE.md, "Two shells,
+  one service".
+
+- **Distribution.** `.github/workflows/release.yml` turns a `v*` tag into a
+  Windows installer and a Linux `tuxtop-serve` tarball, both built from the
+  tagged commit after re-running the full CI gate on it. Written and linted but
+  **never executed** - GitHub Actions is unavailable on this account pending
+  billing, so the first tag will be the first real run. The two build steps were
+  each verified by hand: the bundle through the Windows toolchain at `/mnt/c`,
+  and the tarball by extracting it into an empty directory and serving from it.
+  Nothing is code-signed, so SmartScreen warns on first run.
 
 - **Per-core sparklines** instead of single-value tiles at large card sizes.
 - **More metrics** now that the registry exists: temperatures, per-filesystem

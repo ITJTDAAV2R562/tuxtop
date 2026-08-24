@@ -29,6 +29,7 @@ step "JS unit tests"        node --test 'tests/*.test.js'
 step "theme tokens"         python3 scripts/check-theme-tokens.py
 step "aggregation rules"    python3 scripts/check-agg-declared.py
 step "command reachability" python3 scripts/check-commands-reachable.py
+step "version agreement"    python3 scripts/check-version.py
 
 if [ "${1:-}" != "--quick" ]; then
   if [ -d node_modules/@playwright ]; then

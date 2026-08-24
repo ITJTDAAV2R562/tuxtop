@@ -215,7 +215,7 @@ one is how a monitoring tool acquires its first remote code execution.
 ## Testing
 
 ```sh
-cargo test        # 136 tests, no GUI toolchain needed, runs anywhere
+cargo test        # 221 tests, no GUI toolchain needed, runs anywhere
 cargo clippy --all-targets
 cargo fmt
 node --test 'tests/*.test.js'           # pure logic: aggregation, scale, filters
@@ -312,6 +312,44 @@ runs the same gates, including `cargo clippy --all-targets -- -D warnings`
 Windows toolchain at `/mnt/c`, which is the one gate a Linux box cannot
 otherwise close. It skips loudly rather than passing quietly when something is
 unavailable.
+
+## Releasing
+
+```sh
+bash scripts/verify.sh                 # the gate, including the Windows build
+# bump the version in all four files, commit
+git tag v0.2.0 && git push --tags
+```
+
+`.github/workflows/release.yml` then builds both shells from the tagged commit
+and attaches them to a GitHub Release: a Windows installer (`.msi` and an NSIS
+`-setup.exe`) and a `tuxtop-serve` tarball for Linux.
+
+**The version lives in four files** — three `Cargo.toml`s and
+`tauri.conf.json` — and nothing keeps them together, so
+`scripts/check-version.py` asserts they agree. It runs in CI on every push, and
+again in the release guard *with the tag*, before any build minutes are spent.
+A release whose binaries report a different version than the tag is worse than
+no release: the tag is what anyone quotes in a bug report.
+
+**The release re-runs the full CI gate on the tagged commit** rather than
+assuming it passed. A tag can point at a commit that never went through CI —
+pushed together, or moved afterwards.
+
+**The Linux tarball ships `src/` beside the binary.** `--web` defaults to
+`./src`, so the binary alone is a server that starts and then 404s every page.
+The tarball is laid out so the default resolves from the extracted directory.
+
+**Nothing is code-signed.** Windows SmartScreen warns on first run of the
+installer; the release notes say so, because an unexplained warning is how a
+user learns to click through warnings. Signing needs a certificate this project
+does not have. `SHA256SUMS` is attached instead, since there is no certificate
+for anyone to check against.
+
+**The bundler is `@tauri-apps/cli`, pinned in `package-lock.json`** — a
+prebuilt binary, so the release job downloads it rather than spending four
+minutes on `cargo install tauri-cli`. It builds the installer and is not part
+of the app; the frontend still has no build step and no runtime dependencies.
 
 ## Commit style
 
