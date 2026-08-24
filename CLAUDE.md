@@ -187,6 +187,31 @@ dark only is unverified.
 
 ---
 
+## Two shells, one service
+
+| crate | what it is |
+| --- | --- |
+| `tuxtop-core` | everything: samplers, supervisor, history, config, and `service::Service` — the operations both shells call |
+| `src-tauri` | the desktop window. Commands are one-line delegations; it owns the window and turns events into webview topics |
+| `tuxtop-serve` | a headless server. Same service, reached over HTTP |
+
+`tuxtop-serve` binds **loopback only and has no authentication**, deliberately.
+Put `tailscale serve` in front of it for TLS and identity, which is how Beszel
+is already reached on this fleet — a monitoring tool inventing its own session
+handling acquires a login bug for no benefit.
+
+It is **read-only unless `--writable`**. Viewing is harmless; `add_host` makes
+the serving machine open an SSH connection with its own keys, which is not a
+capability a browser tab should have merely by reaching the port. Controls that
+a read-only server would refuse are hidden rather than left to fail, via a
+`capabilities` command — a button that can only return an error looks like a
+capability.
+
+`axum` is the one heavyweight dependency, and only `tuxtop-serve` pays for it
+(62 crates against core's 29). We hand-rolled base64 because the format is
+forty lines and fully specified; an HTTP parser faces the network, and writing
+one is how a monitoring tool acquires its first remote code execution.
+
 ## Testing
 
 ```sh

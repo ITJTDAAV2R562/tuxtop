@@ -1158,3 +1158,10 @@ body[data-bands="off"] .legend span:not(:last-child){display:none}
   border-color:color-mix(in srgb,var(--viz-net) 45%,transparent);
   background:color-mix(in srgb,var(--viz-net) 12%,transparent);
 }
+
+/* A read-only server refuses configuration changes, so the controls that make
+   them are not drawn. A button that can only return an error is worse than an
+   absent one: it looks like a capability. */
+body[data-readonly="yes"] #addBtn,
+body[data-readonly="yes"] .kill,
+body[data-readonly="yes"] .grip { display: none }

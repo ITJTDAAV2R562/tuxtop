@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/tuxtop-core"]
+members = ["crates/tuxtop-core", "crates/tuxtop-serve"]
 exclude = ["src-tauri"]
 
 # `src-tauri` is intentionally NOT a workspace member.

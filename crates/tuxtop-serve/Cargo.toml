@@ -1,0 +1,17 @@
+[package]
+name = "tuxtop-serve"
+version = "0.1.0"
+edition = "2021"
+description = "Tuxtop as a headless server: the same fleet, viewed in a browser."
+
+[dependencies]
+tuxtop-core = { path = "../tuxtop-core" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "sync", "time", "fs"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# HTTP is the one thing here not worth hand-rolling. base64 was forty lines of
+# fully specified format; an HTTP/1.1 parser faces the network, and writing one
+# is how a monitoring tool acquires its first remote code execution.
+axum = "0.8"
+async-stream = "0.3"
+futures-core = "0.3"

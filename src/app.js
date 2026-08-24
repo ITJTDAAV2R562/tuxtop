@@ -2748,6 +2748,16 @@
       return;
     }
 
+    // A read-only server will refuse configuration changes, so the controls
+    // that make them are hidden rather than left to fail. Absent on the
+    // desktop app, where everything is allowed.
+    try {
+      const caps = await invoke('capabilities');
+      if (caps && caps.writable === false) {
+        document.body.dataset.readonly = 'yes';
+      }
+    } catch { /* no capabilities command: the desktop app, which can do it all */ }
+
     build(); paint(); tally();
     if (!hosts.length) showEmpty('No hosts yet. Add one to start watching.');
 
