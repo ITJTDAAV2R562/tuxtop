@@ -35,6 +35,9 @@ pub enum Event {
     },
     /// A host's process ranking changed. The name only; the consumer pulls.
     Processes(String),
+    /// The host list changed - added, removed, reordered, or edited.
+    HostsChanged(Vec<HostConfig>),
+    SettingsChanged(crate::hostlist::Settings),
 }
 
 /// How many processes each host ranks and returns.

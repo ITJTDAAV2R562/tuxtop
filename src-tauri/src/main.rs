@@ -6,7 +6,6 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-mod hosts;
 
 /// Event names the webview subscribes to.
 ///
@@ -31,293 +30,131 @@ struct FaultEvent {
 }
 
 use tauri::{AppHandle, Emitter, Manager};
-use tuxtop_core::hostlist::{effective_interval, Settings};
+use tuxtop_core::config::Config;
+use tuxtop_core::hostlist::Settings;
 use tuxtop_core::HostConfig;
 
 use tuxtop_core::history_store::{HistoryStore, HistoryUsage};
+use tuxtop_core::service::Service;
 use tuxtop_core::supervisor::Supervisor;
 
-/// The configured hosts, for the frontend to render cards from.
-#[tauri::command]
-fn list_hosts(app: AppHandle) -> Result<Vec<HostConfig>, String> {
-    hosts::load(&app)
-}
-
-/// Add a host, persist it, and start watching immediately.
-#[tauri::command]
-fn add_host(
-    app: AppHandle,
-    sup: tauri::State<'_, std::sync::Arc<Supervisor>>,
-    cfg: HostConfig,
-) -> Result<Vec<HostConfig>, String> {
-    let mut all = hosts::load(&app)?;
-    tuxtop_core::hostlist::add(&mut all, cfg.clone()).map_err(|e| e.to_string())?;
-    hosts::save(&app, &all)?;
-
-    // Start the sampler with the trimmed copy the list actually stored, not
-    // the raw dialog input.
-    let stored = all.last().cloned().expect("just pushed");
-    let settings = hosts::load_settings(&app)?;
-    let iv = effective_interval(&stored, &settings);
-    sup.start(stored, iv);
-    let _ = app.emit(EVENT_HOSTS, &all);
-
-    Ok(all)
-}
-
-/// Stop watching a host and forget it.
-#[tauri::command]
-fn remove_host(
-    app: AppHandle,
-    sup: tauri::State<'_, std::sync::Arc<Supervisor>>,
-    name: String,
-) -> Result<Vec<HostConfig>, String> {
-    let mut all = hosts::load(&app)?;
-    tuxtop_core::hostlist::remove(&mut all, &name);
-    hosts::save(&app, &all)?;
-
-    sup.stop(&name);
-    sup.forget(&name);
-    app.state::<std::sync::Arc<HistoryStore>>().forget_host(&name);
-    let _ = app.emit(EVENT_HOSTS, &all);
-
-    Ok(all)
-}
-
-/// Persist a new card order after a drag.
+/// Tauri commands.
 ///
-/// `hosts.toml` is the single source of truth for ordering, so the arrangement
-/// survives a restart and stays consistent with what the backend emits.
-#[tauri::command]
-fn reorder_hosts(
-    app: AppHandle,
-    names: Vec<String>,
-) -> Result<Vec<HostConfig>, String> {
-    let mut all = hosts::load(&app)?;
-    tuxtop_core::hostlist::reorder(&mut all, &names);
-    hosts::save(&app, &all)?;
+/// Every one of these is a one-line delegation to `tuxtop_core::service`,
+/// deliberately. The operations used to live here, which meant a headless
+/// server would have had to reimplement them and nothing could test them. What
+/// stays behind is what is genuinely Tauri's: the window, and turning events
+/// into webview topics.
+type Svc<'a> = tauri::State<'a, std::sync::Arc<Service>>;
 
-    let _ = app.emit(EVENT_HOSTS, &all);
-    Ok(all)
+#[tauri::command]
+fn list_hosts(svc: Svc<'_>) -> Result<Vec<HostConfig>, String> {
+    svc.list_hosts()
 }
 
-/// Current settings.
 #[tauri::command]
-fn get_settings(app: AppHandle) -> Result<Settings, String> {
-    hosts::load_settings(&app)
+fn add_host(svc: Svc<'_>, cfg: HostConfig) -> Result<Vec<HostConfig>, String> {
+    svc.add_host(cfg)
 }
 
-/// Replace settings and restart every host whose effective interval changed.
-///
-/// Only affected hosts restart. Changing the global interval when most hosts
-/// carry an override should not tear down connections that were already
-/// sampling at the right rate.
 #[tauri::command]
-fn set_settings(
-    app: AppHandle,
-    sup: tauri::State<'_, std::sync::Arc<Supervisor>>,
-    store: tauri::State<'_, std::sync::Arc<HistoryStore>>,
-    settings: Settings,
-) -> Result<Settings, String> {
-    let mut f = hosts::load_file(&app)?;
-    let before = f.settings;
-    f.settings = Settings {
-        interval_secs: settings.interval_secs.clamp(1, 3600),
-        history_cap_mb: settings.history_cap_mb.clamp(16, 8192),
-        always_on_top: settings.always_on_top,
-    };
-    hosts::save_file(&app, &f)?;
-
-    apply_always_on_top(&app, f.settings.always_on_top);
-    store.set_cap_mb(f.settings.history_cap_mb);
-
-    for h in &f.hosts {
-        if effective_interval(h, &before) != effective_interval(h, &f.settings) {
-            sup.start(h.clone(), effective_interval(h, &f.settings));
-        }
-    }
-
-    let _ = app.emit(EVENT_SETTINGS, &f.settings);
-    Ok(f.settings)
+fn remove_host(svc: Svc<'_>, name: String) -> Result<Vec<HostConfig>, String> {
+    svc.remove_host(&name)
 }
 
-/// Set or clear one host's interval override, restarting just that host.
+#[tauri::command]
+fn reorder_hosts(svc: Svc<'_>, names: Vec<String>) -> Result<Vec<HostConfig>, String> {
+    svc.reorder_hosts(&names)
+}
+
+#[tauri::command]
+fn get_settings(svc: Svc<'_>) -> Result<Settings, String> {
+    svc.get_settings()
+}
+
+/// The one command with a genuinely Tauri-shaped side effect: always-on-top is
+/// a property of a window, which a headless server does not have.
+#[tauri::command]
+fn set_settings(app: AppHandle, svc: Svc<'_>, settings: Settings) -> Result<Settings, String> {
+    let saved = svc.set_settings(settings)?;
+    apply_always_on_top(&app, saved.always_on_top);
+    Ok(saved)
+}
+
 #[tauri::command]
 fn set_host_interval(
-    app: AppHandle,
-    sup: tauri::State<'_, std::sync::Arc<Supervisor>>,
+    svc: Svc<'_>,
     name: String,
     interval_secs: Option<u32>,
 ) -> Result<Vec<HostConfig>, String> {
-    let mut f = hosts::load_file(&app)?;
-
-    let Some(h) = f.hosts.iter_mut().find(|h| h.name == name) else {
-        return Err(format!("no host named {name}"));
-    };
-    h.interval_secs = interval_secs.map(|v| v.clamp(1, 3600));
-    let updated = h.clone();
-
-    hosts::save_file(&app, &f)?;
-
-    // Restart only the host that changed, at its own effective interval.
-    sup.start(updated.clone(), effective_interval(&updated, &f.settings));
-
-    let _ = app.emit(EVENT_HOSTS, &f.hosts);
-    Ok(f.hosts.clone())
+    svc.set_host_interval(&name, interval_secs)
 }
 
-/// Set or clear one host's group.
-///
-/// Unlike the interval, this changes nothing about how the host is sampled, so
-/// no sampler is restarted — only the arrangement on screen and the file on
-/// disk.
 #[tauri::command]
 fn set_host_group(
-    app: AppHandle,
+    svc: Svc<'_>,
     name: String,
     group: Option<String>,
 ) -> Result<Vec<HostConfig>, String> {
-    let mut f = hosts::load_file(&app)?;
-
-    if !tuxtop_core::hostlist::set_group(&mut f.hosts, &name, group.as_deref()) {
-        return Err(format!("no host named {name}"));
-    }
-
-    hosts::save_file(&app, &f)?;
-    let _ = app.emit(EVENT_HOSTS, &f.hosts);
-    Ok(f.hosts.clone())
+    svc.set_host_group(&name, group.as_deref())
 }
 
-/// Set a host's operating system, and restart its sampler.
-///
-/// Unlike the group, this changes the remote command itself — a Linux command
-/// against cmd.exe fails with "the system cannot find the path specified",
-/// which explains nothing — so the host is restarted rather than left running
-/// the wrong sampler until something else happens to restart it.
 #[tauri::command]
-fn set_host_os(
-    app: AppHandle,
-    sup: tauri::State<'_, std::sync::Arc<Supervisor>>,
-    name: String,
-    os: String,
-) -> Result<Vec<HostConfig>, String> {
-    let mut f = hosts::load_file(&app)?;
-
-    let Some(h) = f.hosts.iter_mut().find(|h| h.name == name) else {
-        return Err(format!("no host named {name}"));
-    };
-    h.os = if os.eq_ignore_ascii_case("windows") {
-        "windows".into()
-    } else {
-        String::new()
-    };
-    let updated = h.clone();
-
-    hosts::save_file(&app, &f)?;
-    sup.start(updated.clone(), effective_interval(&updated, &f.settings));
-    let _ = app.emit(EVENT_HOSTS, &f.hosts);
-    Ok(f.hosts.clone())
+fn set_host_os(svc: Svc<'_>, name: String, os: String) -> Result<Vec<HostConfig>, String> {
+    svc.set_host_os(&name, &os)
 }
 
-/// Measured cost per host, for the settings meter.
 #[tauri::command]
-fn traffic_stats(sup: tauri::State<'_, std::sync::Arc<Supervisor>>) -> Vec<tuxtop_core::supervisor::HostTraffic> {
-    sup.traffic()
+fn traffic_stats(svc: Svc<'_>) -> Vec<tuxtop_core::supervisor::HostTraffic> {
+    svc.traffic_stats()
 }
 
-/// A window of history for one series.
-///
-/// `from` and `to` are seconds before now, so the frontend can ask for "the
-/// last 20 minutes" without needing the two clocks to agree. `max_points`
-/// should be about the chart's pixel width: downsampling happens here, where
-/// the data is, so the webview only receives what it can draw.
+#[tauri::command]
+fn set_processes_enabled(svc: Svc<'_>, enabled: bool) -> Result<(), String> {
+    svc.set_processes_enabled(enabled)
+}
+
+#[tauri::command]
+fn process_list(svc: Svc<'_>) -> Vec<tuxtop_core::procs::ProcInfo> {
+    svc.process_list()
+}
+
+#[tauri::command]
+fn cgroup_list(svc: Svc<'_>) -> Vec<tuxtop_core::supervisor::HostCgroup> {
+    svc.cgroup_list()
+}
+
 #[tauri::command]
 fn query_history(
-    store: tauri::State<'_, std::sync::Arc<HistoryStore>>,
+    svc: Svc<'_>,
     host: String,
     metric: String,
     from_secs_ago: u64,
     to_secs_ago: u64,
     max_points: usize,
 ) -> Vec<tuxtop_core::history::Point> {
-    let now = tuxtop_core::history_store::now_secs();
-    let from = now.saturating_sub(from_secs_ago);
-    let to = now.saturating_sub(to_secs_ago);
-    store.query(&host, &metric, from, to, max_points.clamp(1, 4096))
+    svc.query_history(&host, &metric, from_secs_ago, to_secs_ago, max_points)
 }
 
-/// Several series for one host in a single call.
-///
-/// A 32-core host needs 32 series to draw its per-core grid; asking one at a
-/// time would be 32 round trips per redraw for data that all lives behind the
-/// same lock.
 #[tauri::command]
 fn query_history_many(
-    store: tauri::State<'_, std::sync::Arc<HistoryStore>>,
+    svc: Svc<'_>,
     host: String,
     metrics: Vec<String>,
     from_secs_ago: u64,
     to_secs_ago: u64,
     max_points: usize,
 ) -> std::collections::HashMap<String, Vec<tuxtop_core::history::Point>> {
-    let now = tuxtop_core::history_store::now_secs();
-    let from = now.saturating_sub(from_secs_ago);
-    let to = now.saturating_sub(to_secs_ago);
-    let budget = max_points.clamp(1, 4096);
-
-    metrics
-        .into_iter()
-        .map(|m| {
-            let pts = store.query(&host, &m, from, to, budget);
-            (m, pts)
-        })
-        .collect()
+    svc.query_history_many(&host, metrics, from_secs_ago, to_secs_ago, max_points)
 }
 
-/// How much the history store is currently holding.
 #[tauri::command]
-fn history_usage(store: tauri::State<'_, std::sync::Arc<HistoryStore>>) -> HistoryUsage {
-    store.usage()
-}
-
-/// Start or stop fleet-wide process sampling.
-///
-/// Driven by the view being open. Sampling costs a second of remote wall
-/// clock per host per cycle, so a process view nobody is looking at should
-/// cost nothing at all.
-#[tauri::command]
-fn set_processes_enabled(
-    app: AppHandle,
-    sup: tauri::State<'_, std::sync::Arc<Supervisor>>,
-    enabled: bool,
-) -> Result<(), String> {
-    if enabled {
-        let hosts = hosts::load(&app)?;
-        sup.start_procs(hosts);
-    } else {
-        sup.stop_procs();
-    }
-    Ok(())
-}
-
-/// Every host's processes, merged and sorted as one fleet list.
-#[tauri::command]
-fn process_list(sup: tauri::State<'_, std::sync::Arc<Supervisor>>) -> Vec<tuxtop_core::procs::ProcInfo> {
-    sup.fleet_procs()
-}
-
-/// Per-cgroup CPU, memory and task counts, for the group-by-owner view.
-///
-/// Sampled on the same channel as the processes, so the two describe the same
-/// instant rather than two moments that could disagree.
-#[tauri::command]
-fn cgroup_list(sup: tauri::State<'_, std::sync::Arc<Supervisor>>) -> Vec<tuxtop_core::supervisor::HostCgroup> {
-    sup.fleet_cgroups()
+fn history_usage(svc: Svc<'_>) -> HistoryUsage {
+    svc.history_usage()
 }
 
 fn main() {
     tauri::Builder::default()
-        .manage(std::sync::Arc::new(HistoryStore::new()))
         .invoke_handler(tauri::generate_handler![
             list_hosts,
             add_host,
@@ -339,10 +176,15 @@ fn main() {
         .setup(|app| {
             let handle = app.handle().clone();
 
-            // The supervisor is framework-free now: it takes the history store
-            // and a channel, and this task is the only thing that knows those
-            // events end up in a webview.
-            let history = app.state::<std::sync::Arc<HistoryStore>>().inner().clone();
+            // Where hosts.toml lives. The OS config directory here; a command
+            // line argument in the headless server. Nothing below knows which.
+            let dir = app
+                .path()
+                .app_config_dir()
+                .map_err(|e| format!("no config directory available: {e}"))?;
+            let config = Config::new(dir.join("hosts.toml"));
+
+            let history = std::sync::Arc::new(HistoryStore::new());
             let (tx, mut rx) = tokio::sync::mpsc::channel(256);
             // Tauri's runtime, not `Handle::current()`: `setup` runs on the
             // main thread outside it, so asking for the current handle here
@@ -350,26 +192,29 @@ fn main() {
             let rt = tauri::async_runtime::block_on(async {
                 tokio::runtime::Handle::current()
             });
-            let sup = Supervisor::new(history, tx, rt);
-            app.manage(sup.clone());
+            let sup = Supervisor::new(history.clone(), tx.clone(), rt);
+            let svc = std::sync::Arc::new(Service::new(config, sup, history, tx));
+            app.manage(svc.clone());
 
+            // The only thing in this process that knows the events end up in
+            // a webview. A headless server subscribes to the same channel and
+            // writes them to an HTTP stream instead.
             let emitter = handle.clone();
             tauri::async_runtime::spawn(async move {
                 use tuxtop_core::supervisor::Event;
                 while let Some(ev) = rx.recv().await {
-                    let sent = match ev {
+                    // Errors are ignored rather than ending the loop: the
+                    // webview goes away on every reload, and the samplers and
+                    // history must survive that.
+                    let _ = match ev {
                         Event::Sample(s) => emitter.emit(EVENT_SAMPLE, &*s),
-                        Event::Fault { host, fault } => emitter.emit(
-                            EVENT_FAULT,
-                            FaultEvent { host, fault },
-                        ),
+                        Event::Fault { host, fault } => {
+                            emitter.emit(EVENT_FAULT, FaultEvent { host, fault })
+                        }
                         Event::Processes(h) => emitter.emit(EVENT_PROCS, &h),
+                        Event::HostsChanged(h) => emitter.emit(EVENT_HOSTS, &h),
+                        Event::SettingsChanged(st) => emitter.emit(EVENT_SETTINGS, &st),
                     };
-                    if sent.is_err() {
-                        // The webview is gone; the samplers keep running and
-                        // history keeps filling, which is what a reload wants.
-                        continue;
-                    }
                 }
             });
 
@@ -377,28 +222,14 @@ fn main() {
                 apply_backdrop(&window);
             }
 
-            // Restore the pinned state before the window is shown, so it does
-            // not visibly jump to the front a moment after appearing.
-            if let Ok(s) = hosts::load_settings(&handle) {
-                apply_always_on_top(&handle, s.always_on_top);
-                // Before any sampling starts, so the store is never briefly
-                // uncapped on a fleet large enough to need the limit.
-                handle.state::<std::sync::Arc<HistoryStore>>().set_cap_mb(s.history_cap_mb);
-            }
-
-            // Start a sampler for every configured host.
+            // Start everything, and restore the pinned state before the window
+            // is shown so it does not visibly jump to the front a moment later.
             //
-            // A broken hosts.toml is reported to the frontend rather than
-            // panicking: the window should open and explain itself, not fail
-            // to start over a stray comma.
-            match hosts::load_file(&handle) {
-                Ok(f) => {
-                    let sup = handle.state::<std::sync::Arc<Supervisor>>();
-                    for cfg in f.hosts {
-                        let iv = effective_interval(&cfg, &f.settings);
-                        sup.start(cfg, iv);
-                    }
-                }
+            // A broken hosts.toml is reported rather than fatal: the window
+            // should open and explain itself, not fail to start over a stray
+            // comma.
+            match svc.start_all() {
+                Ok(settings) => apply_always_on_top(&handle, settings.always_on_top),
                 Err(e) => {
                     eprintln!("could not load hosts: {e}");
                     let _ = handle.emit(EVENT_FAULT, e);

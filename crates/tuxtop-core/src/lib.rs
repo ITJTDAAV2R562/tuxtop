@@ -14,6 +14,7 @@
 //! `docs/DECISIONS.md` for the measurement that forced us to sample ourselves
 //! rather than reuse an existing agent.
 
+pub mod config;
 pub mod facts;
 pub mod fleet;
 pub mod history;
@@ -23,6 +24,7 @@ pub mod model;
 pub mod proc;
 pub mod procs;
 pub mod sampler;
+pub mod service;
 pub mod supervisor;
 pub mod traffic;
 pub mod transport;

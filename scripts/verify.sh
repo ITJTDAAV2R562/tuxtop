@@ -64,17 +64,36 @@ if [ -x "$WIN_CARGO" ] && [ -d "$WIN_SRC" ]; then
   printf '\n\033[1m== windows smoke test (does it survive startup?)\033[0m\n'
   EXE="$WIN_SRC/target/debug/tuxtop.exe"
   LOG=$(mktemp)
+  sshcount() { /mnt/c/Windows/System32/tasklist.exe /FI "IMAGENAME eq ssh.exe" 2>/dev/null | grep -c ssh.exe; }
   if [ -x "$EXE" ]; then
+    BEFORE=$(sshcount)
     ( "$EXE" >"$LOG" 2>&1 & )
-    sleep 8
-    if /mnt/c/Windows/System32/tasklist.exe /FI "IMAGENAME eq tuxtop.exe" 2>/dev/null | grep -q tuxtop.exe; then
-      printf '   ok\n'
-    else
+    sleep 10
+    if ! /mnt/c/Windows/System32/tasklist.exe /FI "IMAGENAME eq tuxtop.exe" 2>/dev/null | grep -q tuxtop.exe; then
       printf '\033[31m   FAILED — exited during startup:\033[0m\n'
       sed -n '1,6p' "$LOG" | sed 's/^/     /'
       FAIL=1
+    else
+      # Alive is not the same as working. Each watched host holds one ssh
+      # process, so their appearance is proof the samplers really started -
+      # a refactor can leave the window up and the fleet dark.
+      DURING=$(sshcount)
+      if [ "$DURING" -gt "$BEFORE" ]; then
+        printf '   ok — %s ssh sessions opened (was %s)\n' "$((DURING - BEFORE))" "$BEFORE"
+      else
+        printf '\033[31m   FAILED — running, but no host was sampled\033[0m\n'
+        FAIL=1
+      fi
     fi
     /mnt/c/Windows/System32/taskkill.exe /IM tuxtop.exe /F >/dev/null 2>&1
+    sleep 3
+    # And they must go when it does: the samplers are kill_on_drop, and a leak
+    # here would leave an ssh process per host behind on every run.
+    AFTER=$(sshcount)
+    if [ "$AFTER" -gt "$((BEFORE + 2))" ]; then
+      printf '\033[31m   FAILED — %s ssh sessions left behind after exit\033[0m\n' "$AFTER"
+      FAIL=1
+    fi
   else
     printf '   no binary to run\n'
   fi

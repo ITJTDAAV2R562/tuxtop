@@ -56,8 +56,29 @@ fn default_port() -> u16 {
     22
 }
 
+/// Written by hand, not derived.
+///
+/// A derived `Default` would make `port` zero, and a host configured to
+/// connect to port 0 fails in a way that names nothing. This mirrors what
+/// serde does for an omitted field, so a `HostConfig::default()` and a
+/// `[[host]]` with only a name describe the same machine.
+impl Default for HostConfig {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            addr: String::new(),
+            user: String::new(),
+            port: default_port(),
+            beszel_url: None,
+            interval_secs: None,
+            os: String::new(),
+            group: None,
+        }
+    }
+}
+
 /// One second of readings from one host. This is what the UI renders.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Sample {
     pub host: String,
     /// Aggregate CPU busy percentage, `0.0..=100.0`.
