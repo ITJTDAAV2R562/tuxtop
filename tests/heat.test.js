@@ -124,3 +124,42 @@ test('mixHex_interpolates_and_survives_an_unresolved_token', () => {
   // that with black would paint a plausible colour over a real bug.
   assert.equal(mixHex('#ff0000', '', 0.5), '#ff0000');
 });
+
+test('a_slow_but_steady_host_has_full_coverage_not_gaps', () => {
+  // N1 pegged at ~86% delivered a sample every ten seconds or so, and the
+  // strip called it "93% gap" - a busy host rendered as a missing one. Each
+  // value is a delta over the interval since the last sample, so it describes
+  // those ten seconds; blanking nine of them states less than was measured.
+  const w = { from: 0, to: 100 };
+  const pts = [];
+  for (let t = 10; t <= 100; t += 10) pts.push(pt(t, 80, 85, 90));
+  const cells = heatRow(pts, w, 100);
+  assert.ok(coverage(cells) > 0.85, `expected near-full coverage, got ${coverage(cells)}`);
+  assert.equal(cells[55].v, 90, 'a cell between two samples is covered by them');
+});
+
+test('a_real_silence_is_still_a_gap', () => {
+  // Steady at 1 Hz, then nothing for eighty seconds. The one sample that
+  // arrives afterwards must not be smeared back across the outage.
+  const w = { from: 0, to: 100 };
+  const pts = [];
+  for (let t = 0; t <= 10; t += 1) pts.push(pt(t, 1, 2, 3));
+  pts.push(pt(95, 1, 2, 3));
+  const cells = heatRow(pts, w, 100);
+  assert.equal(cells[50].v, null, 'the middle of the outage stays empty');
+  assert.ok(coverage(cells) < 0.3, `outage should dominate, got ${coverage(cells)}`);
+});
+
+test('the_carry_forward_limit_scales_with_the_hosts_own_cadence', () => {
+  // Two hosts, same 12-second span between samples. For the 10-second-cadence
+  // host that is normal and fills; for the 1-second host it is a silence.
+  const w = { from: 0, to: 60 };
+  const slow = heatRow([pt(24, 0, 0, 50), pt(36, 0, 0, 50), pt(48, 0, 0, 50)], w, 60);
+  assert.ok(coverage(slow) > 0.35, 'a 12 s gap is ordinary for a 12 s cadence');
+
+  const fast = [];
+  for (let t = 0; t <= 24; t += 1) fast.push(pt(t, 0, 0, 50));
+  fast.push(pt(36, 0, 0, 50));
+  const cells = heatRow(fast, w, 60);
+  assert.equal(cells[30].v, null, 'the same 12 s is a silence at 1 Hz');
+});

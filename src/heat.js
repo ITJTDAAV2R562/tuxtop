@@ -24,23 +24,59 @@
    *   column; `v` is null where no sample landed, which is drawn as a gap
    *   rather than as zero.
    */
+  /// A sample may be carried forward at most this multiple of the row's own
+  /// median interval before the span is treated as a real silence.
+  const FILL_FACTOR = 3;
+  /// ...and never less than this, so a 1 Hz host tolerates a brief hiccup.
+  const MIN_FILL_SECS = 3;
+
   function heatRow(points, win, cols) {
     const n = Math.max(1, cols | 0);
     const span = Math.max(1, win.to - win.from);
     const cells = new Array(n);
     for (let i = 0; i < n; i++) cells[i] = { v: null, min: 0, mean: 0, n: 0 };
 
-    for (const p of points || []) {
-      if (p == null || p.t < win.from || p.t > win.to) continue;
-      // The final instant belongs to the last column, not to one past the end:
-      // floor() alone puts t === win.to at index n.
-      const i = Math.min(n - 1, Math.floor((p.t - win.from) / span * n));
-      const c = cells[i];
-      // ADR-011: the cell takes the worst sample in its bucket.
-      c.v = c.v === null ? p.max : Math.max(c.v, p.max);
-      c.min = c.n === 0 ? p.min : Math.min(c.min, p.min);
-      c.mean += p.mean;
-      c.n += 1;
+    const pts = (points || [])
+      .filter(p => p != null && p.t >= win.from && p.t <= win.to)
+      .sort((a, b) => a.t - b.t);
+    if (!pts.length) return cells;
+
+    // How often this host actually reports, measured rather than assumed. A
+    // host under heavy load delivers slowly, and its cadence is its own.
+    const dts = [];
+    for (let i = 1; i < pts.length; i++) dts.push(pts[i].t - pts[i - 1].t);
+    dts.sort((a, b) => a - b);
+    const median = dts.length ? dts[dts.length >> 1] : 1;
+    const maxFill = Math.max(MIN_FILL_SECS, median * FILL_FACTOR);
+
+    // The final instant belongs to the last column, not to one past the end:
+    // floor() alone puts t === win.to at index n.
+    const col = t => Math.min(n - 1, Math.max(0,
+      Math.floor((t - win.from) / span * n)));
+
+    for (let i = 0; i < pts.length; i++) {
+      const p = pts[i];
+      // Every value here is a delta over the interval since the previous
+      // sample, so it describes that whole interval - painting one cell and
+      // blanking the rest states less than we measured. N1 pegged at 86% read
+      // as "93% gap" that way: the samples were arriving, just slowly, and
+      // each one covered the seconds between.
+      let covers = i > 0 ? p.t - pts[i - 1].t : median;
+      // Unless the silence is out of character for this host. After a
+      // reconnect the first sample is zero by design - a rate needs two points
+      // - so carrying it back across the outage would paint the downtime idle.
+      if (covers > maxFill) covers = median;
+
+      const from = col(p.t - covers);
+      const to = col(p.t);
+      for (let c = from; c <= to; c++) {
+        const cell = cells[c];
+        // ADR-011: the cell takes the worst value covering it.
+        cell.v = cell.v === null ? p.max : Math.max(cell.v, p.max);
+        cell.min = cell.n === 0 ? p.min : Math.min(cell.min, p.min);
+        cell.mean += p.mean;
+        cell.n += 1;
+      }
     }
     for (const c of cells) if (c.n) c.mean /= c.n;
     return cells;

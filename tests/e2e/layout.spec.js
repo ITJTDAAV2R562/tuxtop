@@ -147,3 +147,32 @@ test('a narrow window wraps rather than clipping', async ({ page }) => {
     expect(t.pageOverflow, `${name} scrolls sideways when narrow`).toBe(false);
   }
 });
+
+test('leaving a view restores the layout it found', async ({ page }) => {
+  // Heat put `heat-mode` on the grid and nothing ever took it off, so
+  // `.grid.heat-mode{display:block}` survived into every other view and made
+  // each host card claim a full row. Each builder adding its own class and
+  // trusting every *other* builder to strip it works right up until a fifth
+  // view exists.
+  await page.goto('/index.html');
+  await expect(page.locator('.card').first()).toBeVisible();
+
+  const gridClass = () => page.locator('#grid').getAttribute('class');
+  const others = ['#viewHosts', '#viewAll', '#viewProcs', '#viewHist'];
+
+  const fresh = {};
+  for (const id of others) {
+    await page.click(id);
+    await page.waitForTimeout(400);
+    fresh[id] = await gridClass();
+  }
+
+  for (const id of others) {
+    await page.click('#viewHeat');
+    await expect(page.locator('.heatwrap')).toBeVisible();
+    await page.click(id);
+    await page.waitForTimeout(400);
+    expect(await gridClass(), `${id} looks different after visiting Heat`)
+      .toBe(fresh[id]);
+  }
+});

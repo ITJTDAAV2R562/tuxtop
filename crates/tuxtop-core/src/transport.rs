@@ -26,6 +26,28 @@ use crate::traffic::TrafficCounter;
 /// Build the argument list for the `ssh` invocation.
 ///
 /// Split out from spawning so it can be unit-tested without a network.
+/// Build the `ssh` command, with no console window on Windows.
+///
+/// A **release** build sets `windows_subsystem = "windows"`, so the app owns no
+/// console - and every child process then allocates its own. Nineteen hosts
+/// meant nineteen black terminal windows appearing on the desktop. A debug
+/// build keeps a console that children inherit, which is why this never showed
+/// up in development: it is a bug only the shipped binary has.
+///
+/// `CREATE_NO_WINDOW` suppresses the allocation. It is Windows-only; the flag
+/// does not exist elsewhere and neither does the problem.
+fn ssh_command(args: &[String]) -> Command {
+    let mut cmd = Command::new("ssh");
+    cmd.args(args);
+    #[cfg(windows)]
+    {
+        // https://learn.microsoft.com/windows/win32/procthread/process-creation-flags
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd
+}
+
 pub fn ssh_args(host: &HostConfig, remote_cmd: &str) -> Vec<String> {
     let mut args: Vec<String> = [
         // Fail fast instead of hanging on an unreachable host: the UI wants a
@@ -95,8 +117,7 @@ impl SshSampler {
         };
         let args = ssh_args(&host, &cmd);
 
-        let mut child = Command::new("ssh")
-            .args(&args)
+        let mut child = ssh_command(&args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -270,8 +291,7 @@ impl ProcSampler {
         };
         let args = ssh_args(&host, &cmd);
 
-        let mut child = Command::new("ssh")
-            .args(&args)
+        let mut child = ssh_command(&args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())

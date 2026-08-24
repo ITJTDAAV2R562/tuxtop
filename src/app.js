@@ -19,6 +19,10 @@
 
   const $ = s => document.querySelector(s);
   const grid = $('#grid');
+  /// The one mode class each view puts on the grid. build() toggles all of
+  /// them from this map, so a new view cannot forget its own teardown.
+  const MODE_CLASS = { all: 'all-mode', history: 'hist-mode',
+                       procs: 'proc-mode', heat: 'heat-mode' };
   const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
 
   // ---- model: real hosts from the tailnet, real core counts ----
@@ -472,7 +476,6 @@
   // ---- fleet view: one metric, every host --------------------------------
   function buildFleet() {
     grid.innerHTML = '';
-    grid.classList.add('all-mode');
     const m = metric();
     grid.dataset.shape = m.shape;
     grid.dataset.scale = m.scale;
@@ -860,15 +863,24 @@
     $('#procbar').hidden = prefs.view !== 'procs';
     $('#hostFilterWrap').hidden = prefs.view === 'procs';
     showFilterNote();
-    if (prefs.view !== 'procs') { stopProcs(); grid.classList.remove('proc-mode'); }
+
+    // One place decides which mode class the grid carries. Each builder used to
+    // add its own and rely on every *other* builder to strip it, which works
+    // only until someone adds a fifth view: heat-mode was added and removed
+    // nowhere, so after one visit to Heat the grid kept `display:block` and
+    // every card in every other view went full-width. An exhaustive toggle
+    // cannot rot that way.
+    for (const [v, c] of Object.entries(MODE_CLASS)) {
+      grid.classList.toggle(c, prefs.view === v);
+    }
+
+    if (prefs.view !== 'procs') { stopProcs(); }
     if (prefs.view === 'history') return buildHistory();
     stopHistoryTimer();
-    grid.classList.remove('hist-mode');
     if (prefs.view === 'procs') return buildProcs();
     if (prefs.view === 'heat') return buildHeat();
     if (prefs.view === 'all') return buildFleet();
     document.body.dataset.bands = 'on';
-    grid.classList.remove('all-mode');
     grid.style.removeProperty('--tile');
 
     // build() tears down the DOM, so remember which card was open. Without
@@ -1458,11 +1470,9 @@
   function buildHistory() {
     startHistoryTimer();
     grid.innerHTML = '';
-    grid.classList.remove('all-mode');
     // The chart grid does its own column layout, so the outer grid must give
     // it the full width. Left as a multi-column grid it becomes a single
     // 320px item and every chart stacks inside that one track.
-    grid.classList.add('hist-mode');
     grid.style.removeProperty('--tile');
     $('#histbar').hidden = false;
 
@@ -1698,8 +1708,6 @@
 
   function buildHeat() {
     stopHistoryTimer();
-    grid.classList.remove('all-mode', 'hist-mode');
-    grid.classList.add('heat-mode');
     document.body.dataset.bands = 'on';
     grid.style.removeProperty('--tile');
     refreshMetricOptions();
@@ -2260,8 +2268,6 @@
   function buildProcs() {
     startProcs();
     grid.innerHTML = '';
-    grid.classList.remove('all-mode', 'hist-mode');
-    grid.classList.add('proc-mode');
     $('#procbar').hidden = false;
     $('#procKernel').checked = !!prefs.procKernel;
     $('#procByOwner').checked = !!prefs.procByOwner;
