@@ -302,9 +302,17 @@ that catches a plausible-but-wrong result.
 
 | job | runs on | covers |
 | --- | --- | --- |
-| `core` | ubuntu | `cargo fmt --check`, `clippy -D warnings`, `cargo test`, JS unit tests, the three checkers |
-| `browser` | ubuntu | the Playwright suite — layout and load order |
-| `windows` | windows | **`cargo build` in `src-tauri`** |
+| `core` | **dove**, self-hosted | `cargo fmt --check`, `clippy -D warnings`, `cargo test`, JS unit tests, the four checkers |
+| `browser` | **dove**, self-hosted | the Playwright suite — layout and load order |
+| `windows` | windows-latest, GitHub-hosted | **`cargo build` in `src-tauri`** |
+
+The Linux jobs run on our own hardware because GitHub-hosted jobs on this
+account do not start — a payment state — so CI was written and never ran.
+Self-hosted minutes are not billed, and dove is 32 cores against a hosted
+runner's 2. **This is only safe because the repo is private with no forks**: on
+a public repo any fork PR would execute on dove. See [docs/CI.md](docs/CI.md).
+The `windows` job is still hosted and so still blocked; `verify.sh` closes that
+gate locally.
 
 That last job exists because a commit that does not compile has reached `main`
 more than once: `src-tauri` is deliberately outside the workspace (ADR-006), so

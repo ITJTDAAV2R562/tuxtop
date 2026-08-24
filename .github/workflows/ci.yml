@@ -20,7 +20,7 @@ jobs:
     name: core — tests, lints, checkers
     # dove: 32 cores, self-hosted. Self-hosted minutes are not billed, which is
     # why CI runs at all — GitHub-hosted jobs on this account are blocked on a
-    # payment state. See docs/infrastructure-runbook.md for the runner.
+    # payment state. See docs/CI.md for the runner and its safety condition.
     runs-on: [self-hosted, linux, dove]
     steps:
       - uses: actions/checkout@v4
