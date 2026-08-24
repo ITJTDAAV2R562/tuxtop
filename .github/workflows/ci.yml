@@ -67,16 +67,14 @@ jobs:
 
   windows:
     name: windows — the Tauri shell compiles
-    # Still GitHub-hosted, so still blocked on the payment state: dove is Linux
-    # and cannot build this. Until a Windows runner exists, scripts/verify.sh
-    # closes this gate locally through the toolchain at /mnt/c.
-    runs-on: windows-latest
+    # n1, self-hosted: the only Windows machine here, and the one that already
+    # builds the installer by hand. dove cannot do this job — it is Linux.
+    runs-on: [self-hosted, windows, n1]
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri
+      # No toolchain or cache actions: rustup is already installed on n1 and
+      # src-tauri/target persists between runs, so the build starts warm. A
+      # cache restored over a warm target/ is slower, not faster.
       # src-tauri is deliberately not a workspace member - it pulls webkit2gtk
       # on Linux, which the development box does not have - so it is only ever
       # compiled here. A commit that does not build has reached main more than

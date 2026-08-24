@@ -7,7 +7,7 @@ and as a reusable workflow called by `release.yml`.
 | --- | --- | --- |
 | `core` | **dove** (self-hosted) | `cargo fmt --check`, `clippy -D warnings`, `cargo test`, JS unit tests, the four checkers |
 | `browser` | **dove** (self-hosted) | the Playwright suite - layout and load order |
-| `windows` | `windows-latest` (GitHub-hosted) | `cargo build` in `src-tauri` |
+| `windows` | **n1**, self-hosted | `cargo build` in `src-tauri` |
 
 ## Why self-hosted
 
@@ -20,9 +20,12 @@ own hardware sidesteps the payment state entirely. It is also faster: dove is
 32 cores against a hosted runner's 2, and the two Linux jobs finish in about
 fifty seconds each.
 
-The `windows` job stays GitHub-hosted, and therefore stays blocked - dove is
-Linux and cannot build the Tauri shell. Until a Windows runner exists,
-`scripts/verify.sh` closes that gate locally through the toolchain at `/mnt/c`.
+The `windows` job runs on **n1**, which is the Windows desktop this project is
+developed on - `hostname` returns `n1` from both Windows and its WSL, and it is
+the only Windows machine in the fleet. It is also the machine that already
+builds the installer by hand, so CI and the manual path use the same toolchain.
+`scripts/verify.sh` still closes the same gate locally through `/mnt/c`, which
+is what to use when the runner is stopped.
 
 ### The safety question
 
@@ -77,6 +80,29 @@ ssh dove 'cd ~/actions-runner && sudo ./svc.sh stop && sudo ./svc.sh uninstall'
 TOKEN=$(gh api -X POST repos/UZ1sFED3yS/tuxtop/actions/runners/remove-token --jq .token)
 ssh dove "cd ~/actions-runner && ./config.sh remove --token '$TOKEN'"
 ssh dove 'rm -rf ~/actions-runner'
+```
+
+## The runner on n1
+
+Installed at `C:\actions-runner`, labels `self-hosted, windows, x64, n1`.
+`rustup` is already on the user PATH there, so the job installs no toolchain
+and `src-tauri/target` stays warm between runs.
+
+**It is not yet a Windows service.** Installing one needs Administrator, which
+this session does not have, so it currently runs from `run.cmd` and will not
+survive a reboot or logout. To make it permanent, from an **elevated**
+PowerShell:
+
+```powershell
+cd C:\actions-runner
+.\svc.cmd install
+.\svc.cmd start
+```
+
+Until then, restart it after a reboot with:
+
+```powershell
+Start-Process -FilePath C:\actions-runner\run.cmd -WorkingDirectory C:\actions-runner -WindowStyle Hidden
 ```
 
 ## A note on the fleet
