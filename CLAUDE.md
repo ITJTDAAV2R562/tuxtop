@@ -215,7 +215,7 @@ one is how a monitoring tool acquires its first remote code execution.
 ## Testing
 
 ```sh
-cargo test        # 222 tests, no GUI toolchain needed, runs anywhere
+cargo test        # 229 tests, no GUI toolchain needed, runs anywhere
 cargo clippy --all-targets
 cargo fmt
 node --test 'tests/*.test.js'           # pure logic: aggregation, scale, filters
@@ -304,20 +304,26 @@ that catches a plausible-but-wrong result.
 | --- | --- | --- |
 | `core` | **dove**, self-hosted | `cargo fmt --check`, `clippy -D warnings`, `cargo test`, JS unit tests, the four checkers |
 | `browser` | **dove**, self-hosted | the Playwright suite — layout and load order |
-| `windows` | windows-latest, GitHub-hosted | **`cargo build` in `src-tauri`** |
+| `windows` | **dove**, self-hosted | **`cargo xwin build` for `x86_64-pc-windows-msvc`** |
 
-The Linux jobs run on our own hardware because GitHub-hosted jobs on this
-account do not start — a payment state — so CI was written and never ran.
-Self-hosted minutes are not billed, and dove is 32 cores against a hosted
-runner's 2. **This is only safe because the repo is private with no forks**: on
-a public repo any fork PR would execute on dove. See [docs/CI.md](docs/CI.md).
-The `windows` job is still hosted and so still blocked; `verify.sh` closes that
-gate locally.
+Every job runs on our own hardware, because GitHub-hosted jobs on this account
+do not start — a payment state — so CI was written and never ran. Self-hosted
+minutes are not billed, and dove is 32 cores against a hosted runner's 2.
+**This is only safe because the repo is private with no forks**: on a public
+repo any fork PR would execute on dove. See [docs/CI.md](docs/CI.md).
 
-That last job exists because a commit that does not compile has reached `main`
-more than once: `src-tauri` is deliberately outside the workspace (ADR-006), so
-nothing on the development box ever compiles it, and the error only surfaced
-when someone built on Windows. Before CI, "someone" was the user.
+The Windows job cross-compiles rather than running on n1, which is the machine
+someone is actually using: a four-minute build on every push was taking cores
+from the person at the keyboard. `cargo-xwin` supplies the MSVC headers and
+CRT, so it is the real target triple the installer ships, not a gnu
+approximation. Only the **installer** still needs n1, because the MSI needs
+WiX — and that runs on a tag, not on every push.
+
+The Windows job exists at all because a commit that does not compile has
+reached `main` more than once: `src-tauri` is deliberately outside the
+workspace (ADR-006), so nothing on the development box ever compiles it, and
+the error only surfaced when someone built on Windows. Before CI, "someone"
+was the user.
 
 ```sh
 bash scripts/verify.sh          # everything CI runs, locally
@@ -343,7 +349,7 @@ unavailable.
 ```sh
 bash scripts/verify.sh                 # the gate, including the Windows build
 # bump the version in all four files, commit
-git tag v0.2.0 && git push --tags
+git tag v0.3.0 && git push --tags
 ```
 
 `.github/workflows/release.yml` then builds both shells from the tagged commit
