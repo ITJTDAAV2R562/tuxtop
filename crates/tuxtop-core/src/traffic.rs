@@ -24,7 +24,14 @@ impl TrafficCounter {
         Self::default()
     }
 
-    /// Record bytes lifted off the socket.
+    /// Record payload bytes read from the sampler.
+    ///
+    /// This is what the remote shell *produced*, not what crossed the network:
+    /// the read happens on ssh's stdout, downstream of its decompression. With
+    /// `-C` on, the wire carries roughly a tenth of this (ssh measured 0.10). Counting here is
+    /// still the right basis for the settings panel, whose question is what a
+    /// given sample interval costs - but the panel has to say which number it
+    /// is showing, or it overstates the network by an order of magnitude.
     pub fn add_bytes(&self, n: u64) {
         self.bytes_total.fetch_add(n, Ordering::Relaxed);
     }

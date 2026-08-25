@@ -2654,9 +2654,15 @@
     }).join('');
 
     const overridden = overrides.size;
+    // Say which number this is. The counter reads ssh's stdout, downstream of
+    // its decompression, so these are payload bytes and the wire carries far
+    // fewer. Reporting them as network traffic would overstate it by an order
+    // of magnitude - the same class of confident wrong number this app exists
+    // in response to, told about itself.
     $('[data-meter-note]').textContent =
       `Measured across ${reporting.length} reporting host${reporting.length === 1 ? '' : 's'}` +
-      (overridden ? `, ${overridden} with an override the global rate will not change.` : '.');
+      (overridden ? `, ${overridden} with an override the global rate will not change. ` : '. ') +
+      'Sampler output before SSH compression, which ssh measured at 10\u00d7 on this fleet.';
 
     // What the memory budget actually buys.
     //
