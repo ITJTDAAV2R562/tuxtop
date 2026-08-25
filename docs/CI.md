@@ -117,6 +117,15 @@ Unregister-ScheduledTask -TaskName 'GitHub Actions runner (tuxtop)'  # remove
 The consequence to know: the runner comes up **at logon**, not at boot. If n1
 is rebooted and nobody logs in, the `windows` job queues until someone does.
 
+### `shell: bash` is not Git Bash here
+
+A release step used `shell: bash` and failed with *"No such file or directory"*
+for a script the runner had just written. On a GitHub-hosted Windows runner
+`bash` is Git Bash, which understands the Windows temp path the runner passes.
+On n1 it resolves to **WSL's** `C:\WINDOWS\system32\bash.EXE`, which eats the
+backslashes and cannot find the file. Windows steps here use PowerShell; do not
+reach for `shell: bash` on a self-hosted Windows runner that has WSL installed.
+
 ### The PATH trap
 
 The first `windows` job failed with *"The term 'cargo' is not recognized"*. The

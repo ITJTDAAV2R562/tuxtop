@@ -75,15 +75,28 @@ jobs:
       # Named by hand rather than globbed into the release, so a bundle that
       # silently failed to produce one of the two targets fails here instead of
       # publishing a release that is quietly missing an installer.
+      # PowerShell, not `shell: bash`. On a GitHub-hosted Windows runner `bash`
+      # is Git Bash; on n1 it resolves to WSL's C:\WINDOWS\system32\bash.EXE,
+      # which cannot read the Windows temp path the runner hands it - the
+      # backslashes vanish and it reports "No such file or directory" for a
+      # script that is plainly there.
       - name: Collect
-        shell: bash
         run: |
-          mkdir -p dist
-          msi=$(ls src-tauri/target/release/bundle/msi/*.msi)
-          exe=$(ls src-tauri/target/release/bundle/nsis/*-setup.exe)
-          cp "$msi" "dist/tuxtop-${{ needs.guard.outputs.version }}-x64.msi"
-          cp "$exe" "dist/tuxtop-${{ needs.guard.outputs.version }}-x64-setup.exe"
-          ls -la dist
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          $msi = Get-ChildItem src-tauri/target/release/bundle/msi/*.msi |
+                 Select-Object -First 1
+          $exe = Get-ChildItem src-tauri/target/release/bundle/nsis/*-setup.exe |
+                 Select-Object -First 1
+          # Named by hand rather than globbed into the release, so a bundle
+          # that silently failed to appear fails here instead of publishing a
+          # release quietly missing an installer.
+          if (-not $msi) { throw 'no .msi was produced' }
+          if (-not $exe) { throw 'no NSIS -setup.exe was produced' }
+          Copy-Item $msi "dist/tuxtop-${{ needs.guard.outputs.version }}-x64.msi"
+          Copy-Item $exe "dist/tuxtop-${{ needs.guard.outputs.version }}-x64-setup.exe"
+          Get-ChildItem dist | ForEach-Object {
+            '{0}  {1:N1} MB' -f $_.Name, ($_.Length / 1MB)
+          }
 
       - uses: actions/upload-artifact@v4
         with:
