@@ -29,7 +29,7 @@ jobs:
   # tag is worse than no release: the tag is what anyone quotes in a bug report.
   guard:
     name: guard — the tag matches the source
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, dove]
     outputs:
       version: ${{ steps.v.outputs.version }}
     steps:
@@ -55,17 +55,12 @@ jobs:
   windows:
     name: windows — installer
     needs: [guard, gate]
-    runs-on: windows-latest
+    runs-on: [self-hosted, windows, n1]
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-          cache: npm
+      # No toolchain or cache actions: rustup and node are already on n1's
+      # PATH and src-tauri/target persists between runs, so the build starts
+      # warm. See docs/CI.md for why the runner is a logon task.
 
       # @tauri-apps/cli ships a prebuilt binary, so this is a download rather
       # than the four-minute `cargo install tauri-cli` it replaces. The version
@@ -98,11 +93,11 @@ jobs:
   linux:
     name: linux — tuxtop-serve
     needs: [guard, gate]
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, dove]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      # No rust-cache: target/ persists on a self-hosted runner already.
 
       - run: cargo build --release --locked -p tuxtop-serve
 
@@ -143,7 +138,7 @@ jobs:
     name: publish
     needs: [guard, windows, linux]
     if: github.ref_type == 'tag'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, dove]
     permissions:
       contents: write
     steps:

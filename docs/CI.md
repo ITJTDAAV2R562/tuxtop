@@ -9,6 +9,10 @@ and as a reusable workflow called by `release.yml`.
 | `browser` | **dove** (self-hosted) | the Playwright suite - layout and load order |
 | `windows` | **n1**, self-hosted | `cargo build` in `src-tauri` |
 
+`.github/workflows/release.yml` uses the same two runners: the guard, the
+Linux `tuxtop-serve` tarball and the publish step on dove, the installer on n1.
+A manual run builds both artefacts and publishes nothing, which is the dry run.
+
 ## Why self-hosted
 
 GitHub-hosted jobs on this account do not start: *"recent account payments have
