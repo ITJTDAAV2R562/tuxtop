@@ -519,8 +519,22 @@ Work that arrived from design conversation rather than the plan:
   reused.
 
 - **Per-core sparklines** instead of single-value tiles at large card sizes.
-- **More metrics** now that the registry exists: temperatures, per-filesystem
-  usage, per-NIC and per-disk vectors. Each is a table entry, not a renderer.
+- **More metrics.** ~~Per-filesystem usage~~ **built, 2026-08-25**: the Fleet
+  view expands a host into one row per filesystem, fullest first, behind the
+  same disclosure a group uses. The card's own reading is unchanged - the
+  fullest mount is the right single number, and everything else in the app
+  reads that scalar - so this is a `rows` accessor on the existing `fs` metric
+  rather than a second metric.
+
+  The roadmap used to claim each of these was "a table entry, not a renderer".
+  That is false for anything not core-shaped: the vector path is written
+  around cores throughout (`|| h.cores`, `"${name} core ${i}"`, "N cores"
+  headers), so a labelled per-host list needed its own render path.
+
+  Still open, and both need backend work rather than a registry entry: **per-NIC
+  and per-disk vectors**. `Sample` carries only `net_rx_bps` and
+  `disk_read_bps` aggregates, so per-device rates mean parsing per device and
+  holding per-device state in `RateTracker`.
 - **Card size scaled to core count** — a 32-core box and a 4-core box currently
   get identical footprints. Open question from the mockup review.
 - **Detail as a separate window** rather than inline accordion, so two hosts

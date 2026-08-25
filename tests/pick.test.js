@@ -130,3 +130,31 @@ test('steal_is_shown_only_where_a_hypervisor_could_take_the_time', () => {
   assert.strictEqual(stealIsMeaningful(host('wsl', 'container')), true);
   assert.strictEqual(stealIsMeaningful(host('', '')), true);
 });
+
+test('mount_rows_list_every_filesystem_fullest_first', () => {
+  const { mountRows } = require('../src/pick.js');
+  // coot really does carry thirteen after bind mounts are collapsed. The card
+  // shows one of them; this is the rest.
+  const h = { fs: [
+    { mount: '/', total_kb: 1000, used_kb: 100 },
+    { mount: '/mnt/usb-data', total_kb: 1000, used_kb: 290 },
+    { mount: '/rpool/pbs', total_kb: 1000, used_kb: 430 },
+  ]};
+  const rows = mountRows(h);
+  assert.deepEqual(rows.map(r => r.mount), ['/rpool/pbs', '/mnt/usb-data', '/']);
+  assert.ok(Math.abs(rows[0].pct - 43) < 0.01);
+});
+
+test('a_zero_sized_filesystem_is_not_a_percentage_of_nothing', () => {
+  const { mountRows } = require('../src/pick.js');
+  const rows = mountRows({ fs: [{ mount: '/x', total_kb: 0, used_kb: 0 }] });
+  assert.deepEqual(rows, [], 'dividing by it would invent a number');
+});
+
+test('a_host_that_has_not_reported_filesystems_yet_has_no_rows', () => {
+  const { mountRows } = require('../src/pick.js');
+  // df runs on a slow cadence, so this is the normal state for the first
+  // half-minute of a connection - not an error, and not an empty disk.
+  assert.deepEqual(mountRows({}), []);
+  assert.deepEqual(mountRows({ fs: [] }), []);
+});

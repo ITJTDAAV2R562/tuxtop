@@ -110,6 +110,33 @@
     return m === 'vm' || m === 'unknown';
   }
 
-  return { fullestFs, fsPct, sensorName, sensorMetric, hottestSensor,
+  /**
+   * Every filesystem on a host, fullest first.
+   *
+   * The card shows only the fullest, which is the right single number - one
+   * full disk is the problem, not the mean fullness of five. But it means a
+   * /boot at 60% is invisible behind a / at 61%, and on this fleet coot
+   * carries thirteen filesystems and wader six. This is the same data the
+   * scalar reading is picked from, expanded.
+   *
+   * Bind mounts are already collapsed upstream: one device, one entry, under
+   * its shortest name. Sorting here is by fullness rather than by mount point
+   * because the question is always "what is nearly full", never "what is
+   * alphabetically first".
+   */
+  function mountRows(h) {
+    if (!h.fs || !h.fs.length) return [];
+    return h.fs
+      .filter(f => f.total_kb > 0)
+      .map(f => ({
+        mount: f.mount,
+        pct: f.used_kb / f.total_kb * 100,
+        used_kb: f.used_kb,
+        total_kb: f.total_kb,
+      }))
+      .sort((a, b) => b.pct - a.pct);
+  }
+
+  return { fullestFs, fsPct, mountRows, sensorName, sensorMetric, hottestSensor,
            machine, machineLabel, stealIsMeaningful };
 });

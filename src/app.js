@@ -12,7 +12,7 @@
   // everywhere, so the call sites read the same as before the extraction.
   const { bps, gb, fmtKb, fmtSpan, humanUptime, shortGpu } = TuxFormat;
   const { band, logWindow, normalise, sliderToSecs, niceCols } = TuxScale;
-  const { fullestFs, fsPct, sensorName, sensorMetric, hottestSensor,
+  const { fullestFs, fsPct, mountRows, sensorName, sensorMetric, hottestSensor,
           machine, machineLabel, stealIsMeaningful } = TuxPick;
   const { matchesHost, matchesProcess } = TuxFilter;
   const { heatRow, coverage, heatOrder, groupBreaks, ramp, mixHex } = TuxHeat;
@@ -166,17 +166,44 @@
   /// With no groups configured this returns exactly `ordered()`, so a fleet
   /// that has never used the feature renders precisely as it did before it
   /// existed.
-  function fleetRows() {
+  function fleetRows(m) {
     const { groups, ungrouped } = TuxAgg.groupHosts(visible());
     const rows = [];
+    // A metric that can expand a host - filesystems, so far - puts its parts
+    // underneath it, opened by the same disclosure a group uses. Nineteen
+    // hosts times thirteen mounts is not a list anyone reads; the one host
+    // you are asking about is.
+    const expand = h => {
+      if (!m || !m.rows) return;
+      const parts = m.rows(h);
+      if (parts.length < 2 || !hostOpen(h.name)) return;
+      for (const r of parts) rows.push({ kind: 'part', host: h, part: r });
+    };
     for (const g of groups) {
       rows.push({ kind: 'group', name: g.name, hosts: g.hosts });
       if (groupOpen(g.name)) {
-        for (const h of g.hosts) rows.push({ kind: 'host', host: h, member: true });
+        for (const h of g.hosts) {
+          rows.push({ kind: 'host', host: h, member: true });
+          expand(h);
+        }
       }
     }
-    for (const h of ungrouped) rows.push({ kind: 'host', host: h });
+    for (const h of ungrouped) {
+      rows.push({ kind: 'host', host: h });
+      expand(h);
+    }
     return rows;
+  }
+
+  /// Which hosts have their parts showing, in the Fleet view.
+  ///
+  /// Not persisted: it is a question you ask about one host for as long as you
+  /// are looking at it, unlike a group, which is durable structure.
+  const openHosts = new Set();
+  const hostOpen = name => openHosts.has(name);
+  function toggleHost(name) {
+    if (!openHosts.delete(name)) openHosts.add(name);
+    build(); paint();
   }
 
   /// A group's hosts in the flat shape `aggregateGroup` expects.
@@ -368,6 +395,16 @@
         return f ? `${f.mount}  ${gb(f.used_kb / 1048576)}/${gb(f.total_kb / 1048576)}G` : '';
       },
       has: h => fsPct(h) !== null,
+      // Expanded in the Fleet view only. The scalar above stays the reading
+      // everything else uses - one full disk is the problem, so the fullest is
+      // the right single number - but it hides a /boot at 60% behind a / at
+      // 61%, and coot carries thirteen filesystems.
+      rows: h => mountRows(h).map(r => ({
+        key: r.mount,
+        label: r.mount,
+        value: r.pct,
+        sub: `${gb(r.used_kb / 1048576)}/${gb(r.total_kb / 1048576)}G`,
+      })),
     },
     swap: {
       label: 'Swap', shape: 'scalar', scale: 'absolute', max: 100,
@@ -634,7 +671,7 @@
     const wrap = document.createElement('div');
     wrap.className = 'fleetbars';
 
-    fleetRows().forEach(r => {
+    fleetRows(m).forEach(r => {
       const row = document.createElement('div');
       if (r.kind === 'group') {
         row.className = 'fbar fgroup';
@@ -650,15 +687,33 @@
           <span class="fbar-val" data-val></span>
           <span class="fbar-sub" data-sub></span>`;
         row.querySelector('.ftoggle').addEventListener('click', () => toggleGroup(r.name));
+      } else if (r.kind === 'part') {
+        // One filesystem of a host, under it. No dot: the host's state is
+        // stated once, on its own row, and repeating it per mount would imply
+        // a mount can be unreachable on its own.
+        row.className = 'fbar part';
+        row.dataset.name = r.host.name;
+        row.dataset.part = r.part.key;
+        row.innerHTML = `
+          <span class="fbar-name" title="${esc(r.part.label)}">${esc(r.part.label)}</span>
+          <span class="fbar-track"><span class="fbar-fill"></span></span>
+          <span class="fbar-val" data-val></span>
+          <span class="fbar-sub" data-sub></span>`;
       } else {
+        const parts = m.rows ? m.rows(r.host).length : 0;
         row.className = 'fbar' + (r.member ? ' member' : '');
         row.dataset.name = r.host.name;
         row.innerHTML = `
-          <span class="dot"></span>
+          ${parts > 1
+            ? `<button class="ftoggle" type="button" aria-expanded="${hostOpen(r.host.name)}"
+                       title="Show all ${parts} filesystems on ${esc(r.host.name)}"><span class="chev" aria-hidden="true"></span></button>`
+            : '<span class="dot"></span>'}
           <span class="fbar-name">${esc(r.host.name)}</span>
           <span class="fbar-track"><span class="fbar-fill"></span></span>
           <span class="fbar-val" data-val></span>
           <span class="fbar-sub" data-sub></span>`;
+        const t = row.querySelector('.ftoggle');
+        if (t) t.addEventListener('click', () => toggleHost(r.host.name));
       }
       wrap.appendChild(row);
     });
@@ -807,8 +862,27 @@
       row.classList.toggle('partial', !!(g && g.partial));
     });
 
+    // A host that can be expanded needs its disclosure, and whether it can is
+    // not known at build time: df runs on a slow cadence, so on the first
+    // build no host has filesystems yet. Without this the control never
+    // appears at all - the same shape as `paintVector` rebuilding when the
+    // tile count stops matching.
+    if (m.rows) {
+      for (const h of hosts) {
+        const row = grid.querySelector(
+          `.fbar[data-name="${CSS.escape(h.name)}"]:not(.part)`);
+        if (!row) continue;
+        const canExpand = m.rows(h).length > 1;
+        if (canExpand !== !!row.querySelector('.ftoggle')) { build(); return; }
+      }
+    }
+
     hosts.forEach(h => {
-      const row = grid.querySelector(`.fbar[data-name="${CSS.escape(h.name)}"]`);
+      // :not(.part) - a host's filesystem rows carry the same data-name, and
+      // painting one of those with the host's own reading would put the
+      // fullest mount's number on every mount.
+      const row = grid.querySelector(
+        `.fbar[data-name="${CSS.escape(h.name)}"]:not(.part)`);
       if (!row) return;
       const raw = m.scalar(h);
       const missing = raw === null || raw === undefined;
@@ -824,8 +898,34 @@
       row.querySelector('[data-val]').textContent =
         (h.fault || missing) ? '\u2014' : m.fmt(v);
       row.querySelector('[data-sub]').textContent = (!h.fault && m.sub) ? m.sub(h) : '';
-      row.querySelector('.dot').className = dotClass(h);
+      // An expanded host shows a disclosure where the dot would be; its state
+      // is still stated, by the row's own `down` class and its value.
+      const dot = row.querySelector('.dot');
+      if (dot) dot.className = dotClass(h);
       row.classList.toggle('down', !!h.fault);
+    });
+
+    // A host's own parts, each on the shared axis so a mount and a host are
+    // the same length for the same number.
+    grid.querySelectorAll('.fbar.part').forEach(row => {
+      const h = hosts.find(x => x.name === row.dataset.name);
+      if (!h || !m.rows) return;
+      const part = m.rows(h).find(r => r.key === row.dataset.part);
+      const fill = row.querySelector('.fbar-fill');
+      if (!part) {
+        // The mount went away between builds - unmounted, or df has not run
+        // since. Say nothing rather than draw a stale bar.
+        row.classList.add('nodata');
+        fill.style.width = '0%';
+        row.querySelector('[data-val]').textContent = '\u2014';
+        row.querySelector('[data-sub]').textContent = '';
+        return;
+      }
+      row.classList.remove('nodata');
+      fill.style.width = (normalise(m, part.value, peak) * 100).toFixed(1) + '%';
+      fill.dataset.band = m.scale === 'absolute' ? band(part.value) : 'cool';
+      row.querySelector('[data-val]').textContent = m.fmt(part.value);
+      row.querySelector('[data-sub]').textContent = part.sub || '';
     });
 
     const note = grid.querySelector('[data-note]');

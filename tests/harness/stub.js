@@ -16,6 +16,32 @@
     group: h.group || null, os: h.os || '',
   }));
 
+  /// Filesystems per host, where they differ from a single root.
+  ///
+  /// `df` runs on a slow cadence, so these arrive with every frame here where
+  /// the real sampler sends them every thirtieth - the shapes the UI must
+  /// handle are the same either way.
+  const FS = {
+    coot: [
+      { mount: '/', total_kb: 1416 * 1048576, used_kb: 9 * 1048576 },
+      { mount: '/rpool/pbs', total_kb: 400 * 1048576, used_kb: 173 * 1048576 },
+      { mount: '/mnt/usb-data', total_kb: 1024 * 1048576, used_kb: 298 * 1048576 },
+      { mount: '/mnt/pbs-mirror', total_kb: 2658 * 1048576, used_kb: 165 * 1048576 },
+      { mount: '/rpool/data/subvol-103-disk-0', total_kb: 8 * 1048576, used_kb: 1.4 * 1048576 },
+      { mount: '/var/lib/vz', total_kb: 1416 * 1048576, used_kb: 9 * 1048576 },
+      { mount: '/etc/pve', total_kb: 0.1 * 1048576, used_kb: 0 },
+    ],
+    wader: [
+      { mount: '/', total_kb: 466 * 1048576, used_kb: 229 * 1048576 },
+      { mount: '/boot', total_kb: 1 * 1048576, used_kb: 0.6 * 1048576 },
+      { mount: '/mnt/hdd_root', total_kb: 914 * 1048576, used_kb: 228 * 1048576 },
+    ],
+    serin: [
+      { mount: '/', total_kb: 200 * 1048576, used_kb: 2 * 1048576 },
+      { mount: '/hdd', total_kb: 3600 * 1048576, used_kb: 12 * 1048576 },
+    ],
+  };
+
   const settings = { interval_ms: 1000, history_cap_mb: 256, always_on_top: false };
   const emit = (ev, payload) => (listeners[ev] || []).forEach(f => f({ payload }));
 
@@ -57,6 +83,12 @@
       { driver: 'gigabyte_wmi', label: '', kind: 'board', celsius: 33 + Math.random() * 3 },
       { driver: 'gigabyte_wmi', label: '', kind: 'board', celsius: 36 + Math.random() * 3 },
     ],
+    // Mirrors the real spread, which is the point of the harness: most hosts
+    // carry one or two filesystems and one carries thirteen. A stub where
+    // every host looked alike would never exercise the disclosure, and the
+    // fleet view would look finished while the case that needed it - coot's
+    // ZFS datasets - had never been drawn.
+    filesystems: FS[name] || [{ mount: '/', total_kb: 240 * 1048576, used_kb: 31 * 1048576 }],
   });
 
   function invokeHistory(args) {

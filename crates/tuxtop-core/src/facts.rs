@@ -96,6 +96,11 @@ impl HostFacts {
 /// One mounted filesystem worth showing.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct FsEntry {
+    /// The device or filesystem `df` named, used to tell one filesystem
+    /// mounted twice from two filesystems. Not shown; the mount point is what
+    /// a person recognises.
+    #[serde(default)]
+    pub source: String,
     pub mount: String,
     pub total_kb: u64,
     pub used_kb: u64,
@@ -186,7 +191,25 @@ pub fn parse_filesystems(text: &str) -> Vec<FsEntry> {
         if out.iter().any(|e| e.mount == mount) {
             continue;
         }
+        // One filesystem, one entry - even when it is mounted twice. A bind
+        // mount lists under both names with identical figures, and on this
+        // fleet that is not rare: wader carries /boot and /mnt/hdd_root/boot,
+        // owl carries /mnt/c and /usr/lib/wsl/drivers. Listing both would show
+        // the same disk as two, which is the same double-count ADR-008 forbids
+        // across hosts, one level down.
+        //
+        // The shortest path wins, because the canonical name is the one the
+        // system was built around: /boot over /mnt/hdd_root/boot, /mnt/c over
+        // /usr/lib/wsl/drivers.
+        let source = f[0].to_string();
+        if let Some(seen) = out.iter_mut().find(|e| e.source == source) {
+            if mount.len() < seen.mount.len() {
+                seen.mount = mount;
+            }
+            continue;
+        }
         out.push(FsEntry {
+            source,
             mount,
             total_kb: total,
             used_kb: used,
@@ -454,5 +477,59 @@ mod machine_tests {
     fn a_host_from_before_this_existed_still_parses() {
         let f = parse_facts("TXI|kernel|Linux 6.6\nTXI|os|Debian 13\n");
         assert_eq!(f.machine(), Machine::Unknown);
+    }
+}
+
+#[cfg(test)]
+mod bind_mount_tests {
+    use super::*;
+
+    #[test]
+    fn one_filesystem_mounted_twice_is_one_entry() {
+        // wader really does carry /boot and /mnt/hdd_root/boot, the same
+        // device under two names with identical figures. Listing both shows
+        // one disk as two - and in a per-mount view it also double-counts the
+        // fullest thing on the host.
+        let txt = "\
+TXF|/dev/sda2 1000 600 400 60% /boot
+TXF|/dev/sda2 1000 600 400 60% /mnt/hdd_root/boot
+TXF|/dev/sda1 2000 400 1600 20% /
+";
+        let fs = parse_filesystems(txt);
+        assert_eq!(fs.len(), 2, "got {fs:?}");
+        // The canonical name wins: the system was built around /boot, not
+        // around where it happens to be bind-mounted.
+        assert!(fs.iter().any(|e| e.mount == "/boot"));
+        assert!(!fs.iter().any(|e| e.mount.contains("hdd_root")));
+    }
+
+    #[test]
+    fn the_shorter_mount_wins_whichever_order_df_lists_them() {
+        // df's order is not ours to rely on, so the rule has to hold both ways.
+        let a = parse_filesystems(
+            "TXF|/dev/x 100 50 50 50% /mnt/wsl/drivers\nTXF|/dev/x 100 50 50 50% /mnt/c\n",
+        );
+        let b = parse_filesystems(
+            "TXF|/dev/x 100 50 50 50% /mnt/c\nTXF|/dev/x 100 50 50 50% /mnt/wsl/drivers\n",
+        );
+        assert_eq!(a.len(), 1);
+        assert_eq!(b.len(), 1);
+        assert_eq!(a[0].mount, "/mnt/c");
+        assert_eq!(b[0].mount, "/mnt/c");
+    }
+
+    #[test]
+    fn two_real_filesystems_are_never_merged() {
+        // Identical figures are not identity, and this is not hypothetical.
+        // wader carries /boot on /dev/nvme0n1p2 and /mnt/hdd_root/boot on
+        // /dev/sda2, both reporting exactly 598112 KB used, because sda is a
+        // clone of the nvme. Deduplicating on size-and-usage - the obvious
+        // shortcut when the source strings differ - would hide one of two
+        // real disks. Only a shared source means one filesystem.
+        let fs = parse_filesystems(
+            "TXF|/dev/nvme0n1p2 1000 598112 100 60% /boot\n\
+             TXF|/dev/sda2 1000 598112 100 60% /mnt/hdd_root/boot\n",
+        );
+        assert_eq!(fs.len(), 2, "identical figures are not identity");
     }
 }

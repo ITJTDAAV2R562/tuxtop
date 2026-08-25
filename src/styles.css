@@ -1209,3 +1209,16 @@ body[data-readonly="yes"] .grip { display: none }
   font-size:10.5px;color:var(--text-3);margin-top:5px;
 }
 .heat-note{font-size:11.5px;color:var(--text-3)}
+
+/* A host's own parts — filesystems, so far — listed under it. Indented past
+   the member indent so a mount under a grouped host still reads as one level
+   deeper, and monospaced because mount points are paths and line up. */
+.fbar.part{margin-left:40px}
+.fbar.member ~ .fbar.part{margin-left:62px}
+.fbar.part .fbar-name{
+  font-family:var(--font-mono);font-size:11.5px;
+  font-weight:400;color:var(--text-2);
+}
+/* No dot column on a part row: the grid's first track collapses rather than
+   leaving a hole where the host's status light sits. */
+.fbar.part{grid-template-columns:minmax(90px,150px) 1fr auto auto}
