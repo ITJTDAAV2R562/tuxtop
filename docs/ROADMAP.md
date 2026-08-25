@@ -500,14 +500,23 @@ Work that arrived from design conversation rather than the plan:
   the serving machine open SSH with its own keys. See CLAUDE.md, "Two shells,
   one service".
 
-- **Distribution.** `.github/workflows/release.yml` turns a `v*` tag into a
-  Windows installer and a Linux `tuxtop-serve` tarball, both built from the
-  tagged commit after re-running the full CI gate on it. Written and linted but
-  **never executed** - GitHub Actions is unavailable on this account pending
-  billing, so the first tag will be the first real run. The two build steps were
-  each verified by hand: the bundle through the Windows toolchain at `/mnt/c`,
-  and the tarball by extracting it into an empty directory and serving from it.
-  Nothing is code-signed, so SmartScreen warns on first run.
+- ~~**Distribution.**~~ **Shipped, 2026-08-25** - `v0.2.0`: a Windows `.msi`
+  and NSIS installer, a Linux `tuxtop-serve` tarball, and `SHA256SUMS`, built
+  from the tagged commit after re-running the full CI gate on it. Verified the
+  way a stranger would: downloaded the published assets, checked all three
+  sums, extracted the tarball into an empty directory and served from it.
+
+  GitHub Actions was unavailable on this account for billing, which is why it
+  sat written-but-unrun for a day. **Self-hosted runners are not billed**, so
+  moving CI and the release onto dove and n1 removed the constraint entirely -
+  and dove's 32 cores are faster than a hosted runner's 2. See
+  [CI.md](CI.md), including the two traps that only bite a self-hosted Windows
+  runner: `shell: bash` is WSL's bash, not Git Bash, and a runner inherits the
+  PATH of whatever launched it.
+
+  Nothing is code-signed, so SmartScreen warns on first run and the notes say
+  so. `v0.1.0` remains the old `tuxtop-watch` CLI release; the number was not
+  reused.
 
 - **Per-core sparklines** instead of single-value tiles at large card sizes.
 - **More metrics** now that the registry exists: temperatures, per-filesystem
