@@ -151,7 +151,7 @@ async fn command(
             .and_then(|st2| svc.set_settings(st2))
             .map(|v| json!(v)),
         "set_host_interval" => svc
-            .set_host_interval(&s("name"), arg("intervalSecs").as_u64().map(|v| v as u32))
+            .set_host_interval(&s("name"), arg("intervalMs").as_u64().map(|v| v as u32))
             .map(|v| json!(v)),
         "set_host_group" => svc
             .set_host_group(&s("name"), arg("group").as_str())

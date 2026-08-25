@@ -126,6 +126,7 @@ async fn main() -> ExitCode {
             user,
             port: 22,
             beszel_url: None,
+            interval_ms: None,
             interval_secs: None,
             os: String::new(),
             group: None,

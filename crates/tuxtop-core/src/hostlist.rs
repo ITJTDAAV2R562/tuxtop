@@ -65,6 +65,7 @@ mod tests {
             user: String::new(),
             port: 22,
             beszel_url: None,
+            interval_ms: None,
             interval_secs: None,
             os: String::new(),
             group: None,
@@ -148,9 +149,18 @@ mod tests {
 /// Global settings, stored alongside the host list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Settings {
-    /// Default sample interval, overridable per host.
-    #[serde(default = "default_interval")]
-    pub interval_secs: u32,
+    /// Default sample interval in **milliseconds**, overridable per host.
+    ///
+    /// Milliseconds rather than seconds because 4 Hz and 2 Hz are now offered
+    /// and neither is expressible in whole seconds. Files written before that
+    /// carry `interval_secs`; `HostsFile::migrate` folds them in on load, so
+    /// an existing setting is never silently dropped back to the default.
+    #[serde(default = "default_interval_ms")]
+    pub interval_ms: u32,
+    /// Superseded by `interval_ms`. Read on load and then dropped; never
+    /// written. Present only so an older file keeps its setting.
+    #[serde(default, skip_serializing)]
+    pub interval_secs: Option<u32>,
     /// Ceiling on the in-memory history store.
     ///
     /// Expressed in MB rather than hours because the tiers already express the
@@ -168,8 +178,13 @@ pub struct Settings {
     pub always_on_top: bool,
 }
 
-fn default_interval() -> u32 {
-    1
+/// One second: the rate this shipped with, and still the sensible default.
+/// Sub-second is opt-in - it multiplies both traffic and the load the sampler
+/// puts on the watched host, and most of a fleet never needs it.
+pub const DEFAULT_INTERVAL_MS: u32 = 1000;
+
+fn default_interval_ms() -> u32 {
+    DEFAULT_INTERVAL_MS
 }
 
 fn default_history_mb() -> u32 {
@@ -179,7 +194,8 @@ fn default_history_mb() -> u32 {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            interval_secs: default_interval(),
+            interval_ms: default_interval_ms(),
+            interval_secs: None,
             history_cap_mb: default_history_mb(),
             always_on_top: false,
         }
@@ -200,11 +216,41 @@ pub struct HostsFile {
     pub hosts: Vec<HostConfig>,
 }
 
-/// The interval that applies to `host`, given the global default.
-pub fn effective_interval(host: &HostConfig, settings: &Settings) -> u32 {
-    host.interval_secs
-        .unwrap_or(settings.interval_secs)
-        .clamp(1, 3600)
+impl HostsFile {
+    /// Fold any pre-milliseconds `interval_secs` into `interval_ms`.
+    ///
+    /// Called on every load. Renaming the field without this would read an
+    /// existing `interval_secs = 10` as absent and silently reset that host to
+    /// the default - a settings change nobody asked for, visible only as a
+    /// host sampling ten times faster than it was told to.
+    pub fn migrate(&mut self) {
+        if let Some(secs) = self.settings.interval_secs.take() {
+            self.settings.interval_ms = secs.saturating_mul(1000);
+        }
+        for h in &mut self.hosts {
+            if let Some(secs) = h.interval_secs.take() {
+                h.interval_ms = Some(secs.saturating_mul(1000));
+            }
+        }
+    }
+}
+
+/// The lower bound on any sample interval, in milliseconds.
+///
+/// 4 Hz is the fastest offered. Below that the SSH round trip, not the kernel,
+/// becomes the limit - and the sampler starts costing the watched host real
+/// CPU, which a monitoring tool has no business doing.
+pub const MIN_INTERVAL_MS: u32 = 250;
+/// An hour, the slowest that still counts as monitoring.
+pub const MAX_INTERVAL_MS: u32 = 3_600_000;
+
+/// The interval that applies to `host`, in milliseconds, given the global
+/// default. A per-host value always wins - the whole point of the override is
+/// watching one box closely without paying for the other eighteen.
+pub fn effective_interval_ms(host: &HostConfig, settings: &Settings) -> u32 {
+    host.interval_ms
+        .unwrap_or(settings.interval_ms)
+        .clamp(MIN_INTERVAL_MS, MAX_INTERVAL_MS)
 }
 
 /// Parse `hosts.toml`. Kept separate from file I/O so it is testable.
@@ -264,6 +310,7 @@ addr = "dove"
                 user: String::new(),
                 port: 22,
                 beszel_url: None,
+                interval_ms: None,
                 interval_secs: None,
                 os: String::new(),
                 group: None,
@@ -295,6 +342,7 @@ addr = "dove"
                     user: String::new(),
                     port: 22,
                     beszel_url: None,
+                    interval_ms: None,
                     interval_secs: None,
                     os: String::new(),
                     group: None,
@@ -317,6 +365,7 @@ addr = "dove"
                 user: String::new(),
                 port: 22,
                 beszel_url: Some("https://dove.example".into()),
+                interval_ms: None,
                 interval_secs: None,
                 os: String::new(),
                 group: None,
@@ -327,6 +376,7 @@ addr = "dove"
                 user: String::new(),
                 port: 22,
                 beszel_url: None,
+                interval_ms: None,
                 interval_secs: None,
                 os: String::new(),
                 group: None,
@@ -405,6 +455,7 @@ mod reorder_tests {
                 user: String::new(),
                 port: 22,
                 beszel_url: None,
+                interval_ms: None,
                 interval_secs: None,
                 os: String::new(),
                 group: None,
@@ -458,7 +509,8 @@ mod settings_tests {
             user: String::new(),
             port: 22,
             beszel_url: None,
-            interval_secs: iv,
+            interval_ms: iv,
+            interval_secs: None,
             os: String::new(),
             group: None,
         }
@@ -469,7 +521,7 @@ mod settings_tests {
         // Every existing hosts.toml predates settings; none of them may break.
         let f = parse_file("[[host]]\nname = \"dove\"\naddr = \"dove\"\n").unwrap();
         assert_eq!(f.hosts.len(), 1);
-        assert_eq!(f.settings.interval_secs, 1);
+        assert_eq!(f.settings.interval_ms, DEFAULT_INTERVAL_MS);
         assert_eq!(f.settings.history_cap_mb, 256);
         assert!(!f.settings.always_on_top, "off unless asked for");
     }
@@ -478,7 +530,8 @@ mod settings_tests {
     fn settings_round_trip_with_hosts() {
         let f = HostsFile {
             settings: Settings {
-                interval_secs: 5,
+                interval_ms: 5_000,
+                interval_secs: None,
                 history_cap_mb: 512,
                 always_on_top: true,
             },
@@ -487,7 +540,7 @@ mod settings_tests {
         let text = render_file(&f).unwrap();
         let back = parse_file(&text).unwrap();
 
-        assert_eq!(back.settings.interval_secs, 5, "wrote:\n{text}");
+        assert_eq!(back.settings.interval_ms, 5_000, "wrote:\n{text}");
         assert_eq!(back.settings.history_cap_mb, 512);
         assert!(
             back.settings.always_on_top,
@@ -498,7 +551,7 @@ mod settings_tests {
             2,
             "settings must not swallow the hosts\n{text}"
         );
-        assert_eq!(back.hosts[1].interval_secs, Some(30));
+        assert_eq!(back.hosts[1].interval_ms, Some(30));
     }
 
     #[test]
@@ -519,33 +572,42 @@ mod settings_tests {
     #[test]
     fn a_host_without_an_override_follows_the_global_interval() {
         let s = Settings {
-            interval_secs: 10,
+            interval_ms: 10000,
+            interval_secs: None,
             history_cap_mb: 256,
             always_on_top: false,
         };
-        assert_eq!(effective_interval(&host("dove", None), &s), 10);
+        assert_eq!(effective_interval_ms(&host("dove", None), &s), 10_000);
     }
 
     #[test]
     fn a_per_host_override_wins() {
         let s = Settings {
-            interval_secs: 10,
+            interval_ms: 10000,
+            interval_secs: None,
             history_cap_mb: 256,
             always_on_top: false,
         };
-        assert_eq!(effective_interval(&host("dove", Some(1)), &s), 1);
+        assert_eq!(effective_interval_ms(&host("dove", Some(1_000)), &s), 1_000);
     }
 
     #[test]
     fn absurd_intervals_are_clamped_not_obeyed() {
         // Zero would spin the remote loop as fast as sh can fork.
         let s = Settings {
-            interval_secs: 1,
+            interval_ms: 1000,
+            interval_secs: None,
             history_cap_mb: 256,
             always_on_top: false,
         };
-        assert_eq!(effective_interval(&host("dove", Some(0)), &s), 1);
-        assert_eq!(effective_interval(&host("dove", Some(999_999)), &s), 3600);
+        assert_eq!(
+            effective_interval_ms(&host("dove", Some(0)), &s),
+            MIN_INTERVAL_MS
+        );
+        assert_eq!(
+            effective_interval_ms(&host("dove", Some(999_999_999)), &s),
+            MAX_INTERVAL_MS
+        );
     }
 }
 
@@ -560,6 +622,7 @@ mod group_tests {
             user: String::new(),
             port: 22,
             beszel_url: None,
+            interval_ms: None,
             interval_secs: None,
             os: String::new(),
             group: group.map(str::to_string),

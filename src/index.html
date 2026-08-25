@@ -127,14 +127,19 @@
     <div class="field">
       <label for="s-interval">Sample interval</label>
       <select id="s-interval">
-        <option value="1">1 second</option>
-        <option value="2">2 seconds</option>
-        <option value="5">5 seconds</option>
-        <option value="10">10 seconds</option>
-        <option value="30">30 seconds</option>
-        <option value="60">1 minute</option>
+        <option value="250">4 Hz &mdash; four samples a second</option>
+        <option value="500">2 Hz &mdash; twice a second</option>
+        <option value="1000">1 second</option>
+        <option value="2000">2 seconds</option>
+        <option value="5000">5 seconds</option>
+        <option value="10000">10 seconds</option>
+        <option value="30000">30 seconds</option>
+        <option value="60000">1 minute</option>
       </select>
-      <p class="hint">Applies to hosts without their own override.</p>
+      <p class="hint">Applies to hosts without their own override. Sub-second
+        multiplies traffic and the work the sampler asks of every host at once
+        &mdash; it is usually better set on the one host you are investigating,
+        in the table below.</p>
     </div>
 
     <div class="meter" id="meter">

@@ -73,16 +73,16 @@ impl TrafficStats {
         self.bytes_total as f64 / self.frames_total as f64
     }
 
-    /// Bytes per second this host would cost at `interval_secs`.
+    /// Bytes per second this host would cost at `interval_ms`.
     ///
     /// Exact rather than estimated: frame size tracks disk and interface
     /// count, not load, so it is effectively constant for a given host and
     /// the rate really is size divided by interval.
-    pub fn bytes_per_sec_at(&self, interval_secs: u32) -> f64 {
-        if interval_secs == 0 {
+    pub fn bytes_per_sec_at(&self, interval_ms: u32) -> f64 {
+        if interval_ms == 0 {
             return 0.0;
         }
-        self.mean_frame_bytes() / interval_secs as f64
+        self.mean_frame_bytes() * 1000.0 / interval_ms as f64
     }
 }
 
@@ -95,9 +95,9 @@ pub fn fleet_total(all: &[TrafficStats]) -> TrafficStats {
     }
 }
 
-/// Bytes per second the whole fleet would cost at `interval_secs`.
-pub fn fleet_bytes_per_sec_at(all: &[TrafficStats], interval_secs: u32) -> f64 {
-    all.iter().map(|s| s.bytes_per_sec_at(interval_secs)).sum()
+/// Bytes per second the whole fleet would cost at `interval_ms`.
+pub fn fleet_bytes_per_sec_at(all: &[TrafficStats], interval_ms: u32) -> f64 {
+    all.iter().map(|s| s.bytes_per_sec_at(interval_ms)).sum()
 }
 
 #[cfg(test)]
@@ -148,9 +148,12 @@ mod tests {
     fn projection_scales_inversely_with_interval() {
         // 7 KB frames at 1 Hz is 7 KB/s; at 10 s it is a tenth of that.
         let s = stats(7000, 1);
-        assert!((s.bytes_per_sec_at(1) - 7000.0).abs() < 0.01);
-        assert!((s.bytes_per_sec_at(10) - 700.0).abs() < 0.01);
-        assert!((s.bytes_per_sec_at(60) - 116.67).abs() < 0.01);
+        assert!((s.bytes_per_sec_at(1000) - 7000.0).abs() < 0.01);
+        assert!((s.bytes_per_sec_at(10_000) - 700.0).abs() < 0.01);
+        assert!((s.bytes_per_sec_at(60_000) - 116.67).abs() < 0.01);
+        // ...and four times a second costs four times as much, which is the
+        // whole reason sub-second is opt-in and per-host.
+        assert!((s.bytes_per_sec_at(250) - 28_000.0).abs() < 0.01);
     }
 
     #[test]
@@ -174,10 +177,10 @@ mod tests {
     fn fleet_projection_matches_the_measured_fleet() {
         // The three hosts actually measured: 7415, 9521 and 4332 bytes/frame.
         let fleet = [stats(7415, 1), stats(9521, 1), stats(4332, 1)];
-        let at_1 = fleet_bytes_per_sec_at(&fleet, 1);
+        let at_1 = fleet_bytes_per_sec_at(&fleet, 1000);
         assert!((at_1 - 21268.0).abs() < 1.0, "got {at_1}");
         // Ten times the interval, a tenth of the traffic.
-        assert!((fleet_bytes_per_sec_at(&fleet, 10) - at_1 / 10.0).abs() < 0.01);
+        assert!((fleet_bytes_per_sec_at(&fleet, 10_000) - at_1 / 10.0).abs() < 0.01);
     }
 
     #[test]

@@ -26,10 +26,15 @@ pub struct HostConfig {
     /// still works, there is just no history behind it.
     #[serde(default)]
     pub beszel_url: Option<String>,
-    /// Sample interval for this host alone. `None` follows the global
-    /// setting. Per-host because a fleet is not uniform: 1 Hz on the box being
-    /// watched, 10 s on the twelve that only need to be noticed going down.
+    /// Sample interval for this host alone, in **milliseconds**. `None`
+    /// follows the global setting. Per-host because a fleet is not uniform:
+    /// 4 Hz on the box being investigated, 10 s on the twelve that only need
+    /// to be noticed going down.
     #[serde(default)]
+    pub interval_ms: Option<u32>,
+    /// Superseded by `interval_ms`. Read on load and then dropped; never
+    /// written. See `HostsFile::migrate`.
+    #[serde(default, skip_serializing)]
     pub interval_secs: Option<u32>,
     /// Which operating system this host runs: `linux` (the default) or
     /// `windows`.
@@ -70,6 +75,7 @@ impl Default for HostConfig {
             user: String::new(),
             port: default_port(),
             beszel_url: None,
+            interval_ms: None,
             interval_secs: None,
             os: String::new(),
             group: None,

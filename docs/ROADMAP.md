@@ -516,8 +516,15 @@ Work that arrived from design conversation rather than the plan:
   get identical footprints. Open question from the mockup review.
 - **Detail as a separate window** rather than inline accordion, so two hosts
   can be compared side by side.
-- **Sub-second sampling** for a "performance" mode. `/proc/stat` at 250 ms is
-  cheap; the limit is SSH round-trip, not the kernel.
+- ~~**Sub-second sampling.**~~ **Built, 2026-08-25** - 4 Hz and 2 Hz, default
+  off, per host or globally. What unblocked it was compression: 4 Hz across
+  the whole fleet now costs less than half what 1 Hz cost before `ssh -C`.
+  Two things had to change beyond the number. The expensive extras keep their
+  wall-clock cadence rather than a frame count, because `nvidia-smi` is a
+  process spawn and running it four times a second is real load on a machine
+  we only watch; and the process ranking has a 1 Hz floor for the same reason.
+  The interval moved from seconds to milliseconds throughout, with a migration
+  so an existing `interval_secs` is not silently reset.
 - **systemd unit view** — reuse the `systemd_services` shape Beszel already
   collects.
 - **Linux and macOS builds.** Tauri is cross-platform; only `window-vibrancy`

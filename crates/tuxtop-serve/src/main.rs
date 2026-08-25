@@ -109,9 +109,9 @@ async fn main() -> std::process::ExitCode {
 
     let n = svc.list_hosts().map(|h| h.len()).unwrap_or(0);
     eprintln!(
-        "watching {n} hosts from {} at {}s{}",
+        "watching {n} hosts from {} at {}{}",
         hosts.display(),
-        settings.interval_secs,
+        tuxtop_core::sampler::rate_label(settings.interval_ms),
         if writable { "" } else { " (read-only)" }
     );
 

@@ -2605,7 +2605,16 @@
   });
 
   // ---- settings ----------------------------------------------------------
-  const INTERVALS = [1, 2, 5, 10, 30, 60];
+  // Milliseconds. 4 Hz and 2 Hz are offered because a box under investigation
+  // is worth watching four times a second; the default stays 1 s because
+  // sub-second multiplies both traffic and the load the sampler puts on the
+  // watched host, and eighteen of nineteen never need it.
+  const INTERVALS = [250, 500, 1000, 2000, 5000, 10000, 30000, 60000];
+
+  /// A rate as a person says it: "4 Hz" below a second, "30 s" above.
+  /// Mirrors `sampler::rate_label` in the backend.
+  const rateLabel = ms =>
+    ms < 1000 ? `${+(1000 / ms).toFixed(1)} Hz` : `${ms / 1000} s`;
 
   /// Bytes per second the fleet would cost at `iv`, from measured frame sizes.
   ///
@@ -2617,7 +2626,8 @@
     return rows.reduce((sum, r) => {
       const mean = r.frames_total ? r.bytes_total / r.frames_total : 0;
       const iv = overrides.get(r.host) ?? globalIv;
-      return sum + (iv > 0 ? mean / iv : 0);
+      // iv is milliseconds now, so bytes per second is size * 1000 / iv.
+      return sum + (iv > 0 ? mean * 1000 / iv : 0);
     }, 0);
   }
 
@@ -2649,7 +2659,7 @@
     $('[data-meter-rows]').innerHTML = INTERVALS.map(iv => {
       const b = projectFleet(reporting, iv, overrides);
       return `<tr class="${iv === chosen ? 'current' : ''}">
-        <td>${iv === 1 ? '1 second' : iv < 60 ? iv + ' seconds' : '1 minute'}</td>
+        <td>${rateLabel(iv)}</td>
         <td>${bps(b)}</td><td>${fmtDay(perDay(b))}</td></tr>`;
     }).join('');
 
@@ -2717,7 +2727,7 @@
         <select data-host-iv="${esc(h.name)}">
           <option value="">follow global</option>
           ${INTERVALS.map(iv =>
-            `<option value="${iv}"${h.intervalOverride === iv ? ' selected' : ''}>${iv}s</option>`
+            `<option value="${iv}"${h.intervalOverride === iv ? ' selected' : ''}>${rateLabel(iv)}</option>`
           ).join('')}
         </select></td><td>
         <input class="ph-group" list="phGroups" data-host-group="${esc(h.name)}"
@@ -2738,7 +2748,7 @@
     if (LIVE) {
       try {
         const s = await TAURI.core.invoke('get_settings');
-        $('#s-interval').value = String(s.interval_secs);
+        $('#s-interval').value = String(s.interval_ms);
         $('#s-cap').value = String(s.history_cap_mb);
         $('#s-ontop').checked = !!s.always_on_top;
       } catch (e) { showError(String(e)); }
@@ -2770,7 +2780,7 @@
     if (!LIVE) return;
     try {
       await TAURI.core.invoke('set_settings', { settings: {
-        interval_secs: +$('#s-interval').value,
+        interval_ms: +$('#s-interval').value,
         history_cap_mb: +$('#s-cap').value,
         always_on_top: $('#s-ontop').checked,
       }});
@@ -2787,7 +2797,7 @@
     const h = hosts.find(x => x.name === name);
     if (h) h.intervalOverride = v;
     try {
-      await TAURI.core.invoke('set_host_interval', { name, intervalSecs: v });
+      await TAURI.core.invoke('set_host_interval', { name, intervalMs: v });
     } catch (err) { showError(String(err)); }
     refreshMeter();
   });
@@ -2890,14 +2900,25 @@
       h.net = s.net_rx_bps + s.net_tx_bps;      // bytes/sec
       h.dio = s.disk_read_bps + s.disk_write_bps; // bytes/sec
       h.load = s.load;
-      h.temp = (typeof s.cpu_temp_c === 'number') ? s.cpu_temp_c : null;
+      // Absent means "not re-read this frame", not "no sensor" - the same
+      // rule facts, filesystems and GPU already follow below. Sensors are read
+      // on a one-second cadence whatever the sample rate is, because scanning
+      // every hwmon file four times a second costs the watched host real work
+      // for a number that moves in degrees per minute. Overwriting with null
+      // here made a 4 Hz card blink its temperature three frames in four.
+      if (typeof s.cpu_temp_c === 'number') h.temp = s.cpu_temp_c;
+      else if (h.temp === undefined) h.temp = null;
       // Every sensor, named. Kept separate from h.temp because that one is
       // the reading the CPU ranking vouches for; the hottest thing in the box
       // is frequently an NVMe and must not be confused with it.
-      h.temps = Array.isArray(s.temps) ? s.temps.map((t, i, all) => {
-        const idx = all.slice(0, i).filter(x => x.driver === t.driver).length;
-        return { ...t, idx, name: sensorName(t, idx) };
-      }) : [];
+      if (Array.isArray(s.temps) && s.temps.length) {
+        h.temps = s.temps.map((t, i, all) => {
+          const idx = all.slice(0, i).filter(x => x.driver === t.driver).length;
+          return { ...t, idx, name: sensorName(t, idx) };
+        });
+      } else if (!h.temps) {
+        h.temps = [];
+      }
       h.uptime = s.uptime_secs ?? h.uptime ?? null;
       h.swapUsed = s.swap_used_kb || 0;
       h.swapTotal = s.swap_total_kb || 0;
@@ -2935,7 +2956,7 @@
       const cfgs = new Map(list.map(c => [c.name, c]));
       const apply = h => {
         const c = cfgs.get(h.name);
-        h.intervalOverride = c ? c.interval_secs ?? null : null;
+        h.intervalOverride = c ? c.interval_ms ?? null : null;
         h.group = c ? c.group ?? null : null;
         h.os = c ? c.os ?? '' : '';
       };
@@ -2955,7 +2976,7 @@
     try {
       for (const cfg of await invoke('list_hosts')) {
         const h = ensure(cfg.name, 0);
-        h.intervalOverride = cfg.interval_secs ?? null;
+        h.intervalOverride = cfg.interval_ms ?? null;
         h.group = cfg.group ?? null;
         h.os = cfg.os ?? '';
       }

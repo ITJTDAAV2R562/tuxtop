@@ -14,15 +14,13 @@ use tokio::sync::mpsc;
 use crate::config::Config;
 use crate::history::Point;
 use crate::history_store::{now_secs, HistoryStore, HistoryUsage};
-use crate::hostlist::{self, effective_interval, Settings};
+use crate::hostlist::{self, effective_interval_ms, Settings, MAX_INTERVAL_MS, MIN_INTERVAL_MS};
 use crate::procs::ProcInfo;
 use crate::supervisor::{Event, HostCgroup, HostTraffic, Supervisor};
 use crate::HostConfig;
 
 /// Bounds taken from the settings UI, applied here so a request that did not
 /// come from that UI cannot exceed them.
-const MIN_INTERVAL: u32 = 1;
-const MAX_INTERVAL: u32 = 3600;
 const MIN_CAP_MB: u32 = 16;
 const MAX_CAP_MB: u32 = 8192;
 /// A chart cannot draw more points than it has pixels, and a caller asking for
@@ -67,7 +65,7 @@ impl Service {
         let f = self.config.load_file()?;
         self.history.set_cap_mb(f.settings.history_cap_mb);
         for cfg in f.hosts {
-            let iv = effective_interval(&cfg, &f.settings);
+            let iv = effective_interval_ms(&cfg, &f.settings);
             self.sup.start(cfg, iv);
         }
         Ok(f.settings)
@@ -93,8 +91,10 @@ impl Service {
         // under a name that does not match the one on disk.
         let stored = all.last().cloned().expect("just pushed");
         let settings = self.config.load_settings()?;
-        self.sup
-            .start(stored, effective_interval(all.last().unwrap(), &settings));
+        self.sup.start(
+            stored,
+            effective_interval_ms(all.last().unwrap(), &settings),
+        );
         self.announce_hosts(&all);
         Ok(all)
     }
@@ -130,7 +130,8 @@ impl Service {
         let mut f = self.config.load_file()?;
         let before = f.settings;
         f.settings = Settings {
-            interval_secs: settings.interval_secs.clamp(MIN_INTERVAL, MAX_INTERVAL),
+            interval_ms: settings.interval_ms.clamp(MIN_INTERVAL_MS, MAX_INTERVAL_MS),
+            interval_secs: None,
             history_cap_mb: settings.history_cap_mb.clamp(MIN_CAP_MB, MAX_CAP_MB),
             always_on_top: settings.always_on_top,
         };
@@ -138,9 +139,9 @@ impl Service {
         self.history.set_cap_mb(f.settings.history_cap_mb);
 
         for h in &f.hosts {
-            if effective_interval(h, &before) != effective_interval(h, &f.settings) {
+            if effective_interval_ms(h, &before) != effective_interval_ms(h, &f.settings) {
                 self.sup
-                    .start(h.clone(), effective_interval(h, &f.settings));
+                    .start(h.clone(), effective_interval_ms(h, &f.settings));
             }
         }
         let _ = self.events.try_send(Event::SettingsChanged(f.settings));
@@ -150,18 +151,20 @@ impl Service {
     pub fn set_host_interval(
         &self,
         name: &str,
-        interval_secs: Option<u32>,
+        interval_ms: Option<u32>,
     ) -> Result<Vec<HostConfig>, String> {
         let mut f = self.config.load_file()?;
         let Some(h) = f.hosts.iter_mut().find(|h| h.name == name) else {
             return Err(format!("no host named {name}"));
         };
-        h.interval_secs = interval_secs.map(|v| v.clamp(MIN_INTERVAL, MAX_INTERVAL));
+        h.interval_ms = interval_ms.map(|v| v.clamp(MIN_INTERVAL_MS, MAX_INTERVAL_MS));
         let updated = h.clone();
         self.config.save_file(&f)?;
 
-        self.sup
-            .start(updated.clone(), effective_interval(&updated, &f.settings));
+        self.sup.start(
+            updated.clone(),
+            effective_interval_ms(&updated, &f.settings),
+        );
         self.announce_hosts(&f.hosts);
         Ok(f.hosts)
     }
@@ -199,8 +202,10 @@ impl Service {
         let updated = h.clone();
         self.config.save_file(&f)?;
 
-        self.sup
-            .start(updated.clone(), effective_interval(&updated, &f.settings));
+        self.sup.start(
+            updated.clone(),
+            effective_interval_ms(&updated, &f.settings),
+        );
         self.announce_hosts(&f.hosts);
         Ok(f.hosts)
     }
@@ -409,12 +414,13 @@ mod tests {
         let (s, _rx, p) = svc("clamp");
         let out = s
             .set_settings(Settings {
-                interval_secs: 99_999,
+                interval_ms: 99_999_999,
+                interval_secs: None,
                 history_cap_mb: 1,
                 always_on_top: false,
             })
             .unwrap();
-        assert_eq!(out.interval_secs, MAX_INTERVAL);
+        assert_eq!(out.interval_ms, MAX_INTERVAL_MS);
         assert_eq!(out.history_cap_mb, MIN_CAP_MB);
         let _ = std::fs::remove_file(p);
     }

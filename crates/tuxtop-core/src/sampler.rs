@@ -18,34 +18,82 @@ pub const FRAME_DELIMITER: &str = "--=TUXTOP=--";
 /// Deliberately POSIX `sh`, not bash: some appliances and minimal containers
 /// have no bash, and this needs to run everywhere sshd does.
 ///
-/// `interval_secs` bounds how fast the host is polled. One second is the
+/// `interval_ms` bounds how fast the host is polled. One second is the
 /// Task-Manager feel; anything slower and the core grid stops being live.
-pub fn sampler_command(interval_secs: u32) -> String {
-    // Disk capacity every DF_EVERY frames, not every frame. It changes over
-    // minutes, and `df` output is larger than everything else combined on a
-    // host with several mounts - paying for it once a second would be the
-    // biggest single line on the traffic meter for the least-changing data.
-    let df_every = DF_EVERY;
+/// Sub-second is available per host, for a box under investigation.
+///
+/// **Only the `/proc` reads run at that rate.** Everything else in the loop
+/// keeps the wall-clock cadence it had at 1 Hz, because the loop divisors are
+/// derived from the interval rather than fixed in frames. That matters most
+/// for `nvidia-smi`, which is a process spawn costing hundreds of
+/// milliseconds: at 4 Hz a frame-counted schedule would run it four times a
+/// second on every GPU host, which is real load on a machine we are only
+/// supposed to be watching. `df` is the same argument in bytes rather than
+/// CPU. The cheap kernel counters are what a spike lives in; the expensive
+/// extras change on a scale of seconds and gain nothing from being asked
+/// faster.
+pub fn sampler_command(interval_ms: u32) -> String {
+    let every = |target_ms: u32| (target_ms / interval_ms.max(1)).max(1);
+    let df_every = every(DF_EVERY_MS);
+    let slow_every = every(SLOW_EVERY_MS);
+    let nap = sleep_arg(interval_ms);
     format!(
         "{FACTS_SNIPPET} \
          i=0; \
          while :; do \
            cat /proc/stat /proc/meminfo /proc/diskstats /proc/net/dev /proc/loadavg 2>/dev/null; \
            echo \"TXU|$(cut -d' ' -f1 /proc/uptime 2>/dev/null)\"; \
-           {TEMP_SNIPPET} \
-           {GPU_SNIPPET} \
+           if [ $((i % {slow_every})) -eq 0 ]; then \
+             {TEMP_SNIPPET} \
+             {GPU_SNIPPET} \
+           fi; \
            if [ $((i % {df_every})) -eq 0 ]; then \
              df -P -k 2>/dev/null | tail -n +2 | sed 's/^/TXF|/'; \
            fi; \
            i=$((i+1)); \
            echo '{FRAME_DELIMITER}'; \
-           sleep {interval_secs}; \
+           sleep {nap}; \
          done"
     )
 }
 
-/// How often disk capacity is re-read, in frames.
-pub const DF_EVERY: u32 = 30;
+/// Render a millisecond interval as an argument `sleep` will accept.
+///
+/// Whole seconds stay integers so the common case reads as it always has, and
+/// nothing depends on a shell accepting a decimal point it does not need.
+/// Fractions are printed with the smallest number of decimals that is exact,
+/// because `sleep 0.25` is POSIX-undefined but universally supported: every
+/// host in this fleet runs GNU coreutils under dash and takes it, and that was
+/// checked before the feature was built rather than after.
+pub fn sleep_arg(interval_ms: u32) -> String {
+    let ms = interval_ms.max(1);
+    if ms.is_multiple_of(1000) {
+        return (ms / 1000).to_string();
+    }
+    let s = format!("{:.3}", ms as f64 / 1000.0);
+    s.trim_end_matches('0').trim_end_matches('.').to_string()
+}
+
+/// A sample interval as a person would say it: "4 Hz", "1 s", "30 s".
+///
+/// Sub-second rates read as a frequency because that is how they are chosen -
+/// nobody asks for 250 ms, they ask to watch a box four times a second - and
+/// slower ones read as a period, because "0.03 Hz" is nobody's idea of a
+/// minute.
+pub fn rate_label(interval_ms: u32) -> String {
+    let ms = interval_ms.max(1);
+    if ms < 1000 {
+        let hz = 1000.0 / ms as f64;
+        let s = format!("{hz:.1}");
+        return format!("{} Hz", s.trim_end_matches('0').trim_end_matches('.'));
+    }
+    format!("{} s", sleep_arg(ms))
+}
+
+/// How often disk capacity is re-read, in milliseconds of wall clock.
+pub const DF_EVERY_MS: u32 = 30_000;
+/// How often temperatures and GPU stats are re-read, in wall-clock ms.
+pub const SLOW_EVERY_MS: u32 = 1_000;
 
 /// Identity, read once before the loop starts.
 ///
@@ -874,7 +922,7 @@ mod phase9_tests {
         let cmd = sampler_command(1);
         assert!(cmd.contains("df -P -k"));
         assert!(
-            cmd.contains(&format!("% {DF_EVERY}")),
+            cmd.contains(&format!("% {}", DF_EVERY_MS / 1000)),
             "df should be rate-limited"
         );
     }
@@ -1027,5 +1075,51 @@ TXT|gigabyte_wmi||34000
         let t = parse_temps("TXT|iwlwifi_1||28000\nTXT|drivetemp|Composite|41000\n");
         assert_eq!(t[0].kind, SensorKind::Wireless);
         assert_eq!(t[1].kind, SensorKind::Drive);
+    }
+}
+
+#[cfg(test)]
+mod rate_tests {
+    use super::*;
+
+    #[test]
+    fn sleep_takes_whole_seconds_as_integers_and_fractions_as_decimals() {
+        // `sleep 1` is POSIX; `sleep 0.25` is not, but every host in this
+        // fleet runs GNU coreutils and takes it - checked on all eighteen
+        // before this shipped. Whole seconds stay integers so the common case
+        // never depends on that.
+        assert_eq!(sleep_arg(1000), "1");
+        assert_eq!(sleep_arg(30_000), "30");
+        assert_eq!(sleep_arg(500), "0.5");
+        assert_eq!(sleep_arg(250), "0.25");
+        assert_eq!(sleep_arg(0), "0.001", "never zero: it would spin the loop");
+    }
+
+    #[test]
+    fn the_expensive_extras_keep_their_wall_clock_cadence() {
+        // nvidia-smi is a process spawn costing hundreds of milliseconds. A
+        // frame-counted schedule would run it four times a second at 4 Hz -
+        // real load on a machine we are only supposed to be watching.
+        let one_hz = sampler_command(1000);
+        let four_hz = sampler_command(250);
+        assert!(
+            one_hz.contains("% 1)"),
+            "1 Hz: extras every frame\n{one_hz}"
+        );
+        assert!(
+            four_hz.contains("% 4)"),
+            "4 Hz: extras every 4th frame\n{four_hz}"
+        );
+        // df is the same argument in bytes: 30 s either way.
+        assert!(one_hz.contains("% 30)"));
+        assert!(four_hz.contains("% 120)"));
+    }
+
+    #[test]
+    fn a_rate_reads_as_a_frequency_below_a_second_and_a_period_above() {
+        assert_eq!(rate_label(250), "4 Hz");
+        assert_eq!(rate_label(500), "2 Hz");
+        assert_eq!(rate_label(1000), "1 s");
+        assert_eq!(rate_label(30_000), "30 s");
     }
 }

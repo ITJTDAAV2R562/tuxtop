@@ -495,7 +495,13 @@ pub fn parse_processes(host: &str, text: &str) -> Vec<ProcInfo> {
 /// Processes run on their own connection at their own cadence: the ranking
 /// needs two snapshots separated by a real interval, and doing that inside
 /// the metric loop would stall 1 Hz sampling for the whole window.
-pub fn process_loop_command(top_n: usize, window_ms: u32, interval_secs: u32) -> String {
+pub fn process_loop_command(top_n: usize, window_ms: u32, interval_ms: u32) -> String {
+    // Never faster than 1 Hz, whatever the metric sampler was set to. A host
+    // watched at 4 Hz wants its *counters* four times a second; running a
+    // two-snapshot process ranking that often would spend real CPU on the
+    // watched machine to re-sort a list that a human reads once. Sub-second is
+    // for the cheap kernel counters a spike lives in.
+    let interval_ms = interval_ms.max(PROC_MIN_INTERVAL_MS);
     // Restart counts ride the same connection but on a slower cycle. A unit
     // that restarts is news for hours, and the `systemctl show` call costs
     // ~108 ms of remote CPU against ~0 for everything else in the frame - so
@@ -509,9 +515,12 @@ pub fn process_loop_command(top_n: usize, window_ms: u32, interval_secs: u32) ->
         process_command(top_n, window_ms),
         RESTART_SNIPPET,
         crate::sampler::FRAME_DELIMITER,
-        interval_secs.max(1),
+        crate::sampler::sleep_arg(interval_ms),
     )
 }
+
+/// The floor on the process loop's cadence, in milliseconds.
+pub const PROC_MIN_INTERVAL_MS: u32 = 1000;
 
 /// How many process cycles pass between restart-count sweeps. At the 5 s
 /// process cadence this is once a minute.
@@ -670,10 +679,20 @@ TXP|4|50|100|root|middling
 
     #[test]
     fn the_loop_command_delimits_frames_and_sleeps() {
-        let c = process_loop_command(20, 1000, 5);
+        let c = process_loop_command(20, 1000, 5_000);
         assert!(c.contains(crate::sampler::FRAME_DELIMITER));
         assert!(c.contains("sleep 5"));
         assert!(!c.contains("[["), "still POSIX sh");
+    }
+
+    #[test]
+    fn the_process_loop_never_runs_faster_than_once_a_second() {
+        // A host watched at 4 Hz wants its counters four times a second, not
+        // a two-snapshot process ranking - that would spend real CPU on the
+        // watched machine to re-sort a list a human reads once.
+        let c = process_loop_command(20, 1000, 250);
+        assert!(c.contains("sleep 1"), "clamped to the floor: {c}");
+        assert!(!c.contains("sleep 0.25"));
     }
 
     #[test]

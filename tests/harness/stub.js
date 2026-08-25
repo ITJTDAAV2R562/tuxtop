@@ -16,7 +16,7 @@
     group: h.group || null, os: h.os || '',
   }));
 
-  const settings = { interval_secs: 1, history_cap_mb: 256, always_on_top: false };
+  const settings = { interval_ms: 1000, history_cap_mb: 256, always_on_top: false };
   const emit = (ev, payload) => (listeners[ev] || []).forEach(f => f({ payload }));
 
   const sample = (name, nCores) => ({
@@ -138,13 +138,13 @@
         if (cmd === 'set_settings') { Object.assign(settings, args.settings); return { ...settings }; }
         if (cmd === 'set_host_interval') {
           const h = hosts.find(x => x.name === args.name);
-          if (h) h.interval_secs = args.intervalSecs ?? null;
+          if (h) h.interval_ms = args.intervalMs ?? null;
           emit('tuxtop://hosts-changed', structuredClone(hosts));
           return structuredClone(hosts);
         }
         if (cmd === 'traffic_stats') {
           return hosts.map(h => ({
-            host: h.name, interval_secs: h.interval_secs ?? settings.interval_secs,
+            host: h.name, interval_ms: h.interval_ms ?? settings.interval_ms,
             bytes_total: 7300 * 60, frames_total: 60, last_frame_bytes: 7300,
           }));
         }

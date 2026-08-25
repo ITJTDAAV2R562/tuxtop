@@ -34,8 +34,8 @@ use crate::facts::HostFacts;
 ///
 /// Kept separate from the command that carries it so it can be read, and so
 /// the encoding below is the only thing between here and the wire.
-fn win_script(interval_secs: u32) -> String {
-    let secs = interval_secs.max(1);
+fn win_script(interval_ms: u32) -> String {
+    let ms = interval_ms.max(1);
     // Facts are read once, outside the loop: none of them change between
     // frames, and Win32_Processor is among the slower classes to query.
     format!(
@@ -57,7 +57,7 @@ fn win_script(interval_secs: u32) -> String {
            foreach($d in Get-CimInstance Win32_PerfRawData_PerfDisk_PhysicalDisk){{\n\
              'TXWD|'+$d.Name+'|'+$d.DiskReadBytesPersec+'|'+$d.DiskWriteBytesPersec }}\n\
            '{delim}'\n\
-           Start-Sleep -Seconds {secs}\n\
+           Start-Sleep -Milliseconds {ms}\n\
          }}\n",
         delim = crate::sampler::FRAME_DELIMITER,
     )
@@ -102,10 +102,10 @@ fn encode_command(script: &str) -> String {
 /// shell for Windows OpenSSH - mangles nested double quotes in its own way.
 /// `-EncodedCommand` has no metacharacters at all: the payload is `[A-Za-z0-9+/=]`,
 /// which every shell in the chain leaves alone.
-pub fn win_sampler_command(interval_secs: u32) -> String {
+pub fn win_sampler_command(interval_ms: u32) -> String {
     format!(
         "powershell -NoProfile -NonInteractive -EncodedCommand {}",
-        encode_command(&win_script(interval_secs))
+        encode_command(&win_script(interval_ms))
     )
 }
 
@@ -123,8 +123,8 @@ pub fn win_sampler_command(interval_secs: u32) -> String {
 /// is the sampling interval rather than a fixed second, so a Windows process
 /// figure is averaged over five seconds where a Linux one is averaged over
 /// one. Both are percentages of the whole box; the Windows one is smoother.
-pub fn win_process_command(top_n: usize, interval_secs: u32) -> String {
-    let secs = interval_secs.max(1);
+pub fn win_process_command(top_n: usize, interval_ms: u32) -> String {
+    let ms = interval_ms.max(1);
     let script = format!(
         "$ErrorActionPreference='SilentlyContinue'\n\
          $ncpu=(Get-CimInstance Win32_ComputerSystem).NumberOfLogicalProcessors\n\
@@ -155,7 +155,7 @@ pub fn win_process_command(top_n: usize, interval_secs: u32) -> String {
              '{delim}'\n\
            }}\n\
            $prev=$cur; $prevTs=$ts\n\
-           Start-Sleep -Seconds {secs}\n\
+           Start-Sleep -Milliseconds {ms}\n\
          }}\n",
         delim = crate::sampler::FRAME_DELIMITER,
     );

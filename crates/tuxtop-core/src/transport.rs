@@ -109,7 +109,7 @@ pub struct SshSampler {
 }
 
 impl SshSampler {
-    /// Start sampling `host` every `interval_secs`, sending results to `tx`.
+    /// Start sampling `host` every `interval_ms`, sending results to `tx`.
     ///
     /// Returns once the process is spawned; sampling continues in a background
     /// task. Errors after startup arrive through `tx` as [`HostFault`] rather
@@ -117,7 +117,7 @@ impl SshSampler {
     /// needs to say what went wrong.
     pub fn start(
         host: HostConfig,
-        interval_secs: u32,
+        interval_ms: u32,
         tx: mpsc::Sender<Result<Sample, HostFault>>,
         traffic: Arc<TrafficCounter>,
     ) -> std::io::Result<Self> {
@@ -125,9 +125,9 @@ impl SshSampler {
         // delimiter - only the remote command and its parser differ.
         let windows = host.os.eq_ignore_ascii_case("windows");
         let cmd = if windows {
-            crate::windows::win_sampler_command(interval_secs)
+            crate::windows::win_sampler_command(interval_ms)
         } else {
-            sampler::sampler_command(interval_secs)
+            sampler::sampler_command(interval_ms)
         };
         let args = ssh_args(&host, &cmd);
 
@@ -294,14 +294,14 @@ impl ProcSampler {
         host: HostConfig,
         top_n: usize,
         window_ms: u32,
-        interval_secs: u32,
+        interval_ms: u32,
         tx: mpsc::Sender<crate::procs::ProcFrame>,
     ) -> std::io::Result<Self> {
         let windows = host.os.eq_ignore_ascii_case("windows");
         let cmd = if windows {
-            crate::windows::win_process_command(top_n, interval_secs)
+            crate::windows::win_process_command(top_n, interval_ms)
         } else {
-            crate::procs::process_loop_command(top_n, window_ms, interval_secs)
+            crate::procs::process_loop_command(top_n, window_ms, interval_ms)
         };
         let args = ssh_args(&host, &cmd);
 
@@ -633,6 +633,7 @@ mod tests {
             user: "sam".into(),
             port: 22,
             beszel_url: None,
+            interval_ms: None,
             interval_secs: None,
             os: String::new(),
             group: None,

@@ -85,9 +85,9 @@ fn set_settings(app: AppHandle, svc: Svc<'_>, settings: Settings) -> Result<Sett
 fn set_host_interval(
     svc: Svc<'_>,
     name: String,
-    interval_secs: Option<u32>,
+    interval_ms: Option<u32>,
 ) -> Result<Vec<HostConfig>, String> {
-    svc.set_host_interval(&name, interval_secs)
+    svc.set_host_interval(&name, interval_ms)
 }
 
 #[tauri::command]
