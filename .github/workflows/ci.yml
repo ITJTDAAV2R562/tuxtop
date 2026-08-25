@@ -67,18 +67,32 @@ jobs:
 
   windows:
     name: windows — the Tauri shell compiles
-    # n1, self-hosted: the only Windows machine here, and the one that already
-    # builds the installer by hand. dove cannot do this job — it is Linux.
-    runs-on: [self-hosted, windows, n1]
+    # Cross-compiled on dove, not built on n1. n1 is the machine someone is
+    # actually using; a four-minute Rust build on every push was taking cores
+    # from the person at the keyboard, while dove has 32 sitting idle.
+    #
+    # cargo-xwin supplies the MSVC headers and CRT, so this is the real
+    # x86_64-pc-windows-msvc target rather than a gnu approximation — the same
+    # triple the installer ships. It needs clang-cl and llvm-rc, which is what
+    # the two apt packages are for.
+    runs-on: [self-hosted, linux, dove]
     steps:
       - uses: actions/checkout@v4
-      # No toolchain or cache actions: rustup is already installed on n1 and
-      # src-tauri/target persists between runs, so the build starts warm. A
-      # cache restored over a warm target/ is slower, not faster.
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - name: Cross-compile toolchain
+        run: |
+          if ! command -v clang-cl >/dev/null || ! command -v llvm-rc >/dev/null; then
+            sudo apt-get install -y -q clang llvm lld
+          fi
+          if ! command -v cargo-xwin >/dev/null; then
+            cargo install cargo-xwin --locked
+          fi
       # src-tauri is deliberately not a workspace member - it pulls webkit2gtk
       # on Linux, which the development box does not have - so it is only ever
       # compiled here. A commit that does not build has reached main more than
       # once because this step did not exist.
       - name: Build the desktop app
         working-directory: src-tauri
-        run: cargo build --locked
+        run: cargo xwin build --locked --target x86_64-pc-windows-msvc
