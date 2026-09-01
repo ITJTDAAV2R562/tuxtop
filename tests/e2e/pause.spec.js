@@ -14,12 +14,35 @@
 
 const { test, expect } = require('@playwright/test');
 
-/** The first card, once it has actually reported something. */
+/** The first card, once the whole fleet has settled.
+ *
+ * Waiting for *this* card's first sample is not enough, and the difference is
+ * a flaky suite. Cards are created as hosts report, and every arrival calls
+ * `build()`, which empties the grid and re-appends all of it. So for the first
+ * second or so the element under the pointer is being replaced several times a
+ * second: a click resolves against one card and lands after that card has been
+ * torn down, and the pause silently does not happen. That failed as a 30s
+ * timeout with a page snapshot reading "19 up" and nothing paused.
+ *
+ * Waiting for `nup` to reach `nhosts` waits for the last host, after which
+ * `build()` only runs on a real change. The one test here that already did
+ * this - the tally one - was also the only one that never flaked.
+ */
 async function firstCard(page) {
   await page.goto('/index.html');
+  await expect(page.locator('.card').first()).toBeVisible();
+  await expect
+    .poll(async () => {
+      const [up, all] = await Promise.all([
+        page.locator('#nup').textContent(),
+        page.locator('#nhosts').textContent(),
+      ]);
+      return Number(all) > 1 && up === all;
+    }, { message: 'every host reporting, so the grid stops rebuilding' })
+    .toBe(true);
+
   const card = page.locator('.card').first();
-  await expect(card).toBeVisible();
-  // Wait for a real sample, so "blank" is a change and not the initial state.
+  // And it has real numbers, so "blank" below is a change of state.
   await expect(card.locator('[data-cpu]')).not.toHaveText('—');
   return card;
 }
@@ -59,17 +82,8 @@ test('the readings come back when the host is resumed', async ({ page }) => {
 test('a paused host is counted apart from the ones that are up', async ({ page }) => {
   const card = await firstCard(page);
   await expect(page.locator('#npausedWrap')).toBeHidden();
-
-  // Wait for the whole fleet to be reporting, not just the first card. Read
-  // too early, "up" is still climbing and the arithmetic below compares
-  // against a number that was never the answer.
-  await expect.poll(async () => {
-    const [up, all] = await Promise.all([
-      page.locator('#nup').textContent(),
-      page.locator('#nhosts').textContent(),
-    ]);
-    return Number(all) > 1 && up === all;
-  }, { message: 'every host reporting' }).toBe(true);
+  // firstCard has already waited for every host to report, so "up" has
+  // finished climbing and this is the number the arithmetic below means.
   const total = Number(await page.locator('#nhosts').textContent());
 
   await card.locator('[data-pause]').click();
@@ -95,7 +109,14 @@ test('pausing survives being driven from Settings, and the two agree', async ({ 
   await expect(box).not.toBeChecked();
   await box.check();
 
-  await page.locator('#setDlg button[value="cancel"]').click();
+  // Escape, not a click on Close. While the dialog is open a timer rewrites
+  // the traffic meter every two seconds, and pausing a host changes both the
+  // figures and the length of the note under them - so the dialog's height
+  // shifts and every control below the meter moves with it. Playwright will
+  // not click an element that is not stable, so clicking Close waits out the
+  // full timeout roughly whenever a rewrite lands nearby. A key press needs no
+  // stable target.
+  await page.keyboard.press('Escape');
   await expect(page.locator('#setDlg')).toBeHidden();
 
   // The grid behind the dialog reflects it - one state, not two.
@@ -151,7 +172,8 @@ test('the traffic meter stops charging for a paused host', async ({ page }) => {
   expect(before).not.toContain('paused');
   const cost = await page.locator('[data-meter-rows] tr.current td').nth(1).textContent();
 
-  await page.locator('#setDlg button[value="cancel"]').click();
+  await page.keyboard.press('Escape');          // see the note above
+  await expect(page.locator('#setDlg')).toBeHidden();
   await card.locator('[data-pause]').click();
   await page.click('#settingsBtn');
 

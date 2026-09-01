@@ -1424,9 +1424,28 @@
     });
   }
 
+  /// Write only when the value actually changed.
+  ///
+  /// `tally()` runs on every sample, which on a nineteen-host fleet is dozens
+  /// of times a second. An unconditional `textContent =` replaces the text
+  /// node each time and an unconditional `hidden =` rewrites the attribute,
+  /// and both invalidate style on the toolbar - so its buttons never hold
+  /// still for two consecutive frames. That is not a visible flicker; it is
+  /// worse. Playwright refuses to click an element that is not *stable*, so
+  /// every test that clicks a toolbar button waits the full 30s and fails,
+  /// across specs that have nothing to do with whatever changed. Sixteen of
+  /// thirty-four failed that way, having passed a moment before.
+  const setText = (el, v) => {
+    const s = String(v);
+    if (el.textContent !== s) el.textContent = s;
+  };
+  const setHidden = (el, v) => {
+    if (el.hidden !== !!v) el.hidden = !!v;
+  };
+
   function tally() {
     refreshMetricOptions();
-    $('#nhosts').textContent = hosts.length;
+    setText($('#nhosts'), hosts.length);
     // Paused hosts are counted separately, never as up. Folding them into
     // "up" would mean pausing a dying box made the fleet report itself
     // healthier than before - the same confident wrong number this whole
@@ -1436,10 +1455,10 @@
     // push this line to within a few pixels of the toolbar's width, and the
     // everyday case is a fleet with nothing paused.
     const npaused = hosts.filter(h => h.paused).length;
-    $('#nup').textContent =
-      hosts.filter(h => !h.fault && !h.paused && (!LIVE || h.seen)).length;
-    $('#npausedWrap').hidden = !npaused;
-    $('#npaused').textContent = npaused;
+    setText($('#nup'),
+      hosts.filter(h => !h.fault && !h.paused && (!LIVE || h.seen)).length);
+    setHidden($('#npausedWrap'), !npaused);
+    setText($('#npaused'), npaused);
 
     // Physical and virtual cores are stated separately, never summed.
     //
@@ -1454,16 +1473,19 @@
       if (machine(h) === 'metal') phys += c; else virt += c;
     }
     const el = $('#ncores');
+    // Guarded for the same reason as the figures above: this one is written on
+    // every sample too, and it sits in the same toolbar.
     // "112 + 52 cores", not "112 + 52 cores (physical + virtual)". The label
     // explaining the split cost about 150px of a toolbar that has to hold a
     // host select and a filter as well, and the sum being split is itself the
     // signal - the words belong in the tooltip, where they are one hover away
     // rather than permanently in the way.
-    el.textContent = virt && phys ? `${phys} + ${virt}` : String(phys + virt);
-    el.title = virt && phys
+    setText(el, virt && phys ? `${phys} + ${virt}` : String(phys + virt));
+    const title = virt && phys
       ? `${phys} physical cores, plus ${virt} vCPUs in guests — not added ` +
         `together, because a guest's cores come out of a host's`
       : '';
+    if (el.title !== title) el.title = title;
   }
 
   // Fault text. Each variant names a different fix, which is the entire
