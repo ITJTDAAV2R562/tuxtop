@@ -1,6 +1,6 @@
 [package]
 name = "tuxtop-serve"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2021"
 description = "Tuxtop as a headless server: the same fleet, viewed in a browser."
 
