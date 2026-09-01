@@ -475,11 +475,35 @@ pushed together, or moved afterwards.
 `./src`, so the binary alone is a server that starts and then 404s every page.
 The tarball is laid out so the default resolves from the extracted directory.
 
-**Nothing is code-signed.** Windows SmartScreen warns on first run of the
-installer; the release notes say so, because an unexplained warning is how a
-user learns to click through warnings. Signing needs a certificate this project
-does not have. `SHA256SUMS` is attached instead, since there is no certificate
-for anyone to check against.
+**Nothing is code-signed, and that is a decision rather than a gap.** Windows
+SmartScreen warns on first run of the installer; the release notes say so,
+because an unexplained warning is how a user learns to click through warnings.
+`SHA256SUMS` is attached instead, since there is no certificate for anyone to
+check against.
+
+Reviewed 2026-09-01 and declined. Two separate warnings are at stake: UAC's
+"Unknown publisher", which any signature chaining to a trusted root removes,
+and SmartScreen's "Windows protected your PC", which is reputation-based and
+can still appear on a freshly-signed binary. Three routes exist and none earns
+its cost here:
+
+- **Self-signed, imported to Trusted Root and Trusted Publishers** on the
+  machines that run it. Free, and the installer job already runs on n1 so the
+  key would never enter a CI secret. Removes both warnings — on those machines
+  only, and at the price of a key that could sign anything they would then
+  trust.
+- **Azure Trusted Signing**, around $10/month, publicly trusted and built for
+  CI. The cheapest real option, subject to identity validation and region
+  rules.
+- **A commercial OV or EV certificate**, roughly $200–700/year. Note that
+  since the CA/Browser Forum's 2023 change, OV keys must live on FIPS hardware
+  — there is no `.pfx` to drop into CI, so this needs a token or a cloud HSM.
+
+The repo is private, the tool watches one fleet, and the install base is the
+machines in it. Paying a CA to reassure yourself about software you built is
+buying a certificate for an audience of one. Revisit only if this is ever
+handed to someone outside the fleet — at which point Azure Trusted Signing is
+the route, via Tauri's `bundle.windows.signCommand`.
 
 **The bundler is `@tauri-apps/cli`, pinned in `package-lock.json`** — a
 prebuilt binary, so the release job downloads it rather than spending four

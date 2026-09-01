@@ -112,8 +112,9 @@ severity comes from the worst member
 Download `tuxtop-<version>-x64-setup.exe` (or the `.msi`) and run it.
 
 The installers are **unsigned**, so SmartScreen shows "Windows protected your
-PC" on first run — *More info → Run anyway*. Signing needs a certificate this
-project does not have; `SHA256SUMS` is attached instead, since there is no
+PC" on first run — *More info → Run anyway*. That is deliberate: this is an
+internal tool for one fleet, and signing it would buy a certificate for an
+audience of one. `SHA256SUMS` is attached instead, since there is no
 certificate for anyone to check against.
 
 ### Linux headless server
