@@ -123,8 +123,15 @@ pub fn win_sampler_command(interval_ms: u32) -> String {
 /// is the sampling interval rather than a fixed second, so a Windows process
 /// figure is averaged over five seconds where a Linux one is averaged over
 /// one. Both are percentages of the whole box; the Windows one is smoother.
+///
+/// The interval is floored at [`crate::procs::PROC_MIN_INTERVAL_MS`], the same
+/// 1 Hz the Linux loop enforces. The floor used to be `max(1)`, which is not a
+/// floor: a caller that passed 5 meaning seconds got a 200 Hz loop, and each
+/// cycle is two CIM queries against every process and every service on the box.
+/// One such caller cost a sixteen-core workstation three cores until it was
+/// killed by hand. A monitoring tool has no business being the load.
 pub fn win_process_command(top_n: usize, interval_ms: u32) -> String {
-    let ms = interval_ms.max(1);
+    let ms = interval_ms.max(crate::procs::PROC_MIN_INTERVAL_MS);
     let script = format!(
         "$ErrorActionPreference='SilentlyContinue'\n\
          $ncpu=(Get-CimInstance Win32_ComputerSystem).NumberOfLogicalProcessors\n\
@@ -508,15 +515,9 @@ TXWP|9100|0|4194304|explorer|
     fn the_process_script_keeps_its_own_previous_snapshot() {
         // The point of the design: one CIM query per cycle instead of two,
         // because the loop is persistent and can remember.
-        let c = win_process_command(20, 5);
+        let c = win_process_command(20, 5_000);
         assert!(c.starts_with("powershell -NoProfile"));
-        let script = String::from_utf16(
-            &base64_decode(c.rsplit(' ').next().unwrap())
-                .chunks(2)
-                .map(|p| u16::from_le_bytes([p[0], *p.get(1).unwrap_or(&0)]))
-                .collect::<Vec<_>>(),
-        )
-        .unwrap();
+        let script = decode_command(&c);
         assert!(script.contains("$prev"), "no previous snapshot kept");
         assert!(script.contains("Sort-Object"), "not ranked on the far side");
         assert!(
@@ -525,7 +526,41 @@ TXWP|9100|0|4194304|explorer|
         );
     }
 
-    /// Minimal decoder, for the test above only.
+    #[test]
+    fn an_interval_in_the_wrong_unit_cannot_become_a_two_hundred_hertz_poll() {
+        // `PROC_INTERVAL_SECS = 5` was once passed to a parameter called
+        // `interval_ms`. Every cycle is two CIM queries over every process and
+        // every service, so the mistake cost a sixteen-core box three cores.
+        // The floor is what makes the unit mix-up survivable rather than
+        // something a human notices in Task Manager an hour later.
+        let script = decode_command(&win_process_command(20, 5));
+        assert!(
+            script.contains(&format!(
+                "Start-Sleep -Milliseconds {}",
+                crate::procs::PROC_MIN_INTERVAL_MS
+            )),
+            "interval was not floored: {script}"
+        );
+        // And an interval above the floor is still honoured.
+        let script = decode_command(&win_process_command(20, 5_000));
+        assert!(
+            script.contains("Start-Sleep -Milliseconds 5000"),
+            "floor clobbered a legitimate interval: {script}"
+        );
+    }
+
+    /// Decode a `-EncodedCommand` line back to the script it carries.
+    fn decode_command(c: &str) -> String {
+        String::from_utf16(
+            &base64_decode(c.rsplit(' ').next().unwrap())
+                .chunks(2)
+                .map(|p| u16::from_le_bytes([p[0], *p.get(1).unwrap_or(&0)]))
+                .collect::<Vec<_>>(),
+        )
+        .unwrap()
+    }
+
+    /// Minimal decoder, for the tests above.
     fn base64_decode(s: &str) -> Vec<u8> {
         const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
         let idx = |c: u8| T.iter().position(|&t| t == c).unwrap_or(0) as u32;

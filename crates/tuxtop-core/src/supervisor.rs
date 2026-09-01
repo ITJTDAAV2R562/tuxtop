@@ -44,10 +44,16 @@ pub enum Event {
 const PROC_TOP_N: usize = 20;
 /// The window the CPU delta is measured over.
 const PROC_WINDOW_MS: u32 = 1000;
-/// Seconds between process samples. Slower than metrics on purpose: a process
-/// list is read, not watched, and each sample costs a second of remote wall
-/// clock inside its own window.
-const PROC_INTERVAL_SECS: u32 = 5;
+/// Milliseconds between process samples. Slower than metrics on purpose: a
+/// process list is read, not watched, and each sample costs a second of remote
+/// wall clock inside its own window.
+///
+/// Named in milliseconds because milliseconds is what `ProcSampler::start`
+/// takes. This was `PROC_INTERVAL_SECS = 5` passed straight into that function's
+/// `interval_ms` parameter, so five seconds became five milliseconds: a 200 Hz
+/// WMI poll on every Windows host in the fleet. The Linux path floors the
+/// interval at 1 Hz and so absorbed it; the Windows path had no floor.
+const PROC_INTERVAL_MS: u32 = 5_000;
 
 pub struct Supervisor {
     /// Where samples are recorded. Held directly rather than looked up out of
@@ -304,7 +310,7 @@ async fn watch_procs(sup: Weak<Supervisor>, cfg: HostConfig) {
             cfg.clone(),
             PROC_TOP_N,
             PROC_WINDOW_MS,
-            PROC_INTERVAL_SECS,
+            PROC_INTERVAL_MS,
             tx,
         ) {
             Ok(s) => s,
