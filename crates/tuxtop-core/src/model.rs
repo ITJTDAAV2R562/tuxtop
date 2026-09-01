@@ -55,6 +55,27 @@ pub struct HostConfig {
     /// groups configured at all — never a synthetic "Other".
     #[serde(default)]
     pub group: Option<String>,
+    /// Watching is suspended: no ssh connection, no samples, no faults.
+    ///
+    /// For planned maintenance, where the alternative is deleting the host and
+    /// adding it back — which loses its history, its group, its interval and
+    /// its position. Paused keeps all of that and stops only the sampling.
+    ///
+    /// `paused = true` rather than `enabled = false` because of which way the
+    /// field fails. An absent bool deserialises as `false`, so a file written
+    /// by an older build, a hand-edit that drops the line, or a truncated
+    /// write all mean *watching* — the safe answer. `enabled` would need a
+    /// `default = true`, and every one of those cases would silently stop
+    /// monitoring the whole fleet instead.
+    ///
+    /// Written to `hosts.toml` only when true, so the common case leaves no
+    /// trace in a file people hand-edit.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub paused: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 fn default_port() -> u16 {
@@ -79,6 +100,7 @@ impl Default for HostConfig {
             interval_secs: None,
             os: String::new(),
             group: None,
+            paused: false,
         }
     }
 }
@@ -180,6 +202,16 @@ addr = "dove.example.ts.net"
         assert_eq!(h.user, "");
         assert_eq!(h.port, 22);
         assert_eq!(h.beszel_url, None);
+    }
+
+    #[test]
+    fn an_omitted_paused_field_means_watching() {
+        // The direction this field fails in. A file from an older build, or a
+        // hand-edit that drops the line, must come back watching - never
+        // silently stopped. `enabled = false` would invert this and turn every
+        // such file into a fleet that monitors nothing.
+        let h: HostConfig = toml::from_str("name = \"dove\"\naddr = \"dove\"\n").expect("parses");
+        assert!(!h.paused, "an absent paused flag must mean watching");
     }
 
     #[test]

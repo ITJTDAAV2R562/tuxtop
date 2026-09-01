@@ -637,6 +637,7 @@ mod tests {
             interval_secs: None,
             os: String::new(),
             group: None,
+            paused: false,
         }
     }
 

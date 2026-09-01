@@ -15,9 +15,15 @@
   /// Matches group as well as name, so typing a group name narrows to it.
   /// That composes with grouping rather than duplicating it: groups are the
   /// durable structure, the filter is the ad-hoc question.
+  ///
+  /// A paused host also answers to "paused", which is how you find the two
+  /// boxes you took down three weeks ago in a fleet of nineteen. The word is
+  /// appended only when the host is paused, so it never matches a host that
+  /// merely has "paused" somewhere in its name or group.
   function matchesHost(h, q) {
     if (!q) return true;
-    return `${h.name} ${h.group || ''} ${h.distro || ''}`.toLowerCase().includes(q);
+    return `${h.name} ${h.group || ''} ${h.distro || ''}${h.paused ? ' paused' : ''}`
+      .toLowerCase().includes(q);
   }
 
   /// Does this process match the process filter?

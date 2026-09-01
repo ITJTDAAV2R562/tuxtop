@@ -109,8 +109,23 @@ impl Supervisor {
     }
 
     /// Begin watching `cfg`. Replaces any existing task for the same name.
+    ///
+    /// A **paused** host is stopped and not restarted. This is the single
+    /// place pause is enforced, deliberately: putting the check in the callers
+    /// meant five of them - `start_all`, `set_settings`, `set_host_interval`,
+    /// `set_host_os`, `add_host` - each had to remember, and any one that
+    /// forgot would silently resume a host somebody had paused. Changing the
+    /// global interval un-pausing the whole fleet is the shape of that bug.
+    /// Here it cannot happen, including down paths not yet written.
     pub fn start(self: &Arc<Self>, cfg: HostConfig, interval_secs: u32) {
         self.stop(&cfg.name);
+
+        if cfg.paused {
+            // Drop the recorded interval too, so the traffic meter stops
+            // projecting bytes for a host that is not sampling.
+            self.intervals.lock().unwrap().remove(&cfg.name);
+            return;
+        }
 
         let name = cfg.name.clone();
         let counter = self
@@ -143,6 +158,16 @@ impl Supervisor {
         }
     }
 
+    /// Whether a host currently has a sampling task.
+    ///
+    /// "Has one been started and not stopped", which is what pause and resume
+    /// change. Public so the behaviour is assertable without a live ssh
+    /// connection - the alternative is testing pause by watching for samples
+    /// that by definition never arrive.
+    pub fn is_watching(&self, name: &str) -> bool {
+        self.tasks.lock().unwrap().contains_key(name)
+    }
+
     /// What each host has cost so far, and at what interval.
     pub fn traffic(&self) -> Vec<HostTraffic> {
         let counters = self.traffic.lock().unwrap();
@@ -169,9 +194,16 @@ impl Supervisor {
     }
 
     /// Begin process sampling on every host.
+    ///
+    /// Paused hosts are stopped and skipped, for the same reason `start` skips
+    /// them: this is the other way a host acquires an ssh connection, and pause
+    /// means no connection.
     pub fn start_procs(self: &Arc<Self>, hosts: Vec<HostConfig>) {
         for cfg in hosts {
             self.stop_procs_for(&cfg.name);
+            if cfg.paused {
+                continue;
+            }
             let name = cfg.name.clone();
             let me = Arc::downgrade(self);
             let handle = self.rt.spawn(watch_procs(me, cfg));

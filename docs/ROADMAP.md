@@ -477,6 +477,13 @@ Work that arrived from design conversation rather than the plan:
 - **Metal surfaces and Fluent reveal highlight.**
 - **Theme-token checker** (`scripts/check-theme-tokens.py`), after the same
   missing-token bug landed twice.
+- **Pause a host** for planned maintenance, 2026-09-01. Stops sampling without
+  removing the host, keeping the history, group, interval and grid position
+  that removal discards. Enforced in one place — `Supervisor::start` refuses a
+  paused host, so no other code path can resume one as a side effect of an
+  unrelated edit. The card blanks its readings rather than freezing them, and
+  the tally counts paused apart from up. See
+  [ADR-012](DECISIONS.md#adr-012--pause-is-a-third-host-state-and-it-lives-in-hoststoml).
 
 ---
 

@@ -23,6 +23,7 @@
   --good:#0F7B3E;
   --warn:#B4690E;
   --crit:#C3372B;
+  --paused:#5B6472;
 
   --viz-mem:#6D5BD0;
   --viz-disk:#B4690E;
@@ -71,6 +72,7 @@
     --good:#4ED88A;
     --warn:#F0B34A;
     --crit:#FF6F62;
+    --paused:#98A3B4;
 
     --viz-mem:#A99BF0;
     --viz-disk:#F0B34A;
@@ -116,6 +118,7 @@
   --good:#4ED88A;
   --warn:#F0B34A;
   --crit:#FF6F62;
+  --paused:#98A3B4;
 
   --viz-mem:#A99BF0;
   --viz-disk:#F0B34A;
@@ -242,7 +245,7 @@ body{
   transition:background .16s,color .16s;
 }
 .seg button[aria-pressed="true"]{background:var(--surface-hi);color:var(--text);box-shadow:0 1px 3px rgba(0,0,0,.10)}
-.seg button:focus-visible,.btn:focus-visible,.card-toggle:focus-visible,.kill:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.seg button:focus-visible,.btn:focus-visible,.card-toggle:focus-visible,.kill:focus-visible,.pause:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 
 .btn{
   font:inherit;font-size:12.5px;font-weight:600;
@@ -290,12 +293,18 @@ body{
   color:var(--text-3);border:1px solid var(--stroke);border-radius:20px;padding:2px 8px;white-space:nowrap;
 }
 .chead .tb-grow{min-width:4px}
-.kill{
+.kill,.pause{
   border:0;background:transparent;color:var(--text-3);cursor:pointer;border-radius:5px;
   width:24px;height:24px;display:grid;place-items:center;opacity:0;transition:opacity .15s,color .15s,background .15s;
 }
-.card:hover .kill,.kill:focus-visible{opacity:1}
+.card:hover .kill,.kill:focus-visible,
+.card:hover .pause,.pause:focus-visible{opacity:1}
 .kill:hover{color:var(--crit);background:var(--surface-sunk)}
+.pause:hover{color:var(--accent-ink);background:var(--surface-sunk)}
+/* A paused card's resume button stays visible without a hover. It is the only
+   way back, and hiding the way out of a state until the pointer happens to
+   land on the card is how a state becomes a trap. */
+.card.paused .pause{opacity:1;color:var(--paused)}
 
 .cpurow{display:flex;align-items:flex-end;gap:12px}
 .readout{display:flex;flex-direction:column;gap:1px;flex:none;min-width:78px}
@@ -409,7 +418,19 @@ dialog::backdrop{background:rgba(6,10,18,.42);backdrop-filter:blur(3px)}
 }
 .fault b{display:block;color:var(--crit);font-weight:700;letter-spacing:.2px}
 .fault span{color:var(--text-2);font-family:var(--font-mono);font-size:11px;word-break:break-word}
-.card.down .cpurow,.card.down .cores,.card.down .metrics{opacity:.32}
+.card.down .cpurow,.card.down .cores,.card.down .metrics,
+.card.paused .cpurow,.card.paused .cores,.card.paused .metrics{opacity:.32}
+/* A paused card is quiet, not alarming: the same caption box, none of the red.
+   A red-bordered panel over a host somebody took down on purpose reads as an
+   incident. */
+.card.paused .fault{
+  background:color-mix(in srgb,var(--paused) 10%,transparent);
+  border-color:color-mix(in srgb,var(--paused) 30%,transparent);
+}
+.card.paused .fault b{color:var(--paused)}
+.card.paused{border-style:dashed}
+.ph-paused{text-align:center}
+.fbar.paused{opacity:.55}
 .stale{color:var(--warn);font-size:10.5px;font-weight:700;letter-spacing:.4px;text-transform:uppercase}
 
 .empty{
@@ -462,6 +483,17 @@ dialog::backdrop{background:rgba(6,10,18,.42);backdrop-filter:blur(3px)}
 .dot.pending{
   background:var(--text-3);
   box-shadow:0 0 0 3px color-mix(in srgb,var(--text-3) 20%,transparent);
+}
+
+/* Deliberately not watching. Neither the warn colour, which would claim
+   something is wrong, nor the default, which would claim it is fine - and a
+   ring rather than a disc, so it reads as absent at a glance across nineteen
+   cards. Distinct from .pending on purpose: connecting resolves in seconds,
+   paused stays until somebody comes back and clears it. */
+.dot.paused{
+  background:transparent;
+  border:1.5px solid var(--paused);
+  box-shadow:0 0 0 3px color-mix(in srgb,var(--paused) 16%,transparent);
 }
 
 /* ============ all-cores view ============ */
@@ -1170,6 +1202,7 @@ body[data-bands="off"] .legend span:not(:last-child){display:none}
    absent one: it looks like a capability. */
 body[data-readonly="yes"] #addBtn,
 body[data-readonly="yes"] .kill,
+body[data-readonly="yes"] .pause,
 body[data-readonly="yes"] .grip { display: none }
 
 /* ============ heat: the fleet over time ============ */

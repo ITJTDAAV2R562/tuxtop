@@ -158,10 +158,24 @@ interval_ms = 250         # per-host, overrides the global rate
 name = "n1"
 addr = "10.0.0.5"
 os = "windows"            # asked for, never probed
+
+[[host]]
+name = "wader"
+addr = "wader"
+paused = true             # planned maintenance; watched again when you resume
 ```
 
 Everything here is also editable from **Settings** in the window — the per-host
-table covers interval, group and OS for hosts that already exist.
+table covers interval, group, OS and pause for hosts that already exist.
+
+**Pausing** takes a host out of the rotation without removing it, for planned
+maintenance. No connection is made and no numbers are reported, but the host
+keeps its history, group, interval and position — all of which removing it and
+adding it back would discard. Its card blanks rather than freezing its last
+sample, and the tally counts it apart from the hosts that are up, so pausing a
+failing box never makes the fleet look healthier than it is. Pause from the
+button on the card, or from the per-host table in Settings; nothing resumes
+automatically, since noticing the host was back would mean connecting to it.
 
 **Sub-second sampling** is available at 4 Hz and 2 Hz, default off. It is
 usually right on the one host you are investigating rather than the whole

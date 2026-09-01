@@ -130,6 +130,7 @@ async fn main() -> ExitCode {
             interval_secs: None,
             os: String::new(),
             group: None,
+            paused: false,
         };
         state.insert(cfg.name.clone(), HostState::default());
         tokio::spawn(watch_host(

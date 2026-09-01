@@ -28,7 +28,7 @@
   // ---- model: real hosts from the tailnet, real core counts ----
   let seq = 0;
   const mk = (name, distro, cores, ramGB, gpu, base) => ({
-    group: null,
+    group: null, paused: false,
     id: ++seq, name, distro, cores, ramGB, gpu, base,
     core: Array.from({length: cores}, () => Math.random() * 4),
     burst: 0, burstSet: [],
@@ -80,6 +80,10 @@
 
   // ---- simulation ----
   function step(h) {
+    // The simulator's counterpart to `Supervisor::start` refusing a paused
+    // host: no sampler, no numbers. Without this the mockup would keep
+    // advancing a host whose card says it is not being watched.
+    if (h.paused) return;
     if (h.burst > 0) h.burst--;
     else if (Math.random() < 0.055) {
       h.burst = 3 + (Math.random() * 6 | 0);
@@ -206,14 +210,44 @@
     build(); paint();
   }
 
+  /// Record that a host has been paused or resumed, and clear what pausing
+  /// invalidates.
+  ///
+  /// Two things have to go, and only on the transition:
+  ///
+  /// - **Any fault.** Pausing a host that is already unreachable is the
+  ///   common case - the maintenance is why it is unreachable - and a card
+  ///   captioned both "Unreachable" and "Paused" states a problem where there
+  ///   is only a decision.
+  /// - **The rolling sample buffers.** They are not drawn while paused, but
+  ///   keeping them would mean resuming spliced new samples straight onto
+  ///   pre-maintenance ones and drew one continuous line across the gap - a
+  ///   sparkline asserting the host was reporting throughout a window in
+  ///   which nothing was even connected. The backend history store keeps the
+  ///   real record, gap and all; this is only the card's 60-sample strip.
+  ///
+  /// `seen` is cleared too, so a resumed host shows the connecting state
+  /// rather than claiming to be up before its first sample lands.
+  function setPaused(h, paused) {
+    if (!!h.paused === !!paused) { h.paused = !!paused; return; }
+    h.paused = !!paused;
+    h.fault = null;
+    h.seen = false;
+    for (const k of Object.keys(h.hist)) h.hist[k].length = 0;
+  }
+
   /// A group's hosts in the flat shape `aggregateGroup` expects.
   ///
-  /// A faulted host, or one that does not report this metric at all,
-  /// contributes `null` rather than a zero. Zero would be a reading; silence
-  /// is not, and the difference is the whole point of the contributing count.
+  /// A faulted host, a paused one, or one that does not report this metric at
+  /// all contributes `null` rather than a zero. Zero would be a reading;
+  /// silence is not, and the difference is the whole point of the
+  /// contributing count. A paused host counts as silent for the same reason a
+  /// faulted one does - and it matters more here, because pausing a host
+  /// during maintenance would otherwise drag its group's average toward zero
+  /// and report a fleet-wide dip that never happened.
   function members(m, list) {
     return list.map(h => {
-      const silent = !!h.fault || (m.has && !m.has(h));
+      const silent = !!h.fault || !!h.paused || (m.has && !m.has(h));
       const v = silent ? null : m.scalar(h);
       return {
         host: h.name,
@@ -896,13 +930,15 @@
       fill.dataset.band = m.scale === 'absolute' ? band(v) : 'cool';
 
       row.querySelector('[data-val]').textContent =
-        (h.fault || missing) ? '\u2014' : m.fmt(v);
-      row.querySelector('[data-sub]').textContent = (!h.fault && m.sub) ? m.sub(h) : '';
+        (h.fault || h.paused || missing) ? '\u2014' : m.fmt(v);
+      row.querySelector('[data-sub]').textContent =
+        (!h.fault && !h.paused && m.sub) ? m.sub(h) : '';
       // An expanded host shows a disclosure where the dot would be; its state
       // is still stated, by the row's own `down` class and its value.
       const dot = row.querySelector('.dot');
       if (dot) dot.className = dotClass(h);
       row.classList.toggle('down', !!h.fault);
+      row.classList.toggle('paused', !!h.paused);
     });
 
     // A host's own parts, each on the shared axis so a mount and a host are
@@ -953,8 +989,13 @@
     }
   }
 
+  // Three states, not two. Paused is neither up nor down: a neutral dot says
+  // "deliberately not watching", where the warn colour would claim something
+  // is wrong and the default would claim everything is fine.
   const dotClass = h =>
-    'dot' + (h.fault ? ' warnstate' : (LIVE && !h.seen ? ' pending' : ''));
+    'dot' + (h.paused ? ' paused'
+           : h.fault ? ' warnstate'
+           : (LIVE && !h.seen ? ' pending' : ''));
 
   function build() {
     $('#histbar').hidden = prefs.view !== 'history' && prefs.view !== 'heat';
@@ -1013,6 +1054,13 @@
           <span class="chip chip-up" data-uptime hidden></span>
           <span class="chip" data-cores>${h.cores || '?'}c</span>
           <span class="tb-grow"></span>
+          <button class="pause" data-pause
+                  title="${h.paused ? 'Resume' : 'Pause'} ${h.name}"
+                  aria-label="${h.paused ? 'Resume' : 'Pause'} ${h.name}">
+            ${h.paused
+              ? '<svg width="11" height="11" viewBox="0 0 10 10"><path d="M2 1l6 4-6 4z" fill="currentColor"/></svg>'
+              : '<svg width="11" height="11" viewBox="0 0 10 10"><path d="M2.2 1h1.9v8H2.2zM5.9 1h1.9v8H5.9z" fill="currentColor"/></svg>'}
+          </button>
           <button class="kill" title="Remove ${h.name}" aria-label="Remove ${h.name}">
             <svg width="11" height="11" viewBox="0 0 10 10"><path d="M0 0l10 10M10 0L0 10" stroke="currentColor" stroke-width="1.4"/></svg>
           </button>
@@ -1165,8 +1213,25 @@
       // A fault says what went wrong instead of blanking the card. The last
       // known numbers stay on screen, dimmed, because "it was at 90% when it
       // died" is usually the most useful thing on the card.
+      //
+      // Pause is the opposite case and gets the opposite treatment. Nobody is
+      // asking what this machine was doing when it stopped - they took it down
+      // themselves - and its last sample is from before a maintenance window
+      // that may have run for days. Leaving 42% on the card for a box that is
+      // powered off is a confident wrong number, which is the one thing this
+      // application is built not to do. So the readings blank rather than
+      // freeze, and every drawing branch below asks `paused` first.
+      const paused = !!h.paused;
       const fbox = el.querySelector('[data-fault]');
-      if (h.fault) {
+      el.classList.toggle('paused', paused);
+      if (paused) {
+        el.classList.remove('down');
+        fbox.hidden = false;
+        el.querySelector('[data-fault-title]').textContent = 'Paused';
+        el.querySelector('[data-fault-detail]').textContent =
+          'Not sampling, and not connected. Resume to start watching again.';
+        el.querySelector('.dot').className = 'dot paused';
+      } else if (h.fault) {
         el.classList.add('down');
         fbox.hidden = false;
         el.querySelector('[data-fault-title]').textContent = faultTitle(h.fault);
@@ -1207,7 +1272,7 @@
       el.querySelector('[data-cores]').textContent = (h.cores || '?') + 'c';
 
       el.querySelector('[data-cpu]').innerHTML = Math.round(cpu) + '<span>%</span>';
-      if (!h.fault) {
+      if (!h.fault && !paused) {
         // A host that has never reported is connecting, not up. Showing it
         // green would claim a fact we do not have yet.
         const cls = LIVE && !h.seen ? ' pending' : (cpu > 85 ? ' warnstate' : '');
@@ -1303,10 +1368,31 @@
       }
       if (h.gpu) el.querySelector('[data-gpu]').textContent = Math.round(h.gpuU) + '%';
 
+      if (paused) {
+        // Every figure on the card at once, so no branch above can leave one
+        // stale number behind next to a card that says it is not reporting.
+        el.querySelector('[data-cpu]').innerHTML = '\u2014';
+        el.querySelector('[data-ram]').textContent = '\u2014';
+        el.querySelector('[data-dio]').textContent = '\u2014';
+        el.querySelector('[data-net]').textContent = '\u2014';
+        el.querySelector('[data-temp]').textContent = '\u2014';
+        el.querySelector('[data-tag]').textContent = h.distro || '\u2014';
+        // Uptime, disk, GPU and steal are all claims about a machine nobody
+        // is talking to. The chips that are optional anyway are dropped; the
+        // load chip falls back to what it says before the first sample.
+        for (const sel of ['[data-uptime]', '[data-fs-chip]',
+                           '[data-gpu-chip]', '[data-steal-chip]']) {
+          const chip = el.querySelector(sel);
+          if (chip) chip.hidden = true;
+        }
+      }
+
       const minis = el.querySelectorAll('.cores.mini .core');
       const fulls = el.querySelectorAll('.cores.full .core');
       for (let i = 0; i < h.cores; i++) {
-        const v = h.core[i], b = band(v);
+        // Empty tiles, not the last frame's. A grid of green tiles under a
+        // "Paused" banner reads as an idle machine, which is a claim.
+        const v = paused ? 0 : h.core[i], b = band(v);
         minis[i].style.setProperty('--l', (v / 100).toFixed(3));
         minis[i].dataset.band = b;
         if (el.classList.contains('expanded')) {
@@ -1316,11 +1402,17 @@
         }
       }
 
-      draw(el.querySelector('.spark'), h.hist.cpu, A, 100);
+      // `draw` clears and returns on fewer than two points, so an empty array
+      // is an empty chart - never a flat line at zero, which would be a
+      // reading. The buffers themselves are cleared when the pause lands, so
+      // resuming does not splice new samples onto pre-maintenance ones and
+      // draw a continuous line across the gap.
+      const series = a => paused ? [] : a;
+      draw(el.querySelector('.spark'), series(h.hist.cpu), A, 100);
       if (el.classList.contains('expanded')) {
-        draw(el.querySelector('[data-c="ram"]'), h.hist.ram, MEM, 100);
-        draw(el.querySelector('[data-c="dio"]'), h.hist.dio, DSK, 0);
-        draw(el.querySelector('[data-c="net"]'), h.hist.net, NET, 0);
+        draw(el.querySelector('[data-c="ram"]'), series(h.hist.ram), MEM, 100);
+        draw(el.querySelector('[data-c="dio"]'), series(h.hist.dio), DSK, 0);
+        draw(el.querySelector('[data-c="net"]'), series(h.hist.net), NET, 0);
         el.querySelector('[data-d-ram]').textContent = gb(h.ram) + ' GB';
         el.querySelector('[data-d-dio]').textContent = bps(h.dio);
         el.querySelector('[data-d-net]').textContent = bps(h.net);
@@ -1335,7 +1427,19 @@
   function tally() {
     refreshMetricOptions();
     $('#nhosts').textContent = hosts.length;
-    $('#nup').textContent = hosts.filter(h => !h.fault && (!LIVE || h.seen)).length;
+    // Paused hosts are counted separately, never as up. Folding them into
+    // "up" would mean pausing a dying box made the fleet report itself
+    // healthier than before - the same confident wrong number this whole
+    // application is a reaction to, one level up.
+    //
+    // The figure appears only when it is non-zero. Nineteen hosts already
+    // push this line to within a few pixels of the toolbar's width, and the
+    // everyday case is a fleet with nothing paused.
+    const npaused = hosts.filter(h => h.paused).length;
+    $('#nup').textContent =
+      hosts.filter(h => !h.fault && !h.paused && (!LIVE || h.seen)).length;
+    $('#npausedWrap').hidden = !npaused;
+    $('#npaused').textContent = npaused;
 
     // Physical and virtual cores are stated separately, never summed.
     //
@@ -1955,6 +2059,7 @@
       : m.fmt(rowPeak) + (cov < GAP_FLOOR ? ` \u00b7 ${Math.round((1 - cov) * 100)}% gap` : '');
     const host = hosts.find(x => x.name === row.dataset.host);
     row.classList.toggle('faulted', !!(host && host.fault));
+    row.classList.toggle('paused', !!(host && host.paused));
   }
 
   function startHistoryTimer() {
@@ -2745,9 +2850,15 @@
     let rows = [];
     try { rows = await invoke('traffic_stats'); } catch { return; }
 
-    const reporting = rows.filter(r => r.frames_total > 0);
+    // A paused host is not sampling, so it costs nothing and must not be
+    // projected. Its counters survive the pause on purpose - the bytes it
+    // already spent are real - but counting them into "what this fleet costs
+    // per day" would quote a figure for traffic that is not happening.
+    const paused = new Set(hosts.filter(h => h.paused).map(h => h.name));
+    const reporting = rows.filter(r => r.frames_total > 0 && !paused.has(r.host));
     const overrides = new Map(
-      hosts.filter(h => h.intervalOverride).map(h => [h.name, h.intervalOverride]));
+      hosts.filter(h => h.intervalOverride && !h.paused)
+           .map(h => [h.name, h.intervalOverride]));
     const chosen = +$('#s-interval').value;
 
     const now = projectFleet(reporting, chosen, overrides);
@@ -2771,6 +2882,7 @@
     // in response to, told about itself.
     $('[data-meter-note]').textContent =
       `Measured across ${reporting.length} reporting host${reporting.length === 1 ? '' : 's'}` +
+      (paused.size ? `, with ${paused.size} paused and costing nothing` : '') +
       (overridden ? `, ${overridden} with an override the global rate will not change. ` : '. ') +
       'Sampler output before SSH compression, which ssh measured at 10\u00d7 on this fleet.';
 
@@ -2817,6 +2929,12 @@
   }
 
   function perHostRows() {
+    // A read-only server refuses every one of these, so they are disabled
+    // rather than left to fail - the same rule the toolbar's Add button and
+    // the cards' Remove button already follow. Disabled and not hidden,
+    // because the table is worth reading on a server you cannot change: it is
+    // where you find out what interval and group a host actually has.
+    const ro = document.body.dataset.readonly === 'yes' ? ' disabled' : '';
     // Existing groups offered as suggestions, so "servers" and "Servers" do
     // not silently become two groups that look like one.
     const known = [...new Set(hosts.map(h => h.group).filter(Boolean))].sort();
@@ -2824,20 +2942,24 @@
 
     $('[data-perhost-rows]').innerHTML = hosts.map(h => `
       <tr><td>${esc(h.name)}</td><td>
-        <select data-host-iv="${esc(h.name)}">
+        <select data-host-iv="${esc(h.name)}"${ro}>
           <option value="">follow global</option>
           ${INTERVALS.map(iv =>
             `<option value="${iv}"${h.intervalOverride === iv ? ' selected' : ''}>${rateLabel(iv)}</option>`
           ).join('')}
         </select></td><td>
         <input class="ph-group" list="phGroups" data-host-group="${esc(h.name)}"
-               value="${esc(h.group || '')}" placeholder="none" autocomplete="off"
+               value="${esc(h.group || '')}" placeholder="none" autocomplete="off"${ro}
                aria-label="Group for ${esc(h.name)}">
         </td><td>
-        <select data-host-os="${esc(h.name)}" aria-label="Operating system for ${esc(h.name)}">
+        <select data-host-os="${esc(h.name)}"${ro} aria-label="Operating system for ${esc(h.name)}">
           <option value=""${h.os ? '' : ' selected'}>Linux</option>
           <option value="windows"${h.os === 'windows' ? ' selected' : ''}>Windows</option>
         </select>
+        </td><td class="ph-paused">
+        <input type="checkbox" data-host-paused="${esc(h.name)}"
+               ${h.paused ? 'checked' : ''}${ro}
+               aria-label="Pause watching ${esc(h.name)}">
         </td></tr>`).join('');
   }
 
@@ -2906,6 +3028,23 @@
   // rewrites hosts.toml and re-renders the fleet, and doing that once per
   // typed letter would rearrange the view under the cursor.
   setDlg.addEventListener('change', async e => {
+    // The other path to pause. The card button covers a host you are looking
+    // at; this covers the one scrolled off the bottom of a nineteen-host
+    // grid, which is the case a fleet already running actually hits.
+    const pause = e.target.closest('[data-host-paused]');
+    if (pause && LIVE) {
+      const name = pause.dataset.hostPaused;
+      try {
+        await TAURI.core.invoke('set_host_paused', { name, paused: pause.checked });
+      } catch (err) {
+        // Put the box back: leaving it ticked would state a pause that the
+        // backend refused, and the grid behind the dialog would disagree.
+        pause.checked = !pause.checked;
+        showError(String(err));
+      }
+      refreshMeter();
+      return;
+    }
     const sel = e.target.closest('[data-host-os]');
     if (sel && LIVE) {
       const name = sel.dataset.hostOs;
@@ -3046,6 +3185,10 @@
     await listen('tuxtop://fault', ({ payload: f }) => {
       if (!f || !f.host) return;
       const h = ensure(f.host, 0);
+      // A paused host has no sampler, so it cannot fault - but a fault from
+      // the moment before the pause landed can still be in flight, and it
+      // would repaint the card red under a "Paused" caption.
+      if (h.paused) return;
       h.fault = f;
       paint(); tally();
     });
@@ -3059,6 +3202,7 @@
         h.intervalOverride = c ? c.interval_ms ?? null : null;
         h.group = c ? c.group ?? null : null;
         h.os = c ? c.os ?? '' : '';
+        setPaused(h, !!(c && c.paused));
       };
       hosts.forEach(apply);
       // Reconcile both ways. Filtering alone only ever removed, so a newly
@@ -3079,6 +3223,7 @@
         h.intervalOverride = cfg.interval_ms ?? null;
         h.group = cfg.group ?? null;
         h.os = cfg.os ?? '';
+        setPaused(h, !!cfg.paused);
       }
     } catch (e) {
       showError(`Could not read hosts.toml: ${e}`);
@@ -3119,6 +3264,18 @@
     });
 
     grid.addEventListener('click', async e => {
+      // Pause first: both buttons live in the same header, and `.kill` is the
+      // destructive one, so the cheap test has to come before it can match.
+      const pbtn = e.target.closest('[data-pause]');
+      if (pbtn) {
+        e.stopPropagation();
+        const card = pbtn.closest('.card');
+        const name = card.dataset.name;
+        const h = hosts.find(x => x.name === name);
+        try { await invoke('set_host_paused', { name, paused: !(h && h.paused) }); }
+        catch (err) { showError(String(err)); }
+        return;
+      }
       const btn = e.target.closest('.kill');
       if (!btn) return;
       e.stopPropagation();
@@ -3180,6 +3337,19 @@
     });
 
     grid.addEventListener('click', e => {
+      // The mockup has no backend to persist to, so it flips the flag in
+      // place. Without this the page opened as a plain file would draw a
+      // pause button that does nothing - a control that looks like a
+      // capability, which is the thing the read-only server rules exist to
+      // avoid.
+      const pbtn = e.target.closest('[data-pause]');
+      if (pbtn) {
+        e.stopPropagation();
+        const h = hosts.find(x => x.name === pbtn.closest('.card').dataset.name);
+        if (h) setPaused(h, !h.paused);
+        build(); tally(); paint();
+        return;
+      }
       const btn = e.target.closest('.kill');
       if (!btn) return;
       e.stopPropagation();

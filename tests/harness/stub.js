@@ -13,7 +13,7 @@
   const VIRT = Object.fromEntries(FLEET.map(h => [h.name, h]));
   let hosts = FLEET.map(h => ({
     name: h.name, addr: h.name, user: '', port: 22, beszel_url: null,
-    group: h.group || null, os: h.os || '',
+    group: h.group || null, os: h.os || '', paused: false,
   }));
 
   /// Filesystems per host, where they differ from a single root.
@@ -180,6 +180,13 @@
             bytes_total: 7300 * 60, frames_total: 60, last_frame_bytes: 7300,
           }));
         }
+        if (cmd === 'set_host_paused') {
+          const h = hosts.find(x => x.name === args.name);
+          if (!h) throw `no host named ${args.name}`;
+          h.paused = !!args.paused;
+          emit('tuxtop://hosts-changed', structuredClone(hosts));
+          return structuredClone(hosts);
+        }
         if (cmd === 'set_host_group') {
           const h = hosts.find(x => x.name === args.name);
           if (!h) throw `no host named ${args.name}`;
@@ -282,6 +289,11 @@
   // case the whole feature exists to render correctly.
   setInterval(() => {
     for (const h of hosts) {
+      // Mirrors `Supervisor::start`: a paused host has no sampler, so it
+      // emits nothing. Without this the stub would keep feeding a card the
+      // UI is supposed to have blanked, and the E2E test would be asserting
+      // against a backend that does not behave like the real one.
+      if (h.paused) continue;
       const s = sample(h.name, CORES[h.name] || 8);
       if (h.name === 'dove') {
         s.cpu = 97; s.cores = s.cores.map(() => 90 + Math.random() * 10);

@@ -105,6 +105,11 @@ fn set_host_os(svc: Svc<'_>, name: String, os: String) -> Result<Vec<HostConfig>
 }
 
 #[tauri::command]
+fn set_host_paused(svc: Svc<'_>, name: String, paused: bool) -> Result<Vec<HostConfig>, String> {
+    svc.set_host_paused(&name, paused)
+}
+
+#[tauri::command]
 fn traffic_stats(svc: Svc<'_>) -> Vec<tuxtop_core::supervisor::HostTraffic> {
     svc.traffic_stats()
 }
@@ -176,6 +181,7 @@ fn main() {
             set_host_interval,
             set_host_group,
             set_host_os,
+            set_host_paused,
             traffic_stats,
             set_processes_enabled,
             process_list,

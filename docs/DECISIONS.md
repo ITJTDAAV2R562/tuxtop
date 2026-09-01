@@ -591,3 +591,108 @@ means between sessions. The strip has one job.
 **p95 or similar.** Better than mean and still a reduction that can drop a
 one-sample spike — at 1 Hz a 2-second spike inside a 144-sample bucket is
 below p95. Also needs the raw samples, which the coarser tiers no longer hold.
+
+---
+
+## ADR-012 — Pause is a third host state, and it lives in `hosts.toml`
+
+**Date:** 2026-09-01 · **Status:** accepted
+
+### Context
+
+A host goes down for planned maintenance. Today the only way to stop Tuxtop
+turning its card red is to remove it — which calls `history.forget_host`, and
+also discards its group, its interval override and its position in the grid.
+Adding it back afterwards rebuilds none of that. So the honest description of
+the current workaround is: *delete the record to silence the alarm.*
+
+That leaves three questions that each have a wrong answer worth naming.
+
+### Decision
+
+**1. The flag is `paused: bool` on `HostConfig`, persisted in `hosts.toml`.**
+
+Not runtime state. A maintenance window routinely outlives an app restart, and
+a pause that evaporated on relaunch would be useless for the one thing it is
+for — you would come back to the wall of red you paused to avoid.
+
+`paused = true` rather than `enabled = false`, chosen for which way the field
+fails. An absent bool deserialises as `false`, so a file written by an older
+build, a hand-edit that drops the line, or a truncated write all mean
+*watching* — the safe answer, and the one a user can see is wrong. `enabled`
+would need `default = true`, and every one of those cases would instead
+silently stop monitoring the entire fleet. Pinned by
+`an_omitted_paused_field_means_watching`.
+
+It is written only when true, because `hosts.toml` is hand-edited and
+`paused = false` on nineteen hosts is noise in the file whose readability is
+the reason it is TOML.
+
+**2. Enforcement lives in `Supervisor::start`, not in its callers.**
+
+`start` stops any existing task and then refuses to start a paused host. This
+is the whole of the mechanism, and it is one place on purpose. Five call sites
+restart a host as a side effect of doing something else — `start_all`,
+`set_settings`, `set_host_interval`, `set_host_os`, `add_host` — and with the
+check in the callers, any one that forgot would silently resume a host
+somebody had paused. The sharpest case: `set_settings` restarts every host
+whose effective interval changed, so **nudging the global sample rate would
+un-pause the whole fleet**. In the supervisor that cannot happen, including
+down paths not yet written. `changing_the_global_interval_does_not_resume_a_paused_host`
+and `editing_a_paused_host_does_not_resume_it` fail if the check is removed;
+both were confirmed by deleting it.
+
+**3. A paused card blanks its readings; it does not freeze them.**
+
+This is the opposite of what a *fault* does, deliberately. A faulted card keeps
+its last numbers dimmed, because "it was at 90% when it died" is the most
+useful thing on it. Nobody asks that about a machine they powered off
+themselves, and the last sample may be days old. Leaving `42%` on the card
+would be a confident, well-formatted, wrong number about a box that is not
+running — the failure this project was built in response to, arriving through
+our own front door. So every figure blanks, the core tiles empty, the
+sparkline buffers clear, and no chart is drawn.
+
+For the same reason a paused host is **counted apart from the ones that are
+up**, never folded into them: pausing a dying box must not make the fleet
+report itself healthier than it was a moment before. It is silent in group
+aggregates too, exactly like a faulted host ([ADR-008](#adr-008--aggregates-must-not-be-able-to-hide-a-member)),
+rather than contributing a zero that would drag its group's average down and
+show a fleet-wide dip that never happened.
+
+The dot gets its own neutral colour rather than reusing the warn colour, which
+would claim something is wrong, or the default, which would claim everything
+is fine. Three states, not two.
+
+### This is not an exception to ADR-010
+
+[ADR-010](#adr-010--tuxtop-only-observes-it-never-changes-a-monitored-host) says
+Tuxtop never changes a monitored host. Pause changes *Tuxtop* — it stops us
+connecting. Nothing is sent to the machine; strictly less is. The aiming
+argument that rules out `kill` does not apply to a control whose entire effect
+is that we stop talking to something.
+
+### Rejected
+
+**Runtime-only pause.** Simplest, and wrong for the reason above: maintenance
+outlives the session.
+
+**`paused_until = <timestamp>`, with automatic resume.** File-compatible as a
+later widening, and still not wanted. Maintenance windows overrun, so a timer
+that fires on schedule repaints the wall red at exactly the moment nobody
+wants it — and the user then has to work out whether the red is the old
+maintenance or a new fault, which is worse than the state they were in.
+
+**Resuming automatically when the host answers again.** Requires probing a
+host we have said we are not talking to. Pause means no connection; a
+background reachability check is a connection.
+
+**Group-level pause** — "pause the whole `physical` group". The obvious next
+ask, and a widening of this same field, but a separate decision: it is exactly
+the shape of aiming ADR-010 is careful about, and one click that stops
+watching nine machines deserves its own argument.
+
+**Hiding paused hosts from the grid.** Cheaper on space and it makes a paused
+host easy to forget. The card stays in place, dimmed, keeping the position
+that is muscle memory — and its resume button stays visible without a hover,
+since hiding the way out of a state is how a state becomes a trap.

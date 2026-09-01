@@ -98,3 +98,24 @@ test('direction_reverses_the_column_but_not_the_tiebreak', () => {
   assert.strictEqual(asc[asc.length - 1].cpu_pct, 50);
   assert.strictEqual(asc[0].rss_kb, 900, 'tied at 10%, memory still descends');
 });
+
+test('a_paused_host_answers_to_the_word_paused', () => {
+  // How you find the two boxes you took down three weeks ago in a fleet of
+  // nineteen. Without this the only way back to a paused host is scrolling.
+  const paused = { name: 'wader', group: 'physical', paused: true };
+  const watched = { name: 'dove', group: 'physical', paused: false };
+
+  assert.ok(matchesHost(paused, 'paused'));
+  assert.ok(!matchesHost(watched, 'paused'), 'a watched host must not match');
+  // And the word is added, not substituted: the normal filters still work.
+  assert.ok(matchesHost(paused, 'wader'));
+  assert.ok(matchesHost(paused, 'physical'));
+});
+
+test('the_word_paused_is_not_read_out_of_a_hosts_own_name', () => {
+  // The flag is appended only when true, so "paused" as a filter means the
+  // state and never a host that happens to be called after it.
+  assert.ok(!matchesHost({ name: 'dove', group: null }, 'paused'));
+  assert.ok(matchesHost({ name: 'paused-rig', group: null }, 'paused'),
+    'a literal name still matches on its own text');
+});

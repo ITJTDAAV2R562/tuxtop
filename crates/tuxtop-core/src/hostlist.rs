@@ -69,6 +69,7 @@ mod tests {
             interval_secs: None,
             os: String::new(),
             group: None,
+            paused: false,
         }
     }
 
@@ -300,6 +301,26 @@ addr = "dove"
     }
 
     #[test]
+    fn paused_survives_a_write_and_a_read() {
+        // Maintenance outlives a session. A flag that did not round-trip
+        // through hosts.toml would come back watching on the next launch,
+        // which is the wall of red this feature exists to prevent.
+        let mut list = parse(SEEDED).unwrap();
+        list[0].paused = true;
+        let text = render(&list).expect("renders");
+        assert!(parse(&text).unwrap()[0].paused, "wrote:\n{text}");
+    }
+
+    #[test]
+    fn a_watched_host_writes_no_paused_key_at_all() {
+        // hosts.toml is hand-edited. `paused = false` on all nineteen hosts
+        // is noise in a file whose readability is the reason it is TOML.
+        let list = parse(SEEDED).unwrap();
+        let text = render(&list).expect("renders");
+        assert!(!text.contains("paused"), "wrote:\n{text}");
+    }
+
+    #[test]
     fn round_trip_preserves_every_host() {
         let mut list = parse(SEEDED).unwrap();
         super::add(
@@ -314,6 +335,7 @@ addr = "dove"
                 interval_secs: None,
                 os: String::new(),
                 group: None,
+                paused: false,
             },
         )
         .unwrap();
@@ -346,6 +368,7 @@ addr = "dove"
                     interval_secs: None,
                     os: String::new(),
                     group: None,
+                    paused: false,
                 },
             )
             .unwrap();
@@ -369,6 +392,7 @@ addr = "dove"
                 interval_secs: None,
                 os: String::new(),
                 group: None,
+                paused: false,
             },
             HostConfig {
                 name: "heron".into(),
@@ -380,6 +404,7 @@ addr = "dove"
                 interval_secs: None,
                 os: String::new(),
                 group: None,
+                paused: false,
             },
         ];
         let text = render(&list).unwrap();
@@ -459,6 +484,7 @@ mod reorder_tests {
                 interval_secs: None,
                 os: String::new(),
                 group: None,
+                paused: false,
             })
             .collect()
     }
@@ -513,6 +539,7 @@ mod settings_tests {
             interval_secs: None,
             os: String::new(),
             group: None,
+            paused: false,
         }
     }
 
@@ -626,6 +653,7 @@ mod group_tests {
             interval_secs: None,
             os: String::new(),
             group: group.map(str::to_string),
+            paused: false,
         }
     }
 

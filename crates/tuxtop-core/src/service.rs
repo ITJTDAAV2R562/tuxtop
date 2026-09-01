@@ -7,6 +7,7 @@
 //! test.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use tokio::sync::mpsc;
@@ -32,6 +33,14 @@ pub struct Service {
     sup: Arc<Supervisor>,
     history: Arc<HistoryStore>,
     events: mpsc::Sender<Event>,
+    /// Whether the process view is open, and so whether a host resumed from
+    /// pause should start ranking processes as well as sampling metrics.
+    ///
+    /// Tracked here rather than inferred from the supervisor's task map: with
+    /// one paused host the map is empty, which is indistinguishable from the
+    /// view being closed, and resuming that host would silently leave its
+    /// process list blank.
+    procs_enabled: AtomicBool,
 }
 
 impl Service {
@@ -46,6 +55,7 @@ impl Service {
             sup,
             history,
             events,
+            procs_enabled: AtomicBool::new(false),
         }
     }
 
@@ -210,6 +220,40 @@ impl Service {
         Ok(f.hosts)
     }
 
+    /// Suspend or resume watching one host.
+    ///
+    /// For planned maintenance. The alternative users reach for - remove the
+    /// host, add it back afterwards - throws away its history, its group, its
+    /// interval override and its position in the grid, and `remove_host`
+    /// deliberately calls `history.forget_host`. Pause keeps every one of
+    /// those and stops only the sampling.
+    ///
+    /// Both directions are the same call: `Supervisor::start` stops the
+    /// existing task first and refuses to start a paused one, so this asks for
+    /// the host to be watched and the supervisor decides whether that means
+    /// running or stopped. History is untouched either way - the whole point.
+    pub fn set_host_paused(&self, name: &str, paused: bool) -> Result<Vec<HostConfig>, String> {
+        let mut f = self.config.load_file()?;
+        let Some(h) = f.hosts.iter_mut().find(|h| h.name == name) else {
+            return Err(format!("no host named {name}"));
+        };
+        h.paused = paused;
+        let updated = h.clone();
+        self.config.save_file(&f)?;
+
+        self.sup.start(
+            updated.clone(),
+            effective_interval_ms(&updated, &f.settings),
+        );
+        // The process sampler is a second ssh connection and needs the same
+        // treatment, but only while anyone is looking at the process view.
+        if self.procs_enabled.load(Ordering::Relaxed) {
+            self.sup.start_procs(vec![updated]);
+        }
+        self.announce_hosts(&f.hosts);
+        Ok(f.hosts)
+    }
+
     pub fn traffic_stats(&self) -> Vec<HostTraffic> {
         self.sup.traffic()
     }
@@ -219,7 +263,11 @@ impl Service {
     /// Driven by the view being open: sampling costs remote wall clock per
     /// host per cycle, so a view nobody is looking at should cost nothing.
     pub fn set_processes_enabled(&self, on: bool) -> Result<(), String> {
+        self.procs_enabled.store(on, Ordering::Relaxed);
         if on {
+            // Paused hosts are skipped inside `start_procs`, so a paused host
+            // does not acquire an ssh connection just because someone opened
+            // the process view.
             self.sup.start_procs(self.config.load()?);
         } else {
             self.sup.stop_procs();
@@ -441,6 +489,129 @@ mod tests {
         // would have them allocated before anyone noticed.
         let (s, _rx, p) = svc("points");
         assert!(s.query_history("nobody", "cpu", 60, 0, usize::MAX).len() <= MAX_POINTS);
+        let _ = std::fs::remove_file(p);
+    }
+
+    #[tokio::test]
+    async fn a_paused_host_is_not_watched() {
+        let (s, _rx, p) = svc("pause");
+        s.add_host(host("dove")).unwrap();
+        assert!(s.sup.is_watching("dove"));
+
+        s.set_host_paused("dove", true).unwrap();
+        assert!(!s.sup.is_watching("dove"), "pause must drop the ssh task");
+        assert!(s.list_hosts().unwrap()[0].paused);
+
+        s.set_host_paused("dove", false).unwrap();
+        assert!(s.sup.is_watching("dove"), "resume must bring it back");
+        let _ = std::fs::remove_file(p);
+    }
+
+    #[tokio::test]
+    async fn changing_the_global_interval_does_not_resume_a_paused_host() {
+        // The bug the choke point in `Supervisor::start` exists to prevent.
+        // `set_settings` restarts every host whose effective interval changed,
+        // and a paused host's does - so with the check in the callers instead,
+        // touching the global rate would silently resume the whole fleet.
+        let (s, _rx, p) = svc("pause-settings");
+        s.add_host(host("dove")).unwrap();
+        s.set_host_paused("dove", true).unwrap();
+
+        s.set_settings(Settings {
+            interval_ms: 5_000,
+            interval_secs: None,
+            history_cap_mb: 256,
+            always_on_top: false,
+        })
+        .unwrap();
+
+        assert!(
+            !s.sup.is_watching("dove"),
+            "a settings change resumed a paused host"
+        );
+        assert!(
+            s.list_hosts().unwrap()[0].paused,
+            "and the flag must survive it"
+        );
+        let _ = std::fs::remove_file(p);
+    }
+
+    #[tokio::test]
+    async fn editing_a_paused_host_does_not_resume_it() {
+        // The same hazard by the other three doors: every one of these calls
+        // `Supervisor::start` to make its change take effect.
+        let (s, _rx, p) = svc("pause-edit");
+        s.add_host(host("dove")).unwrap();
+        s.set_host_paused("dove", true).unwrap();
+
+        s.set_host_interval("dove", Some(2_000)).unwrap();
+        assert!(
+            !s.sup.is_watching("dove"),
+            "an interval override resumed it"
+        );
+        s.set_host_os("dove", "windows").unwrap();
+        assert!(!s.sup.is_watching("dove"), "an OS change resumed it");
+        s.set_host_group("dove", Some("maintenance")).unwrap();
+        assert!(!s.sup.is_watching("dove"), "a group change resumed it");
+
+        // And the edits themselves still landed.
+        let h = &s.list_hosts().unwrap()[0];
+        assert_eq!((h.interval_ms, h.os.as_str()), (Some(2_000), "windows"));
+        let _ = std::fs::remove_file(p);
+    }
+
+    #[tokio::test]
+    async fn start_all_skips_a_paused_host_on_launch() {
+        // Pause has to survive a restart of the app, or it is useless for the
+        // maintenance window it exists for - which routinely outlives a
+        // session.
+        let (s, _rx, p) = svc("pause-launch");
+        s.add_host(host("dove")).unwrap();
+        s.add_host(host("heron")).unwrap();
+        s.set_host_paused("dove", true).unwrap();
+
+        s.start_all().unwrap();
+        assert!(
+            !s.sup.is_watching("dove"),
+            "a paused host was watched on launch"
+        );
+        assert!(
+            s.sup.is_watching("heron"),
+            "and its neighbour must still be"
+        );
+        let _ = std::fs::remove_file(p);
+    }
+
+    #[tokio::test]
+    async fn pausing_a_host_keeps_its_history_and_removing_one_does_not() {
+        // The entire difference between the two operations, and the reason
+        // pause exists rather than "delete it and add it back afterwards".
+        let (s, _rx, p) = svc("pause-history");
+        s.add_host(host("dove")).unwrap();
+        s.history().record(&crate::Sample {
+            host: "dove".into(),
+            cpu: 42.0,
+            ..Default::default()
+        });
+        let before = s.history().usage().series;
+        assert!(before > 0);
+
+        s.set_host_paused("dove", true).unwrap();
+        assert_eq!(
+            s.history().usage().series,
+            before,
+            "pausing threw away the history it exists to preserve"
+        );
+
+        s.remove_host("dove").unwrap();
+        assert_eq!(s.history().usage().series, 0);
+        let _ = std::fs::remove_file(p);
+    }
+
+    #[tokio::test]
+    async fn pausing_a_host_that_does_not_exist_says_so() {
+        let (s, _rx, p) = svc("pause-ghost");
+        assert!(s.set_host_paused("ghost", true).is_err());
         let _ = std::fs::remove_file(p);
     }
 

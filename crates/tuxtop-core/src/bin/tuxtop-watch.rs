@@ -104,6 +104,7 @@ async fn main() -> ExitCode {
         interval_secs: None,
         os: String::new(),
         group: None,
+        paused: false,
     };
 
     let (tx, mut rx) = mpsc::channel(16);

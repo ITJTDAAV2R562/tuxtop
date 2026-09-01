@@ -41,7 +41,7 @@
   </div>
 
   <div class="toolbar">
-    <span class="tally"><b id="nhosts">4</b> hosts &middot; <b id="ncores">52</b> cores &middot; <b id="nup">4</b> up</span>
+    <span class="tally"><b id="nhosts">4</b> hosts &middot; <b id="ncores">52</b> cores &middot; <b id="nup">4</b> up<span id="npausedWrap" hidden> &middot; <b id="npaused">0</b> paused</span></span>
     <div class="seg" role="group" aria-label="View">
       <button id="viewHosts" aria-pressed="true">Hosts</button>
       <button id="viewAll" aria-pressed="false">Fleet</button>
@@ -172,14 +172,19 @@
     </label>
 
     <details class="perhost" open>
-      <summary>Per-host interval and group</summary>
+      <summary>Per-host interval, group and pause</summary>
       <table class="meter-table">
-        <thead><tr><th>Host</th><th>Interval</th><th>Group</th><th>OS</th></tr></thead>
+        <thead><tr><th>Host</th><th>Interval</th><th>Group</th><th>OS</th>
+          <th>Paused</th></tr></thead>
         <tbody data-perhost-rows></tbody>
       </table>
       <datalist id="phGroups"></datalist>
       <p class="hint">Hosts sharing a group are summarised as one row in the
         fleet view and one chart in history. Leave blank for none.</p>
+      <p class="hint">Pausing stops sampling a host without removing it &mdash;
+        for planned maintenance. Its history, group, interval and position are
+        kept, and no connection is made until you resume. Removing a host
+        discards its history instead.</p>
     </details>
 
     <div class="dlg-actions">

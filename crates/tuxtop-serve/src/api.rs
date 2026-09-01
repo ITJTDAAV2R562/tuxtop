@@ -31,6 +31,7 @@ const MUTATING: &[&str] = &[
     "set_host_interval",
     "set_host_group",
     "set_host_os",
+    "set_host_paused",
 ];
 
 pub fn router(state: Arc<AppState>) -> Router {
@@ -157,6 +158,9 @@ async fn command(
             .set_host_group(&s("name"), arg("group").as_str())
             .map(|v| json!(v)),
         "set_host_os" => svc.set_host_os(&s("name"), &s("os")).map(|v| json!(v)),
+        "set_host_paused" => svc
+            .set_host_paused(&s("name"), arg("paused").as_bool().unwrap_or(false))
+            .map(|v| json!(v)),
         "traffic_stats" => Ok(json!(svc.traffic_stats())),
         "set_processes_enabled" => svc
             .set_processes_enabled(arg("enabled").as_bool().unwrap_or(false))

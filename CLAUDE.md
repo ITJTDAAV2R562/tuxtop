@@ -77,6 +77,18 @@ No Beszel agent means no history — the live grid still works. SSH down means n
 live data — history still renders, marked stale. Always state which part is
 missing; never show a generic "offline".
 
+**Pause is enforced in `Supervisor::start`, and nowhere else.**
+`start` stops the host's task and refuses to restart a paused one. Do not add a
+`cfg.paused` check to a *caller* instead — five of them restart a host as a side
+effect of an unrelated edit (`start_all`, `set_settings`, `set_host_interval`,
+`set_host_os`, `add_host`), and the one that forgets silently resumes a machine
+somebody took down. Changing the global sample rate un-pausing the whole fleet
+is the shape of that bug; `changing_the_global_interval_does_not_resume_a_paused_host`
+is the test that catches it. A paused host is also **neither up nor down** — it
+blanks its readings rather than freezing them, and is counted apart in the
+tally, because folding it into "up" makes pausing a dying box look like a
+fleet that got healthier. [ADR-012](docs/DECISIONS.md#adr-012--pause-is-a-third-host-state-and-it-lives-in-hoststoml).
+
 **Faults keep their reason.**
 `HostFault` distinguishes `Unreachable`, `AuthFailed`, `SamplerFailed` and
 `Stalled`. Do not collapse them. Telling `AuthFailed` from `Unreachable` is the

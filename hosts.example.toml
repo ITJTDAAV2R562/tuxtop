@@ -32,3 +32,17 @@ port = 22
 # addr = "n1"
 # port = 2222        # if WSL already holds 22 on the same machine
 # os = "windows"
+
+# A host taken out of the rotation for planned maintenance. Tuxtop makes no
+# connection to it and reports nothing about it, but keeps its history,
+# group, interval and position in the grid — which is what removing it and
+# adding it back afterwards would throw away.
+#
+# Also settable from the app: the pause button on the card, or the per-host
+# table in Settings. Nothing resumes it automatically; that is deliberate,
+# since detecting the host is back would mean connecting to it.
+#
+# [[host]]
+# name = "wader"
+# addr = "wader"
+# paused = true
