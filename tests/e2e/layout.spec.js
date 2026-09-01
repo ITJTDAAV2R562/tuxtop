@@ -14,6 +14,34 @@ const VIEWS = [
   ['Processes', '#viewProcs'],
 ];
 
+/// Open the page and wait for the fleet to stop arriving.
+///
+/// Every test here measures or clicks a toolbar control, and the toolbar is
+/// the one thing on the page that is still changing size a second after load:
+/// cards are created as hosts report, and the tally beside them counts up from
+/// "0 up" to "19 up" while `ncores` fills in. So the buttons move, and
+/// Playwright will not click an element that is not *stable* - it waits the
+/// full 30s and fails. That is what made the first test in this file the one
+/// that failed most, and it failed on the commit before this feature too:
+/// alternating A/B runs had baseline failing two of these at load 15 while the
+/// current tree passed. Waiting for `nup` to reach `nhosts` waits for the last
+/// host, after which nothing in the toolbar moves on its own.
+async function load(page) {
+  await page.goto('/index.html');
+  // The tally, not a card: one of these tests opens straight into History,
+  // where there are no cards at all. The toolbar is present in every view and
+  // is the thing whose settling actually matters here.
+  await expect
+    .poll(async () => {
+      const [up, all] = await Promise.all([
+        page.locator('#nup').textContent(),
+        page.locator('#nhosts').textContent(),
+      ]);
+      return Number(all) > 1 && up === all;
+    }, { message: 'every host reporting, so the toolbar stops resizing' })
+    .toBe(true);
+}
+
 async function toolbar(page) {
   return page.evaluate(() => {
     const tb = document.querySelector('.toolbar');
@@ -37,7 +65,7 @@ async function toolbar(page) {
 test('no view clips a control off the edge', async ({ page }) => {
   // "Theme" and "Add host" were cut off entirely on the wider layout. A
   // control you cannot see or click is worse than one on a second row.
-  await page.goto('/index.html');
+  await load(page);
   for (const [name, id] of VIEWS) {
     await page.click(id);
     await page.waitForTimeout(400);
@@ -50,7 +78,7 @@ test('no view clips a control off the edge', async ({ page }) => {
 test('the view tabs sit in the same place in every view', async ({ page }) => {
   // They used to move ~400px between views, because a flexible spacer sat
   // before them and the slack changed with which controls a view shows.
-  await page.goto('/index.html');
+  await load(page);
   const seen = [];
   for (const [name, id] of VIEWS) {
     await page.click(id);
@@ -66,7 +94,7 @@ test('the view tabs sit in the same place in every view', async ({ page }) => {
 test('no toolbar button is squeezed until its label wraps', async ({ page }) => {
   // Stopping the row wrapping let flex shrink the buttons instead, and
   // "Add host" broke onto two lines - the button changing shape between views.
-  await page.goto('/index.html');
+  await load(page);
   const heights = [];
   for (const [, id] of VIEWS) {
     await page.click(id);
@@ -100,7 +128,7 @@ test('core charts lay out against the width they actually get', async ({ page })
       view: 'history', metric: 'cores', slice: { mode: 'metric', metric: 'cores' },
     }));
   });
-  await page.goto('/index.html');
+  await load(page);
   await page.locator('.cores-hist').first().waitFor({ timeout: 15_000 });
 
   // Both shapes: `.packed` across the fleet, plain in host mode. Both set an
@@ -138,7 +166,7 @@ test('a narrow window wraps rather than clipping', async ({ page }) => {
   // The safe failure. Below the width the controls need, the row must break -
   // never overflow.
   await page.setViewportSize({ width: 1180, height: 900 });
-  await page.goto('/index.html');
+  await load(page);
   for (const [name, id] of VIEWS) {
     await page.click(id);
     await page.waitForTimeout(400);
@@ -149,12 +177,27 @@ test('a narrow window wraps rather than clipping', async ({ page }) => {
 });
 
 test('leaving a view restores the layout it found', async ({ page }) => {
+  // Twice the usual budget, because this test genuinely needs it and the
+  // default left none. It drives twelve view switches, each with a 400ms
+  // settle, and renders the heat strip - nineteen rows against six hundred
+  // columns - four times. Measured alone on an idle box it takes 24s of a 30s
+  // limit, so any concurrency at all pushes it over, and it then fails as a
+  // 30s timeout that looks exactly like the flake everything else in this file
+  // was suffering from. It is not that: it is the one test here that is
+  // legitimately slow, and it was the last thing left failing once the real
+  // flake - clicking a toolbar that was still resizing - had been fixed.
+  //
+  // Raising a timeout is the wrong reflex nine times in ten. This is the tenth:
+  // the wait was measured rather than guessed, and the work being waited on is
+  // the test's own subject, not a slow harness.
+  test.setTimeout(60_000);
+
   // Heat put `heat-mode` on the grid and nothing ever took it off, so
   // `.grid.heat-mode{display:block}` survived into every other view and made
   // each host card claim a full row. Each builder adding its own class and
   // trusting every *other* builder to strip it works right up until a fifth
   // view exists.
-  await page.goto('/index.html');
+  await load(page);
   await expect(page.locator('.card').first()).toBeVisible();
 
   const gridClass = () => page.locator('#grid').getAttribute('class');

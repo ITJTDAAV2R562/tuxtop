@@ -325,6 +325,37 @@ neither: the worst test went 23.9 s to 8.0 s and the suite 2.2 m to 1.0 m by
 making the server threaded. Before touching `retries` or a timeout, check what
 the suite is actually waiting on.
 
+**The suite runs four workers, and that number is load-bearing.**
+`playwright.config.js` pins `workers: 4` rather than taking Playwright's
+default of half the cores. Every page animates nineteen hosts at 2.5 Hz against
+canvas, so a worker is a sustained CPU load, not a browser waiting on a server.
+At the default eight this box saturates: pages stop repainting promptly,
+toolbar controls never hold still for two consecutive frames, and Playwright
+refuses to click an element that is not *stable*, so it waits out the full 30 s.
+It presents as three to six tests failing at random across unrelated specs —
+indistinguishable from having broken the app, and it cost most of an afternoon.
+Eight workers gave one to six failures per run; four gives 34/34 repeatably.
+
+This wears the face of the harness-server bug below but is not it: that server
+was measured at eight parallel page loads in under 80 ms. Nor is it a timeout to
+raise. Do not raise `workers` without re-measuring.
+
+**Interact with the toolbar only after the fleet has stopped arriving.**
+Cards are created as hosts report, and the tally counts up from `0 up` to
+`19 up` while `ncores` fills in — so for the first second the toolbar is
+resizing and the grid is being torn down and rebuilt several times a second. A
+click resolved against a card that is then replaced lands on a detached node,
+and because the handler is delegated on the grid the event never arrives: the
+action silently does not happen. Both `layout.spec` and `pause.spec` have a
+`load(page)` helper that polls until `#nup` equals `#nhosts`. Use it in any new
+spec that clicks something.
+
+One test legitimately needs more than the 30 s default —
+`leaving a view restores the layout it found` drives twelve view switches and
+four full heat renders, measured at 24 s alone — and carries its own
+`test.setTimeout(60_000)` with that measurement written down. That is the
+exception, not a pattern to copy.
+
 **Then check your own machine before blaming the suite.** The residual failures
 after that fix were self-inflicted - a `tuxtop-serve` and a desktop app running
 against nineteen hosts each, 45 ssh sessions on a 16-core box. With those
