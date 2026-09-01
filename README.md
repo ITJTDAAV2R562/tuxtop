@@ -263,8 +263,8 @@ docs/                 architecture, decisions, roadmap, CI, evidence.
 ## Testing
 
 ```sh
-cargo test                              # 229 tests, no GUI toolchain needed
-node --test 'tests/*.test.js'           # 83 tests: aggregation, scale, heat
+cargo test                              # 255 tests, no GUI toolchain needed
+node --test 'tests/*.test.js'           # 88 tests: aggregation, scale, heat
 npx playwright test                     # 23 tests: layout, load order, controls
 bash scripts/verify.sh                  # everything CI runs, locally
 ```

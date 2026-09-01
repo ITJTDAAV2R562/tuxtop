@@ -1,0 +1,37 @@
+{
+  "$schema": "./node_modules/@stryker-mutator/core/schema/stryker-schema.json",
+  "_comment": [
+    "A diagnostic to read, never a score to raise -- the same rule as .cargo/mutants.toml.",
+    "`break` is null on purpose. A mutation score that must go up produces tests written to",
+    "kill mutants rather than to state invariants, and a test corresponding to no rule breaks",
+    "on refactor without catching anything.",
+    "",
+    "`mutate` lists the six pure modules and nothing else. app.js is 3,200 lines of DOM whose",
+    "only coverage is Playwright, which this runner never invokes; mutating it would produce a",
+    "wall of survivors saying one thing already known and already ruled on. http.js is the",
+    "same. Survivors here mean 'what the node --test suite misses', never 'what is untested'.",
+    "",
+    "The UMD wrapper at the top of each module contributes ~20 unkillable survivors",
+    "(typeof module === 'object'). They are noise; read past the first dozen lines of each file.",
+    "",
+    "    npm run test:mutants               -- all six, about two minutes",
+    "    npx stryker run --mutate src/heat.js   -- one file, while writing its tests"
+  ],
+  "packageManager": "npm",
+  "reporters": ["progress", "clear-text"],
+  "testRunner": "command",
+  "commandRunner": { "command": "node --test tests/*.test.js" },
+  "coverageAnalysis": "off",
+  "mutate": [
+    "src/agg.js",
+    "src/filter.js",
+    "src/format.js",
+    "src/heat.js",
+    "src/pick.js",
+    "src/scale.js"
+  ],
+  "thresholds": { "high": 100, "low": 0, "break": null },
+  "concurrency": 8,
+  "tempDirName": ".stryker-tmp",
+  "cleanTempDir": true
+}

@@ -227,7 +227,7 @@ one is how a monitoring tool acquires its first remote code execution.
 ## Testing
 
 ```sh
-cargo test        # 229 tests, no GUI toolchain needed, runs anywhere
+cargo test        # 255 tests, no GUI toolchain needed, runs anywhere
 cargo clippy --all-targets
 cargo fmt
 node --test 'tests/*.test.js'           # pure logic: aggregation, scale, filters
@@ -235,7 +235,50 @@ npx playwright test                     # the browser: load order, layout, contr
 python3 scripts/check-theme-tokens.py   # CSS tokens in all three theme states
 python3 scripts/check-agg-declared.py   # every metric declares how it aggregates
 python3 scripts/check-commands-reachable.py   # no command shipped unreachable
+
+cargo mutants -j16       # what the tests would not have noticed (run on dove)
+npm run test:mutants     # the same for the six pure JS modules
 ```
+
+**Mutation testing is a diagnostic to read, never a score to raise.** It runs
+weekly on dove (`.github/workflows/ci.yml`), `continue-on-error`, with **no
+threshold in either tool** — deliberately. The moment a mutation score has to
+go up, tests get written to kill mutants rather than to state rules, and a test
+corresponding to no rule is worse than none: it breaks on refactor without
+catching anything. This repo has never had a coverage percentage; the point of
+adopting this was to get the signal without acquiring one. Read the survivor
+list and ask one question per line — *if this shipped, would I care?* Yes means
+write the test and name it after the invariant. No means the mutant is
+equivalent, or the code did not need to exist.
+
+Exclusions live in `.cargo/mutants.toml` and `stryker.conf.json`, each with the
+reason it was judged not worth a test. Two things learned the hard way and
+worth not relearning: cargo-mutants' `exclude_re` matches the **whole mutant
+description** ("replace foo -> T with ..."), so anchoring on `^name$` silently
+matches nothing and the exclusion looks applied while doing nothing; and
+`--in-place` refuses `--jobs`, so reaching for it costs you all parallelism —
+only do so when copying the tree is the problem, which it is when `TMPDIR` is a
+tmpfs, because the copy includes a 4 GB `target/`.
+
+**It found what hand-mutation had missed, which is the argument for it.** The
+practice below — check that breaking a rule fails a test — was already written
+down here, and was being done. It caught the `Supervisor::start` pause rule.
+It had not caught that `Service::start_all` could be replaced with
+`Ok(Default::default())` while `start_all_skips_a_paused_host_on_launch` still
+passed, because `add_host` had already started the hosts and the test asserted
+a state that was true before the call. A test named for launch that did not
+test launch. Nor had anyone noticed that `tuxtop-serve` contained **zero
+tests** while holding both security-shaped invariants in the codebase: the
+directory-traversal guard in `serve`, and the `--writable` check whose `!` can
+be deleted to invert read-only enforcement entirely. Both were argued for
+carefully in prose. A comment does not fail.
+
+**When a test asserts an error status, check it cannot pass for the wrong
+reason.** The first traversal test asserted `NOT_FOUND` for `../secret.toml`
+and killed nothing: a path the guard *lets through* also 404s when it names a
+file that does not exist, so the assertion held with the guard removed. Every
+rejected name in that test now points at a file that genuinely exists, which is
+what makes the guard the only reason it fails.
 
 **Tests are the memory this project does not otherwise have.** Each test name
 states the invariant it protects — `iowait_counts_as_idle`,

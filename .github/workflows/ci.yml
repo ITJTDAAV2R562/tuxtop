@@ -8,6 +8,10 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+  # Sunday 03:00 UTC, for the mutation job below and nothing else. Every other
+  # job here skips on a schedule run.
+  schedule:
+    - cron: '0 3 * * 0'
   # Called by release.yml, so a tag re-runs the full gate on the exact
   # commit it points at rather than trusting that the commit passed once.
   workflow_call:
@@ -18,6 +22,7 @@ env:
 jobs:
   core:
     name: core — tests, lints, checkers
+    if: github.event_name != 'schedule'
     # dove: 32 cores, self-hosted. Self-hosted minutes are not billed, which is
     # why CI runs at all — GitHub-hosted jobs on this account are blocked on a
     # payment state. See docs/CI.md for the runner and its safety condition.
@@ -55,6 +60,7 @@ jobs:
 
   browser:
     name: browser — layout and load order
+    if: github.event_name != 'schedule'
     runs-on: [self-hosted, linux, dove]
     steps:
       - uses: actions/checkout@v4
@@ -67,6 +73,7 @@ jobs:
 
   windows:
     name: windows — the Tauri shell compiles
+    if: github.event_name != 'schedule'
     # Cross-compiled on dove, not built on n1. n1 is the machine someone is
     # actually using; a four-minute Rust build on every push was taking cores
     # from the person at the keyboard, while dove has 32 sitting idle.
@@ -96,3 +103,43 @@ jobs:
       - name: Build the desktop app
         working-directory: src-tauri
         run: cargo xwin build --locked --target x86_64-pc-windows-msvc
+
+  mutants:
+    name: mutants — what the tests would not have noticed
+    # Weekly, and it cannot fail the build. This is a report somebody reads,
+    # not a gate anything passes: see the top of .cargo/mutants.toml for why
+    # there is no score threshold and why there must not be one. Ranking a
+    # number here would produce tests written to kill mutants instead of tests
+    # written to state rules.
+    #
+    # Schedule rather than per push because the output is only worth anything
+    # when someone sits down with it, and it costs ~12 minutes of 32 cores.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: [self-hosted, linux, dove]
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: cargo-mutants
+        run: |
+          command -v cargo-mutants >/dev/null || cargo install cargo-mutants --locked
+          # No --check and no threshold: a non-zero exit here would make this a
+          # gate, which is the one thing it must not become.
+          cargo mutants -j16 --minimum-test-timeout 60 || true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci
+      - name: stryker
+        run: npx stryker run || true
+
+      # The whole point of the job. Nothing is asserted; the artefact is read.
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mutation-report
+          path: |
+            mutants.out/
+            reports/
+          retention-days: 30

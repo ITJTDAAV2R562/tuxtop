@@ -389,6 +389,20 @@ mod tests {
         (Service::new(Config::new(&path), sup, history, tx), rx, path)
     }
 
+    /// A second `Service` over the same config file, with its own empty
+    /// supervisor. That is what a relaunch actually is: the file on disk is
+    /// the only state that carries over.
+    fn relaunch(path: &std::path::Path) -> (Service, mpsc::Receiver<Event>) {
+        let (tx, rx) = mpsc::channel(64);
+        let history = Arc::new(HistoryStore::new());
+        let sup = Supervisor::new(
+            history.clone(),
+            tx.clone(),
+            tokio::runtime::Handle::current(),
+        );
+        (Service::new(Config::new(path), sup, history, tx), rx)
+    }
+
     fn host(name: &str) -> HostConfig {
         HostConfig {
             name: name.into(),
@@ -565,18 +579,33 @@ mod tests {
         // Pause has to survive a restart of the app, or it is useless for the
         // maintenance window it exists for - which routinely outlives a
         // session.
+        //
+        // Written against a *fresh* supervisor rather than the one that has
+        // been running, and the empty assertion below is the point. The first
+        // version of this test called `start_all` on a service whose hosts
+        // `add_host` had already started, so the state it checked was true
+        // before `start_all` ran: cargo-mutants replaced the whole function
+        // body with `Ok(Default::default())` and the test still passed. It
+        // was named for launch and did not test launch.
         let (s, _rx, p) = svc("pause-launch");
         s.add_host(host("dove")).unwrap();
         s.add_host(host("heron")).unwrap();
         s.set_host_paused("dove", true).unwrap();
 
-        s.start_all().unwrap();
+        let (fresh, _rx2) = relaunch(&p);
         assert!(
-            !s.sup.is_watching("dove"),
+            !fresh.sup.is_watching("heron"),
+            "a new supervisor must watch nothing until start_all runs, or \
+             this test cannot tell whether start_all did anything"
+        );
+
+        fresh.start_all().unwrap();
+        assert!(
+            !fresh.sup.is_watching("dove"),
             "a paused host was watched on launch"
         );
         assert!(
-            s.sup.is_watching("heron"),
+            fresh.sup.is_watching("heron"),
             "and its neighbour must still be"
         );
         let _ = std::fs::remove_file(p);

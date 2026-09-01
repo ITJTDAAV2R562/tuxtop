@@ -1,0 +1,62 @@
+# cargo-mutants — a diagnostic to read, never a score to raise.
+#
+# It changes the code and asks whether any test noticed. Each surviving line is
+# one question: "if this shipped, would I care?" Yes means write the test, and
+# name it after the invariant, like every other test here. No means the mutant
+# is equivalent, or the code did not need to exist.
+#
+# There is deliberately **no score threshold**, and the CI job cannot fail the
+# build. The moment a number has to go up, tests get written to kill mutants
+# rather than to state rules — and a test corresponding to no rule is worse
+# than no test, because it breaks on refactor without catching anything. This
+# repo has never had a coverage percentage; the point of adopting this is to
+# get the signal without acquiring one.
+#
+#     cargo mutants                        # everything not excluded below
+#     cargo mutants -f 'crates/**/proc.rs' # one file, while writing its tests
+#
+# It is slow because every mutant is a rebuild: 887 mutants took 12 minutes on
+# dove at -j16 (250 minutes of CPU), against 19 minutes single-threaded on the
+# development box. Run it on dove. Note that `--in-place` refuses `--jobs`, so
+# reach for it only when a copy of the tree is the problem — and it is here if
+# TMPDIR is a tmpfs, because the copy includes a 4 GB `target/`.
+
+# Excluded because the mutants are unreachable or the test that killed them
+# would be a test of nothing. Each of these was looked at once and judged, not
+# skipped because it was inconvenient. Everything else stays in.
+exclude_globs = [
+    # Developer CLIs, not the product: a terminal live view and a fleet dump
+    # used while working on the sampler. 102 of the first run's 296 survivors
+    # were here, which is a third of the report describing two debug tools.
+    "crates/tuxtop-core/src/bin/*.rs",
+
+    # Process spawning and stream plumbing. Reaching these mutants needs a live
+    # ssh connection; the ones a unit test can reach would be killed by
+    # asserting that a mock was called, which tests the mock.
+    "crates/tuxtop-core/src/transport.rs",
+]
+
+exclude_re = [
+    # NOTE: these match the whole mutant description ("replace foo -> T with
+    # ..."), not the bare function name, so anchoring on ^name$ silently
+    # matches nothing and the exclusion looks applied while doing nothing.
+    #
+    # The per-host async watch loops. They terminate only when the host does,
+    # and driving one means standing up a fake remote — an integration test of
+    # the network wearing a unit test's clothes.
+    "watch_procs",
+    "replace watch with",
+
+    # Thin delegations. `Service::process_list` forwards to the supervisor and
+    # does nothing else; killing "replace with vec![]" means asserting that one
+    # line still says what it plainly says. The behaviour worth testing lives
+    # on the far side of the delegation, and is tested there.
+    "Service::(process_list|cgroup_list|traffic_stats|get_settings)",
+    "Supervisor::traffic",
+
+    # `router` returns a Router with no routes. Killing it needs a request
+    # driven through the router itself — a `tower` dev-dependency to test that
+    # five `.route()` calls are still present, when a server with no routes is
+    # the first thing anyone notices. Every handler it points at is tested.
+    "replace router -> Router",
+]

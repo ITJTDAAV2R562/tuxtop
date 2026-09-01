@@ -29,3 +29,9 @@ playwright-report/
 
 # Scratch: screenshots, one-off diagnostic scripts. Never tracked.
 tmp/
+
+# Mutation testing output. Reports to read, not artefacts to keep.
+.stryker-tmp/
+reports/
+mutants.out/
+mutants.out.old/

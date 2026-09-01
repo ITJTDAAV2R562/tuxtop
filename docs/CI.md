@@ -39,6 +39,21 @@ doing exactly that while the checkout sat several commits behind. It now
 compares the two HEADs, checks both trees are clean, and skips loudly with the
 one command that fixes it rather than passing on code nobody is looking at.
 
+### The mutation job
+
+A fourth job, `mutants`, runs **weekly** (Sunday 03:00 UTC) and on manual
+dispatch. Every other job skips on a schedule run, and this one skips on a
+push. It is `continue-on-error` and neither tool is given a threshold: it
+uploads a report to read, and cannot fail anything. The reasoning is at the top
+of `.cargo/mutants.toml` — a mutation score that must go up buys tests written
+to kill mutants instead of tests written to state rules.
+
+It is here rather than on a push because it costs about twelve minutes of all
+thirty-two cores: 887 mutants, 250 minutes of CPU. Every mutant is a rebuild,
+so the wall-clock win from parallelism is real but bounded — the same run took
+nineteen minutes single-threaded on the development box, only 2.6x slower, and
+`tuxtop-serve` mutants cost 47-51 s each to build because of axum.
+
 ### The safety question
 
 The standard warning about self-hosted runners is that **anyone who can open a
