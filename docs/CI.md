@@ -31,6 +31,14 @@ builds the installer by hand, so CI and the manual path use the same toolchain.
 `scripts/verify.sh` still closes the same gate locally through `/mnt/c`, which
 is what to use when the runner is stopped.
 
+That local gate builds `/mnt/c/Users/sam/tuxtop`, which is a **separate clone**
+rather than the WSL working tree - so it only says something about your change
+once that change is committed, pushed and pulled there. It used to print a
+"git pull there first" note and then report **ok** regardless, and was found
+doing exactly that while the checkout sat several commits behind. It now
+compares the two HEADs, checks both trees are clean, and skips loudly with the
+one command that fixes it rather than passing on code nobody is looking at.
+
 ### The safety question
 
 The standard warning about self-hosted runners is that **anyone who can open a

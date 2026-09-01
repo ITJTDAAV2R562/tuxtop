@@ -20,7 +20,10 @@ step() {
   printf '\n\033[1m== %s\033[0m\n' "$1"; shift
   if "$@"; then printf '   ok\n'; else printf '\033[31m   FAILED\033[0m\n'; FAIL=1; fi
 }
-skip() { SKIPPED+=("$1"); printf '\n\033[33m== %s — skipped: %s\033[0m\n' "$1" "$2"; }
+# The reason travels into the summary, not only the inline line. A run whose
+# last words are "skipped: windows build" tells you nothing about whether that
+# was a missing toolchain or a stale checkout you can fix in one command.
+skip() { SKIPPED+=("$1 — $2"); printf '\n\033[33m== %s — skipped: %s\033[0m\n' "$1" "$2"; }
 
 step "cargo fmt"            cargo fmt --check
 step "clippy (-D warnings)" cargo clippy --all-targets -- -D warnings
@@ -42,10 +45,63 @@ fi
 # The one CI can do and a Linux box cannot - unless the Windows checkout and
 # toolchain are reachable, which on this machine they are.
 WIN_CARGO=/mnt/c/Users/sam/.cargo/bin/cargo.exe
-WIN_SRC=/mnt/c/Users/sam/tuxtop/src-tauri
+WIN_REPO=/mnt/c/Users/sam/tuxtop
+WIN_SRC=$WIN_REPO/src-tauri
+
+# Is the Windows checkout actually holding the code we just tested?
+#
+# It is a *separate clone*, not this working tree, so a green build there says
+# nothing about the change in front of you. The script used to print a "git
+# pull there first" note and then report ok regardless - which is passing
+# quietly on the wrong tree, in the one gate that exists because commits that
+# do not compile have reached main. It was found reporting ok while the
+# checkout sat several commits behind.
+#
+# Sets WIN_STALE to the reason, or leaves it empty when the two agree.
+WIN_STALE=""
+windows_checkout_state() {
+  local local_head win_head dirty win_dirty
+  local_head=$(git rev-parse HEAD 2>/dev/null)
+  win_head=$(git -C "$WIN_REPO" rev-parse HEAD 2>/dev/null)
+
+  if [ -z "$win_head" ]; then
+    WIN_STALE="$WIN_REPO is not a git checkout, so there is no telling what it builds"
+    return
+  fi
+  if [ "$win_head" != "$local_head" ]; then
+    WIN_STALE="the checkout is at ${win_head:0:7}, this tree is at ${local_head:0:7} — push, then: git -C $WIN_REPO pull"
+    return
+  fi
+  # Matching HEADs are not enough. The checkout can only ever build what is
+  # committed, so uncommitted work here is invisible to it - which is the
+  # normal state while writing the change the gate is supposed to cover.
+  dirty=$(git status --porcelain -- src-tauri crates Cargo.toml Cargo.lock 2>/dev/null | wc -l)
+  if [ "$dirty" -gt 0 ]; then
+    WIN_STALE="this tree has $dirty uncommitted change(s) the checkout cannot see — commit and push, then: git -C $WIN_REPO pull"
+    return
+  fi
+  # And the checkout itself must be clean, or it is building something that
+  # exists on no branch.
+  win_dirty=$(git -C "$WIN_REPO" status --porcelain 2>/dev/null | wc -l)
+  if [ "$win_dirty" -gt 0 ]; then
+    WIN_STALE="the checkout has $win_dirty local modification(s), so it is not building ${win_head:0:7} either"
+  fi
+}
+
 if [ -x "$WIN_CARGO" ] && [ -d "$WIN_SRC" ]; then
+  windows_checkout_state
+fi
+
+if [ ! -x "$WIN_CARGO" ] || [ ! -d "$WIN_SRC" ]; then
+  skip "windows build" "no Windows toolchain reachable — CI covers this"
+  skip "windows smoke test" "same"
+elif [ -n "$WIN_STALE" ]; then
+  # Loudly, and both halves: the smoke test runs the binary this build
+  # produces, so a stale build makes a stale smoke test.
+  skip "windows build" "$WIN_STALE"
+  skip "windows smoke test" "would run the stale binary"
+else
   printf '\n\033[1m== windows build (src-tauri)\033[0m\n'
-  printf '   note: builds the Windows checkout, so `git pull` there first\n'
   # Windows will not let cargo replace a running binary, and this script has
   # to launch one to smoke-test it. Closing it first is the only way the gate
   # can run twice in a row.
@@ -87,21 +143,36 @@ if [ -x "$WIN_CARGO" ] && [ -d "$WIN_SRC" ]; then
       fi
     fi
     /mnt/c/Windows/System32/taskkill.exe /IM tuxtop.exe /F >/dev/null 2>&1
-    sleep 3
-    # And they must go when it does: the samplers are kill_on_drop, and a leak
-    # here would leave an ssh process per host behind on every run.
-    AFTER=$(sshcount)
+    # And they must go when it does - but give them time to, and say how long
+    # it took rather than sampling once at an arbitrary moment.
+    #
+    # This does *not* verify kill_on_drop, whatever the comment here used to
+    # claim. `taskkill /F` gives the process no chance to run a destructor, so
+    # kill_on_drop cannot fire; the orphaned ssh processes exit on their own
+    # when their pipes close. What is actually being checked is that they do
+    # not survive the app indefinitely - a weaker claim, and the true one.
+    #
+    # It was a single sample after 3 seconds, which is a coin flip: measured
+    # five times across two commits, "still alive after 3s" came out 2, 11, 2,
+    # 6 and 5 with nineteen hosts. At 10s it was 1 every time. So the gate
+    # failed at random, which is exactly as useless as passing on stale code
+    # - and reads as a regression in whatever change happens to be in flight.
+    SETTLE=0
+    while [ "$SETTLE" -lt 20 ]; do
+      AFTER=$(sshcount)
+      [ "$AFTER" -le "$((BEFORE + 2))" ] && break
+      sleep 2; SETTLE=$((SETTLE + 2))
+    done
     if [ "$AFTER" -gt "$((BEFORE + 2))" ]; then
-      printf '\033[31m   FAILED — %s ssh sessions left behind after exit\033[0m\n' "$AFTER"
+      printf '\033[31m   FAILED — %s ssh sessions still alive %ss after exit\033[0m\n' "$AFTER" "$SETTLE"
       FAIL=1
+    else
+      printf '   ok — sessions cleaned up within %ss\n' "$SETTLE"
     fi
   else
     printf '   no binary to run\n'
   fi
   rm -f "$LOG"
-else
-  skip "windows build" "no Windows toolchain reachable — CI covers this"
-  skip "windows smoke test" "same"
 fi
 
 printf '\n'

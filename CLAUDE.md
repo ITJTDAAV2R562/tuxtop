@@ -356,6 +356,24 @@ Windows toolchain at `/mnt/c`, which is the one gate a Linux box cannot
 otherwise close. It skips loudly rather than passing quietly when something is
 unavailable.
 
+**That Windows build is a separate clone, and the script now refuses a stale
+one.** `/mnt/c/Users/sam/tuxtop` is its own checkout, so it can only build what
+you have committed *and pushed* and then pulled there. The script used to say
+so in a note and report `ok` anyway — it was caught reporting a green Windows
+build while that checkout sat several commits behind, in the one gate that
+exists because commits which do not compile have reached `main`. It now
+compares the two HEADs, requires both trees clean, and skips with the single
+command that fixes it. **A skip there means the Windows build did not happen**,
+not that it passed.
+
+The smoke test's teardown check waits for the ssh processes to go rather than
+sampling once. It sampled at 3 s, which across five runs on two commits gave
+2, 11, 2, 6 and 5 still alive — a coin flip that failed at random and read as
+a regression in whatever change was in flight. It also does not verify
+`kill_on_drop`, whatever its comment once claimed: `taskkill /F` leaves no
+chance to run a destructor, so what is really checked is that the orphans do
+not outlive the app.
+
 ## Releasing
 
 ```sh
