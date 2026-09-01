@@ -30,6 +30,88 @@ use serde::{Deserialize, Serialize};
 
 use crate::facts::HostFacts;
 
+/// How long a loop that could not find its session runs before giving up.
+///
+/// Only reachable when the ancestor walk in [`watchdog_preamble`] finds no
+/// `sshd.exe` — which should not happen, since these scripts are only ever
+/// started over SSH. It exists so that "a remote loop never runs forever" is
+/// unconditional rather than dependent on that walk succeeding. The client
+/// reconnects on its own, so the cost of being wrong is one reconnect.
+pub const UNWATCHED_MAX_MS: u32 = 1_800_000;
+
+/// PowerShell that finds the SSH session this loop belongs to. Runs once.
+///
+/// **Why the loop has to watch anything at all.** Killing the local `ssh`
+/// client does not stop the far side. On Linux it does — sshd hangs up and the
+/// shell dies with SIGHUP, verified against dove — which is why this is
+/// Windows-only. Windows sshd leaves the command running, and leaves its pipes
+/// intact with it, so the loop cannot notice passively. Measured on n1, all
+/// three of these were tried and none works:
+///
+/// - **Writing to stdout keeps succeeding** after the client is gone. A broken
+///   pipe never surfaces.
+/// - **Stdin never reaches EOF**, so waiting for the pipe to close waits
+///   forever.
+/// - **A heartbeat down stdin cannot be read.** `[Console]::OpenStandardInput`
+///   returns a `System.IO.__ConsoleStream` whose `ReadAsync` only ever
+///   completes with bytes that were *already buffered* when it was called; a
+///   read issued against an empty pipe stays `WaitingForActivation` forever,
+///   even after data arrives. A blocking `Read` on a second runspace does not
+///   wake either. This one is worth knowing about because it half-works: a
+///   heartbeat fast enough to always beat the poll looks fine in a short test
+///   and drops every Windows host in the fleet the moment it slips.
+///
+/// What does work is the process tree. sshd forks a session process per
+/// connection, and *that* exits when the client goes — while the `cmd.exe` and
+/// `powershell.exe` beneath it survive. It is the one part of the chain that
+/// reliably dies, so the loop finds it on the way up at startup and watches it.
+///
+/// `$wdi` is left at 0 if no `sshd.exe` ancestor is found, which disables the
+/// watchdog rather than killing a session that might be legitimate — see
+/// [`UNWATCHED_MAX_MS`] for the backstop that then applies.
+fn watchdog_preamble() -> String {
+    "$wdi=0\n\
+     $wdp=Get-CimInstance Win32_Process -Filter \"ProcessId=$PID\"\n\
+     while($wdp){\n\
+       $wdq=Get-CimInstance Win32_Process -Filter \"ProcessId=$($wdp.ParentProcessId)\"\n\
+       if(-not $wdq){ break }\n\
+       if($wdq.Name -eq 'sshd.exe'){ $wdi=$wdq.ProcessId; break }\n\
+       $wdp=$wdq\n\
+     }\n\
+     $wds=[System.Diagnostics.Stopwatch]::StartNew()\n"
+        .to_string()
+}
+
+/// The watchdog-aware replacement for `Start-Sleep -Milliseconds <interval>`.
+///
+/// Sleeps the interval in steps of at most a second and checks between them,
+/// so an abandoned loop dies within about a second however long its interval
+/// is. Checking once per cycle instead would leave a host sampled hourly
+/// holding its orphan for the rest of the hour.
+///
+/// `GetProcessById` throws when the PID is gone, which is the signal; it is a
+/// handle open, not a WMI query, so it is cheap enough to run every second.
+///
+/// A recycled PID would read as "still alive" and delay the reap until the
+/// next restart. That is the safe direction to be wrong in — the dangerous
+/// error is deciding a *live* session has ended and killing sampling on a host
+/// nobody has touched.
+fn watchdog_sleep(ms: u32) -> String {
+    format!(
+        "$slept=0\n\
+         while($slept -lt {ms}){{\n\
+           if($wdi -ne 0){{\n\
+             try {{ $null=[System.Diagnostics.Process]::GetProcessById($wdi) }}\n\
+             catch {{ [System.Environment]::Exit(0) }}\n\
+           }} elseif($wds.ElapsedMilliseconds -gt {cap}){{ [System.Environment]::Exit(0) }}\n\
+           $step=[Math]::Min(1000,{ms}-$slept)\n\
+           Start-Sleep -Milliseconds $step\n\
+           $slept+=$step\n\
+         }}\n",
+        cap = UNWATCHED_MAX_MS,
+    )
+}
+
 /// The PowerShell script the remote host runs, as plain text.
 ///
 /// Kept separate from the command that carries it so it can be read, and so
@@ -40,6 +122,7 @@ fn win_script(interval_ms: u32) -> String {
     // frames, and Win32_Processor is among the slower classes to query.
     format!(
         "$ErrorActionPreference='SilentlyContinue'\n\
+         {watchdog_setup}\
          $os=Get-CimInstance Win32_OperatingSystem\n\
          $cpu=Get-CimInstance Win32_Processor | Select-Object -First 1\n\
          'TXWI|os|'+$os.Caption\n\
@@ -57,9 +140,11 @@ fn win_script(interval_ms: u32) -> String {
            foreach($d in Get-CimInstance Win32_PerfRawData_PerfDisk_PhysicalDisk){{\n\
              'TXWD|'+$d.Name+'|'+$d.DiskReadBytesPersec+'|'+$d.DiskWriteBytesPersec }}\n\
            '{delim}'\n\
-           Start-Sleep -Milliseconds {ms}\n\
+           {watchdog_wait}\
          }}\n",
         delim = crate::sampler::FRAME_DELIMITER,
+        watchdog_setup = watchdog_preamble(),
+        watchdog_wait = watchdog_sleep(ms),
     )
 }
 
@@ -134,6 +219,7 @@ pub fn win_process_command(top_n: usize, interval_ms: u32) -> String {
     let ms = interval_ms.max(crate::procs::PROC_MIN_INTERVAL_MS);
     let script = format!(
         "$ErrorActionPreference='SilentlyContinue'\n\
+         {watchdog_setup}\
          $ncpu=(Get-CimInstance Win32_ComputerSystem).NumberOfLogicalProcessors\n\
          $prev=@{{}}\n\
          $prevTs=0\n\
@@ -162,9 +248,11 @@ pub fn win_process_command(top_n: usize, interval_ms: u32) -> String {
              '{delim}'\n\
            }}\n\
            $prev=$cur; $prevTs=$ts\n\
-           Start-Sleep -Milliseconds {ms}\n\
+           {watchdog_wait}\
          }}\n",
         delim = crate::sampler::FRAME_DELIMITER,
+        watchdog_setup = watchdog_preamble(),
+        watchdog_wait = watchdog_sleep(ms),
     );
     format!(
         "powershell -NoProfile -NonInteractive -EncodedCommand {}",
@@ -536,7 +624,7 @@ TXWP|9100|0|4194304|explorer|
         let script = decode_command(&win_process_command(20, 5));
         assert!(
             script.contains(&format!(
-                "Start-Sleep -Milliseconds {}",
+                "while($slept -lt {})",
                 crate::procs::PROC_MIN_INTERVAL_MS
             )),
             "interval was not floored: {script}"
@@ -544,8 +632,63 @@ TXWP|9100|0|4194304|explorer|
         // And an interval above the floor is still honoured.
         let script = decode_command(&win_process_command(20, 5_000));
         assert!(
-            script.contains("Start-Sleep -Milliseconds 5000"),
+            script.contains("while($slept -lt 5000)"),
             "floor clobbered a legitimate interval: {script}"
+        );
+    }
+
+    #[test]
+    fn an_abandoned_remote_loop_exits_on_its_own() {
+        // Killing the local ssh client does not stop the far side on Windows.
+        // sshd leaves the command running with both pipes intact, so a broken
+        // stdout never surfaces and stdin never reaches EOF - all measured
+        // against a live sshd. What does die is sshd's own per-connection
+        // session process, so the loop watches that. Without this, every launch
+        // leaks a PowerShell loop that runs until the host reboots; three had
+        // piled up on n1 before anyone looked.
+        for script in [
+            decode_command(&win_process_command(20, 5_000)),
+            decode_command(&win_sampler_command(2_000)),
+        ] {
+            assert!(
+                script.contains("if($wdq.Name -eq 'sshd.exe')"),
+                "the session process is never located: {script}"
+            );
+            assert!(
+                script.contains("GetProcessById($wdi)"),
+                "nothing checks whether the session is still there: {script}"
+            );
+            assert!(
+                script.contains("catch { [System.Environment]::Exit(0) }"),
+                "the session ends but the loop does not: {script}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_session_is_checked_more_often_than_a_slow_interval() {
+        // The check rides inside the sleep rather than once per cycle, so a
+        // host sampled hourly still dies within a second of losing its session.
+        // Sampling slowly is a reason to cost the host less, not to hold an
+        // orphan for the rest of the hour.
+        let script = decode_command(&win_process_command(20, 3_600_000));
+        assert!(
+            script.contains("$step=[Math]::Min(1000,3600000-$slept)"),
+            "a slow interval sleeps past its own watchdog check: {script}"
+        );
+    }
+
+    #[test]
+    fn a_loop_that_cannot_find_its_session_still_gives_up_eventually() {
+        // The ancestor walk failing should not resurrect the original bug. It
+        // disables the watchdog rather than killing a session that might be
+        // legitimate, so something else has to bound the lifetime - otherwise
+        // "never runs forever" holds only when the walk succeeds, which is
+        // exactly the case nobody would notice breaking.
+        let script = decode_command(&win_process_command(20, 5_000));
+        assert!(
+            script.contains(&format!("$wds.ElapsedMilliseconds -gt {UNWATCHED_MAX_MS}")),
+            "an unwatched loop runs forever: {script}"
         );
     }
 

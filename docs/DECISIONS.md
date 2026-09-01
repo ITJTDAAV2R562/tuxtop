@@ -696,3 +696,80 @@ watching nine machines deserves its own argument.
 host easy to forget. The card stays in place, dimmed, keeping the position
 that is muscle memory — and its resume button stays visible without a hover,
 since hiding the way out of a state is how a state becomes a trap.
+
+---
+
+## ADR-013 — A Windows remote loop watches its sshd session, not its pipes
+
+**Date:** 2026-09-01 · **Status:** accepted
+
+### Context
+
+Killing the local `ssh` client does not stop the loop on the far side of a
+Windows host. On Linux it does — sshd hangs up and the shell dies with SIGHUP,
+checked against dove — so this is a Windows-only defect and it went unnoticed
+for the same reason: nothing on the Linux path can reproduce it.
+
+The result is one leaked `powershell.exe` per launch, running until the host
+reboots. Three had accumulated on n1 and were found only because they were
+*also* polling at 5 ms — the unit bug fixed alongside this — and had taken
+about three of sixteen cores. At the correct interval an orphan is cheap and
+therefore silent, which is worse: it accumulates and nothing points at it.
+
+`verify.sh` counts local `ssh` processes after killing the app and reports
+them gone. That is true and irrelevant — the local client always dies. The
+remote loop it started is invisible to every gate we have.
+
+### Decision
+
+**The loop finds sshd's per-connection session process at startup and exits
+when that process goes.**
+
+sshd forks a session process per connection. When the client dies, that process
+exits while the `cmd.exe` and `powershell.exe` beneath it survive — it is the
+one link in the chain that reliably breaks. The script walks its own ancestors
+once, records the PID, and checks it with `GetProcessById` (a handle open, not
+a WMI query) inside the sleep. Measured on n1: reaped 3.4 s after the client
+exits, with 45 consecutive samples over 99 s beforehand and no false kill.
+
+The check rides *inside* the interval sleep, in steps of at most a second,
+rather than once per cycle. Otherwise a host sampled hourly holds its orphan
+for the rest of the hour — sampling slowly should cost the host less, not more.
+
+If no `sshd.exe` ancestor is found the watchdog is disabled rather than firing,
+because the dangerous error is killing a live session, not keeping a dead one.
+A 30-minute lifetime cap then applies, so *"a remote loop never runs forever"*
+holds unconditionally instead of only when the ancestor walk succeeds.
+
+### Rejected
+
+**Noticing a broken stdout.** The obvious approach, and it does not work:
+writes keep succeeding after the client is gone. Windows sshd leaves the pipe
+intact.
+
+**Waiting for stdin to reach EOF.** Same reason — stdin never closes either.
+
+**A heartbeat written down stdin, with the loop exiting when it stops.** This
+was built and it appeared to work, which is why it is worth recording rather
+than merely rejecting. `[Console]::OpenStandardInput()` returns a
+`System.IO.__ConsoleStream` whose `ReadAsync` only ever completes with bytes
+that were *already buffered when it was called*; a read issued against an empty
+pipe stays `WaitingForActivation` forever, even after data arrives. A blocking
+`Read` on a second runspace does not wake either.
+
+So the mechanism half-worked: with heartbeats faster than the poll there was
+usually data already waiting, and a short test passed. At the real 5 s cadence
+every Windows host died 30 s in. It was caught by soaking a session for longer
+than the lease, and by nothing else — the unit tests asserted on the generated
+script text and were all green. A test that only reads what we *meant* to send
+cannot see that the far side never receives it.
+
+**Killing stale loops on connect.** Self-healing, and it would clean up the
+orphans already out there, but it cannot distinguish an abandoned loop from one
+belonging to a second person watching the same fleet. Reaching onto a monitored
+host to kill a process is also exactly what ADR-010 forbids.
+
+**A bounded lifetime alone, with the client reconnecting.** Simple and
+unconditional, but it trades a permanent orphan for a sampling gap on every
+host forever. It survives here only as the fallback for the case where the
+watchdog cannot arm, where the alternative is the original bug.

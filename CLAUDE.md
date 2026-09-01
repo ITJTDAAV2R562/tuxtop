@@ -51,6 +51,23 @@ you what invariant you are breaking.
 Never spawn a process or open a connection per sample. A handshake per second
 costs more than the interval it is measuring.
 
+**A Windows remote loop must be able to end itself, and you must soak-test it.**
+Killing the local `ssh` client does not stop the far side on Windows: sshd
+leaves the command running with both pipes intact, so a broken stdout never
+surfaces and stdin never reaches EOF. The loop watches sshd's session process
+instead and exits when it goes — [ADR-013](docs/DECISIONS.md#adr-013--a-windows-remote-loop-watches-its-sshd-session-not-its-pipes).
+Linux is unaffected (SIGHUP), which is why nothing on the dev box reproduces
+any of this.
+
+Two things follow. **Unit tests cannot check it** — they assert on the script
+text we generate, and the whole failure mode is that the far side behaves
+differently than the text implies. A heartbeat design passed every unit test
+and would have dropped every Windows host in the fleet 30 s in. **So verify
+against a real Windows host, and soak for longer than any timeout in the
+mechanism**: confirm a session survives well past it, *then* that the remote
+exits after the client dies. Checking only the second half is how the broken
+design got as far as it did.
+
 **Nothing is installed on the monitored host.**
 No agent, no binary copied over, no package, no open port, no firewall change.
 If a feature seems to need one, it is collected over the existing SSH stream or
