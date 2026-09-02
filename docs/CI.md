@@ -30,16 +30,44 @@ condition, stated here at the time:
 > trigger a workflow. If the repo is ever made public, remove the self-hosted
 > runner first — not afterwards.
 
-That condition has now fired. A self-hosted runner executes whatever a pull
-request contains; on a public repo, anyone who can open a PR from a fork gets
-code execution on the runner host — which in our case ran as a user with
-passwordless sudo. So the runners came out before the repo went in.
+That condition fires the moment this tree is published. A self-hosted runner
+executes whatever a pull request contains, and a fork PR carries its own copy of
+the workflow — so it can set `runs-on: [self-hosted]` itself. Anyone who can
+open a PR then has code execution on the runner host, which in our case ran as a
+user with passwordless sudo. So the runners came out first.
 
 The reason for self-hosting in the first place was that GitHub-hosted jobs on
 this account did not start: *"recent account payments have failed or your
 spending limit needs to be increased."* CI was written and never ran once.
-**Public repositories get GitHub-hosted minutes at no charge**, so going public
-removed the reason and the option in the same move.
+**Public repositories get GitHub-hosted minutes at no charge**, so publishing
+removes the reason and the option in the same move.
+
+### A runner is attached by registration, not by `runs-on`
+
+This is the part that is easy to get wrong, because nothing in this directory
+shows it. On a personal account there are no account-level runners: every
+runner is registered **to one repository**, and a workflow can only reach the
+runners registered to the repository it is running in. Editing `runs-on` here
+detaches nothing.
+
+So the exposure of a published copy depends on how it was made:
+
+- **A new repository has no runners.** Nothing is attached, nothing to remove,
+  and a fork PR asking for `self-hosted` simply queues forever.
+- **A transferred repository keeps its registrations.** It arrives with every
+  runner that was attached to it still attached, and publishing it exposes
+  those hosts.
+
+Before publishing any copy of this tree, check and clear it:
+
+```sh
+gh api repos/<owner>/<repo>/actions/runners --jq '.runners[].name'
+```
+
+Removing a registration is per repository and does not disturb runners the same
+machine has registered for other repositories — those are separate installs
+with separate registrations. Requiring approval for outside collaborators
+narrows the window but is not the control to rely on; not being attached is.
 
 What it costs: the runners are 2 cores rather than 32, and `target/` starts
 cold. `Swatinem/rust-cache` is now present in `ci.yml`, having been
@@ -102,13 +130,16 @@ Two details worth knowing:
   tip would report the tree clean while the value sat one `git log -p` away.
   It runs `--redact`, because printing a finding into a public build log
   publishes the secret a second time.
-- **CodeQL needs code scanning enabled on the repository**, which is free on a
-  public repo and unavailable on a private one without GitHub Advanced
-  Security. Until it is on, `init` and the scan itself succeed and only the
+- **The `codeql` job only runs on a public repository**, gated on
+  `github.event.repository.visibility`. Uploading results needs code scanning
+  enabled, which is free on a public repo and unavailable on a private one
+  without Advanced Security: `init` and the scan itself succeed and only the
   upload in `analyze` fails, with *"Code scanning is not enabled for this
-  repository"* — so a red `codeql` job on a fresh fork means a settings switch,
-  not a finding. If GitHub's **default setup** for code scanning is enabled it
-  conflicts with this workflow; pick one, not both.
+  repository"*. Ungated it is permanently red on a private repo, and a job
+  everyone knows to ignore is worse than no job — so it turns itself on when
+  the repository is published, and needs no edit to do so. If GitHub's
+  **default setup** for code scanning is enabled it conflicts with this
+  workflow; pick one, not both.
 - **`cargo audit` runs against both lockfiles.** `src-tauri` is outside the
   workspace ([ADR-006](DECISIONS.md#adr-006--tuxtop-core-is-a-separate-crate-outside-the-tauri-workspace))
   and carries its own lock, which no workspace-wide command ever opens — and it

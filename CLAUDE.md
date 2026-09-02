@@ -448,11 +448,21 @@ does. What each covers, and what is deliberately out of scope, is in
 
 **Everything is GitHub-hosted, and nothing here may go back to a self-hosted
 runner.** CI used to run on our own hardware, which was safe under one stated
-condition — a private repo with no forks. The repo is public now, and a
-self-hosted runner executes whatever a pull request contains: a fork PR would
-be code execution on the runner host, which ran as a user with passwordless
-sudo. Public repos get hosted minutes at no charge, so going public removed
-both the reason for self-hosting and the option. See [docs/CI.md](docs/CI.md).
+condition — a private repo with no forks. This tree is published, and a
+self-hosted runner executes whatever a pull request contains: a fork PR can set
+`runs-on: [self-hosted]` in its own copy of the workflow, so an attached runner
+is code execution on that host by anyone who can open a PR. Public repos get
+hosted minutes at no charge, so publishing removed both the reason for
+self-hosting and the option.
+
+**A runner is attached by *registration*, not by what these files say.** GitHub
+runners on a personal account are registered per repository, so a workflow can
+only reach a runner that is registered to the repository it runs in. Two
+consequences: a **new** repository has no runners and nothing to remove, while a
+**transferred** one carries its registrations with it and arrives with them
+still attached. Check `gh api repos/<owner>/<repo>/actions/runners` before
+publishing any copy of this tree, and remove what it lists. Changing `runs-on`
+here does not detach anything. See [docs/CI.md](docs/CI.md).
 
 **Third-party actions are pinned to a commit SHA, not a tag,** with the version
 in a trailing comment; Dependabot moves the pins weekly. A tag is mutable — the

@@ -132,6 +132,14 @@ jobs:
 
   codeql:
     name: codeql — the frontend
+    # Only where it can actually report. Uploading results needs code scanning
+    # enabled, which is free on a public repository and unavailable on a
+    # private one without Advanced Security — `init` and the scan succeed and
+    # only the upload fails, with "Code scanning is not enabled for this
+    # repository". Without this gate the job is permanently red on a private
+    # repo, and a job everyone knows to ignore is worse than no job. It turns
+    # itself on when the repository is public.
+    if: github.event.repository.visibility == 'public'
     runs-on: ubuntu-latest
     permissions:
       contents: read
