@@ -102,6 +102,13 @@ Two details worth knowing:
   tip would report the tree clean while the value sat one `git log -p` away.
   It runs `--redact`, because printing a finding into a public build log
   publishes the secret a second time.
+- **CodeQL needs code scanning enabled on the repository**, which is free on a
+  public repo and unavailable on a private one without GitHub Advanced
+  Security. Until it is on, `init` and the scan itself succeed and only the
+  upload in `analyze` fails, with *"Code scanning is not enabled for this
+  repository"* — so a red `codeql` job on a fresh fork means a settings switch,
+  not a finding. If GitHub's **default setup** for code scanning is enabled it
+  conflicts with this workflow; pick one, not both.
 - **`cargo audit` runs against both lockfiles.** `src-tauri` is outside the
   workspace ([ADR-006](DECISIONS.md#adr-006--tuxtop-core-is-a-separate-crate-outside-the-tauri-workspace))
   and carries its own lock, which no workspace-wide command ever opens — and it

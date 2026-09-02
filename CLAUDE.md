@@ -364,20 +364,28 @@ neither: the worst test went 23.9 s to 8.0 s and the suite 2.2 m to 1.0 m by
 making the server threaded. Before touching `retries` or a timeout, check what
 the suite is actually waiting on.
 
-**The suite runs four workers, and that number is load-bearing.**
-`playwright.config.js` pins `workers: 4` rather than taking Playwright's
-default of half the cores. Every page animates nineteen hosts at 2.5 Hz against
-canvas, so a worker is a sustained CPU load, not a browser waiting on a server.
-At the default eight this box saturates: pages stop repainting promptly,
-toolbar controls never hold still for two consecutive frames, and Playwright
-refuses to click an element that is not *stable*, so it waits out the full 30 s.
-It presents as three to six tests failing at random across unrelated specs —
-indistinguishable from having broken the app, and it cost most of an afternoon.
-Eight workers gave one to six failures per run; four gives 34/34 repeatably.
+**The worker count is one per four cores, and that ratio is load-bearing.**
+`playwright.config.js` computes `workers` from `os.cpus()` rather than taking
+Playwright's default of half the cores. Every page animates nineteen hosts at
+2.5 Hz against canvas, so a worker is a sustained CPU load, not a browser
+waiting on a server. At the default eight a 16-core box saturates: pages stop
+repainting promptly, toolbar controls never hold still for two consecutive
+frames, and Playwright refuses to click an element that is not *stable*, so it
+waits out the full 30 s. It presents as several tests failing at random across
+unrelated specs — indistinguishable from having broken the app, and it cost
+most of an afternoon. Eight workers gave one to six failures per run; four
+gives 34/34 repeatably on 16 cores.
+
+**It has to be a ratio, and that was learned twice.** It was `workers: 4`, a
+constant measured on one machine and silently tied to it. The first CI run
+after the move to GitHub-hosted runners failed *fifteen* tests with precisely
+the symptom above — same four workers, a fraction of the cores. A number that
+is only correct on the box it was measured on is a number that will be wrong
+on the next one.
 
 This wears the face of the harness-server bug below but is not it: that server
 was measured at eight parallel page loads in under 80 ms. Nor is it a timeout to
-raise. Do not raise `workers` without re-measuring.
+raise. Do not change the ratio without re-measuring.
 
 **Interact with the toolbar only after the fleet has stopped arriving.**
 Cards are created as hosts report, and the tally counts up from `0 up` to
