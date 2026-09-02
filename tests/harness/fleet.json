@@ -1,14 +1,22 @@
 {
   "_comment": [
-    "The real fleet's shape, so the harness tests what actually exists rather",
-    "than a convenient five-host toy. Twice in one session a harness that did",
-    "not match let a real bug through: a nineteen-host tally is 70px wider than",
-    "a five-host one, which is exactly the margin the toolbar had.",
+    "One real fleet's shape, with invented names, so the harness tests what a",
+    "fleet actually looks like rather than a convenient five-host toy. Twice in",
+    "one session a harness that did not match let a real bug through: a",
+    "nineteen-host tally is 70px wider than a five-host one, which is exactly",
+    "the margin the toolbar had.",
     "",
-    "Names and structure are real; addresses are not here, because the harness",
-    "never connects to anything. Update this when the fleet changes shape -",
-    "count, core counts, the physical/virtual mix, the group names.",
-    "Core counts are approximate for the smaller hosts; the shape is what matters."
+    "The names are made up and the addresses are absent, because the harness",
+    "never connects to anything and nobody's infrastructure belongs in a public",
+    "tree. The *shape* is what these tests depend on: the count, the core",
+    "counts, the physical/virtual mix, the one Windows host, the group names.",
+    "Keep those honest when the fleet changes.",
+    "",
+    "Two properties of the names themselves are load-bearing, and both were",
+    "learned by breaking them. Length, because a host name is drawn on a card",
+    "and counted into the toolbar tally the layout suite measures. Alphabetical",
+    "order, because filter.js falls back to the name as a sort tiebreak and",
+    "`equal_values_fall_back_to_cpu_then_memory` asserts the result."
   ],
   "hosts": [
     {
@@ -48,7 +56,7 @@
       "virt": "none"
     },
     {
-      "name": "x1",
+      "name": "v1",
       "group": "physical",
       "cores": 4,
       "virt": "none"

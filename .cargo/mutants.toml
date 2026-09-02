@@ -16,10 +16,12 @@
 #     cargo mutants -f 'crates/**/proc.rs' # one file, while writing its tests
 #
 # It is slow because every mutant is a rebuild: 887 mutants took 12 minutes on
-# dove at -j16 (250 minutes of CPU), against 19 minutes single-threaded on the
-# development box. Run it on dove. Note that `--in-place` refuses `--jobs`, so
-# reach for it only when a copy of the tree is the problem — and it is here if
-# TMPDIR is a tmpfs, because the copy includes a 4 GB `target/`.
+# a 32-core box at -j16 (250 minutes of CPU), against 19 minutes single-
+# threaded — only 2.6x, so the parallelism win is real but bounded. Run it on
+# the largest machine you have; CI runs it weekly and cannot fail on it. Note
+# that `--in-place` refuses `--jobs`, so reach for it only when a copy of the
+# tree is the problem — and it is here if TMPDIR is a tmpfs, because the copy
+# includes a 4 GB `target/`.
 
 # Excluded because the mutants are unreachable or the test that killed them
 # would be a test of nothing. Each of these was looked at once and judged, not

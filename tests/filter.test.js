@@ -33,10 +33,10 @@ test('a_process_filter_reaches_the_command_line', () => {
   // "Runner.Listener" are only tellable apart by their arguments.
   const p = { host: 'dove', user: 'gha', comm: 'Runner.Listener', pid: 2316664,
               cmd: '/home/gha/actions-runner-3/bin/Runner.Listener run' };
-  assert.ok(matchesProcess(p, 'pdr-3'));
+  assert.ok(matchesProcess(p, 'runner-3'));
   assert.ok(matchesProcess(p, 'runner.listener'));
   assert.ok(matchesProcess(p, '2316664'), 'pid is searchable');
-  assert.ok(!matchesProcess(p, 'pdr-4'));
+  assert.ok(!matchesProcess(p, 'runner-4'));
 });
 
 test('a_unit_name_finds_its_processes_even_when_the_command_differs', () => {

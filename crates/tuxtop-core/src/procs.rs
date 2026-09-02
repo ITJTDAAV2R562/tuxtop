@@ -883,7 +883,8 @@ mod owner_tests {
             parse_owner("/system.slice/transcribe-worker.service"),
             ("transcribe-worker.service".into(), OwnerKind::Service)
         );
-        // Real names from dove, which are long and templated.
+        // The shape a real runner unit has: long, templated, and full of dots
+        // that a naive split on '.' would take for extension boundaries.
         assert_eq!(
             parse_owner("/system.slice/actions.runner.owner-repo.host-8.service").1,
             OwnerKind::Service
