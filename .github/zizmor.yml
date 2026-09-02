@@ -1,0 +1,13 @@
+# zizmor's workflow-security audit, with the one exception it needs and the
+# reason for it. Everything else is a hard failure in the `workflows` job of
+# security.yml: template injection, an unpinned action, a leftover checkout
+# credential, an over-broad token.
+rules:
+  self-repository:
+    ignore:
+      # zizmor prefers GitHub's newer `$/.github/workflows/...` form for
+      # calling a reusable workflow in the same repository. `./` is the
+      # documented, universally-supported spelling and is what every runner
+      # understands today; switching for a lint would trade a working release
+      # pipeline for a style point.
+      - release.yml

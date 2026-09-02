@@ -10,6 +10,11 @@
 # installer, and that is expected rather than a build failure — signing needs a
 # certificate this project does not have. The release notes say so, because an
 # unexplained warning is how a user learns to click through warnings.
+#
+# Everything runs on GitHub-hosted runners, for the reason at the top of
+# ci.yml: a self-hosted runner on a public repo executes pull-request code on
+# the runner host. Actions are pinned to a commit SHA — doubly worth it here,
+# where the job holds a token that can publish a release under this account.
 name: Release
 
 on:
@@ -20,6 +25,11 @@ on:
   # because a flag that only ever holds one value is a control with no effect.
   workflow_dispatch:
 
+# Every job that needs more than read says so itself. `publish` is the only one
+# that does.
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -29,16 +39,25 @@ jobs:
   # tag is worse than no release: the tag is what anyone quotes in a bug report.
   guard:
     name: guard — the tag matches the source
-    runs-on: [self-hosted, linux, dove]
+    runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.v.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Every ${{ }} value reaches the script through env: rather than being
+      # pasted into it. GitHub expands a template before the shell parses the
+      # line, so an interpolated tag name is code, not an argument — and a tag
+      # is the one input here that a push can choose.
       - id: v
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
-          if [ "${{ github.ref_type }}" = tag ]; then
-            python3 scripts/check-version.py "${{ github.ref_name }}"
-            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          if [ "$REF_TYPE" = tag ]; then
+            python3 scripts/check-version.py "$REF_NAME"
+            echo "version=${REF_NAME#v}" >> "$GITHUB_OUTPUT"
           else
             python3 scripts/check-version.py
             echo "version=$(python3 -c "import json;print(json.load(open('src-tauri/tauri.conf.json'))['version'])")" >> "$GITHUB_OUTPUT"
@@ -55,12 +74,26 @@ jobs:
   windows:
     name: windows — installer
     needs: [guard, gate]
-    runs-on: [self-hosted, windows, n1]
+    runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      # No toolchain or cache actions: rustup and node are already on n1's
-      # PATH and src-tauri/target persists between runs, so the build starts
-      # warm. See docs/CI.md for why the runner is a logon task.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # rustup and node are preinstalled on windows-latest.
+      #
+      # Deliberately no build cache anywhere in this workflow, unlike ci.yml. A
+      # GitHub Actions cache is writable from a pull-request run and would be
+      # readable here, which is a path from "anyone can open a PR" to "bytes of
+      # unknown origin inside a published installer". A release happens on a
+      # tag a few times a year; a cold build is cheap, and this is the one
+      # workflow where provenance is worth more than speed.
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          # Explicitly off, for the reason above: the npm cache is writable
+          # from a pull-request run and this job builds a published installer.
+          package-manager-cache: false
 
       # @tauri-apps/cli ships a prebuilt binary, so this is a download rather
       # than the four-minute `cargo install tauri-cli` it replaces. The version
@@ -75,12 +108,13 @@ jobs:
       # Named by hand rather than globbed into the release, so a bundle that
       # silently failed to produce one of the two targets fails here instead of
       # publishing a release that is quietly missing an installer.
-      # PowerShell, not `shell: bash`. On a GitHub-hosted Windows runner `bash`
-      # is Git Bash; on n1 it resolves to WSL's C:\WINDOWS\system32\bash.EXE,
-      # which cannot read the Windows temp path the runner hands it - the
-      # backslashes vanish and it reports "No such file or directory" for a
-      # script that is plainly there.
+      # PowerShell rather than `shell: bash`, which is the default here anyway
+      # and keeps the step working if this ever runs on a Windows box where
+      # `bash` resolves to WSL rather than Git Bash — that swap cost a release
+      # once, with "No such file or directory" for a script plainly present.
       - name: Collect
+        env:
+          VERSION: ${{ needs.guard.outputs.version }}
         run: |
           New-Item -ItemType Directory -Force -Path dist | Out-Null
           $msi = Get-ChildItem src-tauri/target/release/bundle/msi/*.msi |
@@ -92,13 +126,13 @@ jobs:
           # release quietly missing an installer.
           if (-not $msi) { throw 'no .msi was produced' }
           if (-not $exe) { throw 'no NSIS -setup.exe was produced' }
-          Copy-Item $msi "dist/tuxtop-${{ needs.guard.outputs.version }}-x64.msi"
-          Copy-Item $exe "dist/tuxtop-${{ needs.guard.outputs.version }}-x64-setup.exe"
+          Copy-Item $msi "dist/tuxtop-$env:VERSION-x64.msi"
+          Copy-Item $exe "dist/tuxtop-$env:VERSION-x64-setup.exe"
           Get-ChildItem dist | ForEach-Object {
             '{0}  {1:N1} MB' -f $_.Name, ($_.Length / 1MB)
           }
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: windows
           path: dist/
@@ -106,12 +140,13 @@ jobs:
   linux:
     name: linux — tuxtop-serve
     needs: [guard, gate]
-    runs-on: [self-hosted, linux, dove]
+    runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      # No rust-cache: target/ persists on a self-hosted runner already.
-
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+      # No build cache here either — see the windows job above.
       - run: cargo build --release --locked -p tuxtop-serve
 
       # The binary alone is not runnable: --web defaults to ./src, so the
@@ -119,8 +154,10 @@ jobs:
       # directory. Shipping the binary on its own produces a server that starts
       # and then 404s every page.
       - name: Package
+        env:
+          VERSION: ${{ needs.guard.outputs.version }}
         run: |
-          v=${{ needs.guard.outputs.version }}
+          v=$VERSION
           d=tuxtop-serve-$v-linux-x86_64
           mkdir -p "$d"
           cp target/release/tuxtop-serve "$d"/
@@ -142,7 +179,7 @@ jobs:
           tar czf "$d.tar.gz" "$d"
           sha256sum "$d.tar.gz"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: linux
           path: tuxtop-serve-*.tar.gz
@@ -151,12 +188,14 @@ jobs:
     name: publish
     needs: [guard, windows, linux]
     if: github.ref_type == 'tag'
-    runs-on: [self-hosted, linux, dove]
+    runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           path: dist
           merge-multiple: true
@@ -171,8 +210,10 @@ jobs:
           cat SHA256SUMS
 
       - name: Release notes
+        env:
+          VERSION: ${{ needs.guard.outputs.version }}
         run: |
-          v=${{ needs.guard.outputs.version }}
+          v=$VERSION
           cat > notes.md <<TXT
           ## Install
 
@@ -202,8 +243,9 @@ jobs:
       - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
-          gh release create "${{ github.ref_name }}" \
-            --title "Tuxtop ${{ github.ref_name }}" \
+          gh release create "$REF_NAME" \
+            --title "Tuxtop $REF_NAME" \
             --notes-file notes.md \
             dist/*

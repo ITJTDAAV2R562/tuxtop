@@ -1,0 +1,49 @@
+# Dependency updates, opened as pull requests.
+#
+# `github-actions` is the one that earns its keep: every third-party action in
+# .github/workflows is pinned to a commit SHA rather than a tag, which is the
+# right thing for supply-chain reasons and means nothing gets security fixes on
+# its own. Dependabot moves the pin and rewrites the `# vX.Y.Z` comment beside
+# it, which is the only maintainable way to keep SHA pins current.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "chore"
+
+  # Two Cargo trees. src-tauri is outside the workspace (ADR-006) and carries
+  # its own lockfile, so it needs its own entry or it is never updated — the
+  # same reason scripts/check-version.py has to check both.
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "chore"
+    groups:
+      cargo:
+        patterns: ["*"]
+
+  - package-ecosystem: cargo
+    directory: /src-tauri
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "chore"
+    groups:
+      cargo:
+        patterns: ["*"]
+
+  # Test and release tooling only; nothing here ships inside the product.
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "chore"
+    groups:
+      npm:
+        patterns: ["*"]

@@ -14,7 +14,7 @@ anything across restarts, or tell anyone when something breaks. Those are jobs
 for Uptime Kuma, Pulse or Proxmox, and they are deliberately out of scope.
 
 > **Status: released.**
-> [**v0.2.0**](https://github.com/UZ1sFED3yS/tuxtop/releases/latest) ships a
+> [**v0.5.1**](https://github.com/UZ1sFED3yS/tuxtop/releases/latest) ships a
 > Windows installer and a headless Linux server. Twelve phases are done — live
 > grid, history, processes, host facts, groups, Windows hosts, the Heat view.
 > What is still open is in [docs/ROADMAP.md](docs/ROADMAP.md).
@@ -146,7 +146,7 @@ history_cap_mb = 256
 [[host]]
 name = "dove"
 addr = "dove.example.ts.net"
-user = "sam"
+user = "sam"                # optional; defaults to your ssh config
 group = "physical"        # optional; groups aggregate in Fleet and History
 beszel_url = "https://dove.example.ts.net"   # optional; history only
 
@@ -205,7 +205,9 @@ under `src/`, embedded at compile time. The **installer** additionally needs
 
 It can also be cross-compiled from Linux for the real `x86_64-pc-windows-msvc`
 target — `cargo xwin build --target x86_64-pc-windows-msvc`, which needs
-`clang-cl` and `llvm-rc`. That is how CI compiles it.
+`clang-cl` and `llvm-rc`. CI builds it natively on `windows-latest`; the
+cross-compile is for a Linux development box, which cannot otherwise compile
+`src-tauri` at all.
 
 ### The headless server
 
@@ -259,14 +261,18 @@ scripts/              the checkers, the local gate, the harness builder.
 docs/                 architecture, decisions, roadmap, CI, evidence.
 ```
 
+Host names, addresses and tailnet names in this repository are invented. Your
+own go in `hosts.toml`, which is gitignored — see
+[CONTRIBUTING.md](CONTRIBUTING.md).
+
 ---
 
 ## Testing
 
 ```sh
-cargo test                              # 255 tests, no GUI toolchain needed
+cargo test                              # 269 tests, no GUI toolchain needed
 node --test 'tests/*.test.js'           # 88 tests: aggregation, scale, heat
-npx playwright test                     # 23 tests: layout, load order, controls
+npx playwright test                     # layout, load order, controls
 bash scripts/verify.sh                  # everything CI runs, locally
 ```
 
@@ -281,7 +287,10 @@ states the invariant it protects: `iowait_counts_as_idle`,
 structurally cannot — a theme token missing from one of three states, a metric
 with no aggregation rule, a command no frontend code calls.
 
-CI and releases run on self-hosted runners: [docs/CI.md](docs/CI.md).
+CI runs the same gates on every push and pull request, plus a set of scanners
+— gitleaks over the full history, `cargo audit` and `cargo deny` on both
+lockfiles, `npm audit`, CodeQL, and actionlint + zizmor on the workflows
+themselves: [docs/CI.md](docs/CI.md), [SECURITY.md](SECURITY.md).
 
 ---
 
@@ -290,3 +299,11 @@ CI and releases run on self-hosted runners: [docs/CI.md](docs/CI.md).
 No database, no alerting engine, no agent to deploy, no credential store, and
 nothing that changes a monitored host. Those are solved elsewhere; this is a
 client. [ADR-001](docs/DECISIONS.md#adr-001--build-a-client-not-another-monitoring-system).
+
+---
+
+## Licence
+
+[MIT](LICENSE). Contributions and how they are reviewed:
+[CONTRIBUTING.md](CONTRIBUTING.md). Reporting a vulnerability:
+[SECURITY.md](SECURITY.md).

@@ -1,174 +1,158 @@
 # CI
 
-`.github/workflows/ci.yml` runs on every push to `main`, every pull request,
-and as a reusable workflow called by `release.yml`.
+Three workflows, all on GitHub-hosted runners.
+
+| workflow | when | jobs |
+| --- | --- | --- |
+| [`ci.yml`](../.github/workflows/ci.yml) | push to `main`, every PR, called by `release.yml` | `core`, `browser`, `windows`, and `mutants` weekly |
+| [`security.yml`](../.github/workflows/security.yml) | push to `main`, every PR, weekly | `secrets`, `deps`, `codeql`, `workflows` |
+| [`release.yml`](../.github/workflows/release.yml) | a `v*` tag, or manual | `guard`, `gate`, `windows`, `linux`, `publish` |
+
+`ci.yml`:
 
 | job | runs on | covers |
 | --- | --- | --- |
-| `core` | **dove** (self-hosted) | `cargo fmt --check`, `clippy -D warnings`, `cargo test`, JS unit tests, the four checkers |
-| `browser` | **dove** (self-hosted) | the Playwright suite - layout and load order |
-| `windows` | **n1**, self-hosted | `cargo build` in `src-tauri` |
+| `core` | `ubuntu-latest` | `cargo fmt --check`, `clippy -D warnings`, `cargo test`, JS unit tests, the four checkers |
+| `browser` | `ubuntu-latest` | the Playwright suite — layout and load order |
+| `windows` | `windows-latest` | `cargo build --locked` in `src-tauri` |
+| `mutants` | `ubuntu-latest`, weekly | cargo-mutants and Stryker, `continue-on-error`, no threshold |
 
-`.github/workflows/release.yml` uses the same two runners: the guard, the
-Linux `tuxtop-serve` tarball and the publish step on dove, the installer on n1.
-A manual run builds both artefacts and publishes nothing, which is the dry run.
+A manual run of `release.yml` builds both artefacts and publishes nothing —
+`publish` is gated on the ref being a tag. That is the dry run.
 
-## Why self-hosted
+## Why the runners are GitHub-hosted
 
-GitHub-hosted jobs on this account do not start: *"recent account payments have
-failed or your spending limit needs to be increased."* CI was written and then
-never ran once.
+They were not always. CI ran on two of our own machines, and this document used
+to explain at length why that was fine. It was fine under exactly one
+condition, stated here at the time:
 
-**Self-hosted runner minutes are not billed**, so moving the Linux jobs to our
-own hardware sidesteps the payment state entirely. It is also faster: dove is
-32 cores against a hosted runner's 2, and the two Linux jobs finish in about
-fifty seconds each.
+> This repo is private, has zero forks and one owner, so no untrusted party can
+> trigger a workflow. If the repo is ever made public, remove the self-hosted
+> runner first — not afterwards.
 
-The `windows` job runs on **n1**, which is the Windows desktop this project is
-developed on - `hostname` returns `n1` from both Windows and its WSL, and it is
-the only Windows machine in the fleet. It is also the machine that already
-builds the installer by hand, so CI and the manual path use the same toolchain.
-`scripts/verify.sh` still closes the same gate locally through `/mnt/c`, which
-is what to use when the runner is stopped.
+That condition has now fired. A self-hosted runner executes whatever a pull
+request contains; on a public repo, anyone who can open a PR from a fork gets
+code execution on the runner host — which in our case ran as a user with
+passwordless sudo. So the runners came out before the repo went in.
 
-That local gate builds `/mnt/c/Users/sam/tuxtop`, which is a **separate clone**
-rather than the WSL working tree - so it only says something about your change
-once that change is committed, pushed and pulled there. It used to print a
-"git pull there first" note and then report **ok** regardless, and was found
-doing exactly that while the checkout sat several commits behind. It now
+The reason for self-hosting in the first place was that GitHub-hosted jobs on
+this account did not start: *"recent account payments have failed or your
+spending limit needs to be increased."* CI was written and never ran once.
+**Public repositories get GitHub-hosted minutes at no charge**, so going public
+removed the reason and the option in the same move.
+
+What it costs: the runners are 2 cores rather than 32, and `target/` starts
+cold. `Swatinem/rust-cache` is now present in `ci.yml`, having been
+deliberately absent before for the opposite reason — a self-hosted workspace
+was already warm and restoring a cache over it was slower.
+
+It is **absent from `release.yml`**, and that is not an oversight. An Actions
+cache is writable from a pull-request run and would be readable by the release
+build: a path from "anyone can open a PR" to "bytes of unknown origin inside a
+published installer". A release happens on a tag a few times a year, so a cold
+build is cheap and provenance is worth more than speed.
+
+The `windows` job now builds natively on `windows-latest` instead of
+cross-compiling with `cargo-xwin`. The cross-compile existed to keep a
+four-minute build off the machine somebody was sitting at; a hosted runner has
+no such owner, and the target triple is `x86_64-pc-windows-msvc` either way.
+
+## Supply chain
+
+Every third-party action is pinned to a **commit SHA**, with the version in a
+trailing comment:
+
+```yaml
+- uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+```
+
+A tag is mutable. Whoever controls the action's repository can repoint `v4` at
+new code, and that code then runs inside our job with our token. A SHA cannot
+be repointed. `.github/dependabot.yml` opens a weekly PR to move the pins and
+rewrite the comment, which is the only maintainable way to keep them current.
+
+Tools downloaded inside a job — gitleaks, actionlint — are pinned to a release
+version **and verified against a SHA-256 checksum in the workflow**. Same trust
+decision as a SHA-pinned action, made explicit: this exact artefact or nothing.
+
+Both workflows declare `permissions: contents: read` at the top level; only
+`release.yml`'s `publish` job asks for `contents: write`. Without an explicit
+block a workflow inherits the repository default, which somebody can widen in
+settings without ever touching a file in this tree. Every `actions/checkout`
+sets `persist-credentials: false`, so the token does not survive in the local
+git config for a later step to use.
+
+Values from `github.*` and `needs.*` reach a `run:` block through `env:`, never
+by interpolation. GitHub expands `${{ }}` before the shell parses the line, so
+an interpolated tag name is code rather than an argument — and a tag is the one
+input to `release.yml` that a push chooses.
+
+## The scanners
+
+`security.yml` is separate from `ci.yml` because it answers a different
+question: `ci.yml` asks whether the code works, this asks whether publishing it
+is safe. A failure blocks a merge exactly as a failing test does. See
+[SECURITY.md](../SECURITY.md) for what each one covers and what is deliberately
+out of scope.
+
+Two details worth knowing:
+
+- **gitleaks runs with `fetch-depth: 0`** — the whole history, not the tip. A
+  secret that was force-pushed away from is still published; scanning only the
+  tip would report the tree clean while the value sat one `git log -p` away.
+  It runs `--redact`, because printing a finding into a public build log
+  publishes the secret a second time.
+- **`cargo audit` runs against both lockfiles.** `src-tauri` is outside the
+  workspace ([ADR-006](DECISIONS.md#adr-006--tuxtop-core-is-a-separate-crate-outside-the-tauri-workspace))
+  and carries its own lock, which no workspace-wide command ever opens — and it
+  is the one with 435 dependencies against the workspace's 68. Vulnerabilities
+  fail the job; `unmaintained` and `unsound` are reported and do not. Seventeen
+  of those are GTK crates Tauri pulls for a Linux desktop build this project
+  never makes; a gate nobody can clear is a gate somebody switches off.
+
+## The mutation job
+
+`mutants` runs **weekly** (Sunday 03:00 UTC) and on manual dispatch. Every
+other job in `ci.yml` skips on a schedule run, and this one skips on a push. It
+is `continue-on-error` and neither tool is given a threshold: it uploads a
+report to read and cannot fail anything. The reasoning is at the top of
+`.cargo/mutants.toml` — a mutation score that must go up buys tests written to
+kill mutants instead of tests written to state rules.
+
+It cost about twelve minutes of thirty-two cores (887 mutants, 250 minutes of
+CPU) and costs hours on two, since every mutant is a rebuild. That is
+affordable weekly and would not be on a push, which is why the schedule was
+already the trigger before the runners changed.
+
+## The local gate
+
+```sh
+bash scripts/verify.sh          # everything CI runs, locally
+bash scripts/verify.sh --quick  # without the browser suite
+```
+
+It also does the one thing CI cannot: launch the built app and check it
+survives startup. Compiling is not running — two startup panics shipped past a
+green build in one afternoon, and both were obvious a second after launch.
+
+That part needs a Windows toolchain reachable through `/mnt/c`, and it builds a
+**separate clone**, not the WSL working tree — so it only says something about
+your change once that change is committed, pushed and pulled there. It used to
+print a "git pull there first" note and report **ok** regardless, and was
+caught doing exactly that while the checkout sat several commits behind. It now
 compares the two HEADs, checks both trees are clean, and skips loudly with the
-one command that fixes it rather than passing on code nobody is looking at.
+one command that fixes it. **A skip there means the Windows build did not
+happen**, not that it passed.
 
-### The mutation job
+Paths are not hardcoded: `TUXTOP_WIN_USER` names the Windows account (defaults
+to `$USER`), `TUXTOP_WIN_REPO` points at the clone, `TUXTOP_WIN_CARGO` at
+`cargo.exe`.
 
-A fourth job, `mutants`, runs **weekly** (Sunday 03:00 UTC) and on manual
-dispatch. Every other job skips on a schedule run, and this one skips on a
-push. It is `continue-on-error` and neither tool is given a threshold: it
-uploads a report to read, and cannot fail anything. The reasoning is at the top
-of `.cargo/mutants.toml` — a mutation score that must go up buys tests written
-to kill mutants instead of tests written to state rules.
+## One lesson kept from the self-hosted era
 
-It is here rather than on a push because it costs about twelve minutes of all
-thirty-two cores: 887 mutants, 250 minutes of CPU. Every mutant is a rebuild,
-so the wall-clock win from parallelism is real but bounded — the same run took
-nineteen minutes single-threaded on the development box, only 2.6x slower, and
-`tuxtop-serve` mutants cost 47-51 s each to build because of axum.
-
-### The safety question
-
-The standard warning about self-hosted runners is that **anyone who can open a
-pull request can run arbitrary code on your machine**, because workflows run
-untrusted contributor code. That is a public-repo problem. This repo is
-private, has zero forks and one owner, so no untrusted party can trigger a
-workflow. If the repo is ever made public, remove the self-hosted runner first
-- not afterwards.
-
-The runner executes as `sam` on dove, which has passwordless sudo. A workflow
-can therefore do anything on that host. That is acceptable only under the
-condition above.
-
-## The runner on dove
-
-Installed at `~/actions-runner`, registered to this repo with labels
-`self-hosted, linux, x64, dove`, running as a systemd service:
-
-```sh
-ssh dove 'systemctl status actions.runner.UZ1sFED3yS-tuxtop.dove.service'
-ssh dove 'cd ~/actions-runner && sudo ./svc.sh stop'     # pause CI
-ssh dove 'cd ~/actions-runner && sudo ./svc.sh start'
-```
-
-Toolchains are **not** preinstalled. `dtolnay/rust-toolchain` and
-`actions/setup-node` install them on first run into `~/.rustup`, `~/.cargo` and
-the runner tool cache, all of which persist between runs.
-
-`Swatinem/rust-cache` is deliberately **absent** from the self-hosted jobs: the
-workspace and `~/.cargo` already persist, so `target/` is warm and restoring a
-cache over it would be slower rather than faster.
-
-Playwright installs Chromium with `--with-deps`, which needs the passwordless
-sudo noted above.
-
-### Re-registering
-
-Registration tokens expire in an hour; mint a fresh one when needed:
-
-```sh
-TOKEN=$(gh api -X POST repos/UZ1sFED3yS/tuxtop/actions/runners/registration-token --jq .token)
-ssh dove "cd ~/actions-runner && ./config.sh --unattended \
-  --url https://github.com/UZ1sFED3yS/tuxtop --token '$TOKEN' \
-  --name dove --labels self-hosted,linux,x64,dove --work _work --replace"
-```
-
-### Removing it
-
-```sh
-ssh dove 'cd ~/actions-runner && sudo ./svc.sh stop && sudo ./svc.sh uninstall'
-TOKEN=$(gh api -X POST repos/UZ1sFED3yS/tuxtop/actions/runners/remove-token --jq .token)
-ssh dove "cd ~/actions-runner && ./config.sh remove --token '$TOKEN'"
-ssh dove 'rm -rf ~/actions-runner'
-```
-
-## The runner on n1
-
-Installed at `C:\actions-runner`, labels `self-hosted, windows, x64, n1`.
-`rustup` is already on the user PATH there, so the job installs no toolchain
-and `src-tauri/target` stays warm between runs.
-
-**It is started by a scheduled task at logon, not by a Windows service** -
-the task is named `GitHub Actions runner (tuxtop)`. Two reasons, and the second
-is the one that matters:
-
-- A service needs Administrator to install. The task does not.
-- `config.cmd --runasservice` defaults to running as **NT AUTHORITY\NETWORK
-  SERVICE**, which does not have the user PATH - so `cargo`, which lives in
-  `C:\Users\sam\.cargo\bin`, would not be found. Running it as the user
-  instead needs the account's password stored in the service. The logon task
-  sidesteps both: it runs as the logged-in user with that user's real
-  environment, and stores no password.
-
-There is no `svc.cmd` in the Windows runner package at all - only Linux ships
-one. The Windows equivalent is `config.cmd --runasservice`, with the caveat
-above.
-
-```powershell
-Get-ScheduledTask -TaskName 'GitHub Actions runner (tuxtop)'   # check
-Start-ScheduledTask -TaskName 'GitHub Actions runner (tuxtop)' # start now
-Unregister-ScheduledTask -TaskName 'GitHub Actions runner (tuxtop)'  # remove
-```
-
-The consequence to know: the runner comes up **at logon**, not at boot. If n1
-is rebooted and nobody logs in, the `windows` job queues until someone does.
-
-### `shell: bash` is not Git Bash here
-
-A release step used `shell: bash` and failed with *"No such file or directory"*
-for a script the runner had just written. On a GitHub-hosted Windows runner
-`bash` is Git Bash, which understands the Windows temp path the runner passes.
-On n1 it resolves to **WSL's** `C:\WINDOWS\system32\bash.EXE`, which eats the
-backslashes and cannot find the file. Windows steps here use PowerShell; do not
-reach for `shell: bash` on a self-hosted Windows runner that has WSL installed.
-
-### The PATH trap
-
-The first `windows` job failed with *"The term 'cargo' is not recognized"*. The
-runner had been started from a WSL-invoked PowerShell, so it inherited a
-WSL-translated PATH with no `.cargo\bin` in it. A runner inherits the
-environment of whatever launched it, and that environment is not always the
-one you would get by opening a terminal. If a job cannot find a tool that is
-plainly installed, check how the runner was started before checking the tool.
-
-## A note on the fleet
-
-dove is one of the nineteen hosts Tuxtop watches, so a CI run shows up as a
-real spike on its card and in the Heat view. That is not a conflict with
-[ADR-004](DECISIONS.md#adr-004--nothing-gets-installed-on-the-monitored-host):
-that decision constrains what *Tuxtop* installs in order to monitor a host, not
-what its owner chooses to run there. Tuxtop still reads dove over plain SSH and
-has no idea a runner exists.
-
-## Custom runner labels and actionlint
-
-`.github/actionlint.yaml` declares `dove` as a known self-hosted label.
-Without it actionlint flags every `runs-on: [self-hosted, ..., dove]` as an
-unknown label, and a linter that is always noisy is one nobody reads.
+`shell: bash` is not always Git Bash. On a GitHub-hosted Windows runner it is,
+and it understands the Windows temp path the runner passes. On a Windows
+machine with WSL installed it can resolve to `C:\WINDOWS\system32\bash.EXE`
+instead, which eats the backslashes and reports *"No such file or directory"*
+for a script that is plainly there. That cost a release once. Windows steps
+here use PowerShell.

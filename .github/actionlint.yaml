@@ -1,7 +1,0 @@
-# Custom runner labels, so actionlint can tell a real typo from our own hosts.
-# Without this it flags every self-hosted label as unknown, and a linter that
-# is always noisy is one nobody reads.
-self-hosted-runner:
-  labels:
-    - dove
-    - n1

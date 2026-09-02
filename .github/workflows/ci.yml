@@ -1,6 +1,18 @@
 # Every push and pull request. The point is to catch what has actually broken
 # here: a commit that does not compile reaching `main`, and a frontend change
 # that breaks a layout nobody re-checks by hand.
+#
+# Everything runs on GitHub-hosted runners. It used to run on our own hardware,
+# which was safe only while the repo was private: a self-hosted runner executes
+# whatever a pull request contains, so on a public repo anybody who can open a
+# PR from a fork gets code execution on the runner host. Public repositories
+# get GitHub-hosted minutes at no charge, so going public removed both the
+# reason for self-hosting and the option. Do not reintroduce a `self-hosted`
+# label here — see docs/CI.md.
+#
+# Third-party actions are pinned to a commit SHA rather than a tag. A tag is
+# mutable: whoever controls the action repo can repoint `v4` at new code, and
+# that code then runs with this workflow's token. Dependabot updates the pins.
 name: CI
 
 on:
@@ -16,6 +28,18 @@ on:
   # commit it points at rather than trusting that the commit passed once.
   workflow_call:
 
+# Read-only by default. A job that needs more asks for it itself, and nothing
+# here does. Without this the workflow inherits the repository default, which
+# is a setting somebody can widen without ever touching this file.
+permissions:
+  contents: read
+
+# A second push supersedes the first. `main` is exempt: those runs gate a
+# release, so cancelling one loses the only record that the commit passed.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -23,18 +47,20 @@ jobs:
   core:
     name: core — tests, lints, checkers
     if: github.event_name != 'schedule'
-    # dove: 32 cores, self-hosted. Self-hosted minutes are not billed, which is
-    # why CI runs at all — GitHub-hosted jobs on this account are blocked on a
-    # payment state. See docs/CI.md for the runner and its safety condition.
-    runs-on: [self-hosted, linux, dove]
+    runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The token is not needed after checkout, and leaving it in the
+          # local git config lets any later step push with it.
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
         with:
           components: clippy, rustfmt
-      # No Swatinem/rust-cache here: the workspace and ~/.cargo persist between
-      # runs on a self-hosted runner, so target/ is already warm. Restoring a
-      # cache over it would be slower, not faster.
+      # A hosted runner starts with a cold target/, unlike the self-hosted box
+      # this used to run on — so the cache that was deliberately absent before
+      # is the right thing here.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       # tuxtop-core builds and tests anywhere, which is the whole reason it is
       # a separate crate outside the Tauri workspace (ADR-006).
@@ -42,31 +68,34 @@ jobs:
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '22'
       - name: JS unit tests
         run: node --test 'tests/*.test.js'
 
-      # These three encode rules that are otherwise silent when broken: a theme
+      # These encode rules that are otherwise silent when broken: a theme
       # token missing from one of three states, a metric with no aggregation
       # rule, a command no frontend code calls.
       - run: python3 scripts/check-theme-tokens.py
       - run: python3 scripts/check-agg-declared.py
       - run: python3 scripts/check-commands-reachable.py
-      # Four files carry the version. Catching drift on push is cheaper
-      # than discovering it when a tag fails the release guard.
+      # Six files carry the version. Catching drift on push is cheaper than
+      # discovering it when a tag fails the release guard.
       - run: python3 scripts/check-version.py
 
   browser:
     name: browser — layout and load order
     if: github.event_name != 'schedule'
-    runs-on: [self-hosted, linux, dove]
+    runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '22'
+          cache: npm
       - run: npm ci
       - run: npx playwright install --with-deps chromium
       - run: npx playwright test
@@ -74,35 +103,27 @@ jobs:
   windows:
     name: windows — the Tauri shell compiles
     if: github.event_name != 'schedule'
-    # Cross-compiled on dove, not built on n1. n1 is the machine someone is
-    # actually using; a four-minute Rust build on every push was taking cores
-    # from the person at the keyboard, while dove has 32 sitting idle.
-    #
-    # cargo-xwin supplies the MSVC headers and CRT, so this is the real
-    # x86_64-pc-windows-msvc target rather than a gnu approximation — the same
-    # triple the installer ships. It needs clang-cl and llvm-rc, which is what
-    # the two apt packages are for.
-    runs-on: [self-hosted, linux, dove]
+    # Natively on windows-latest. It used to cross-compile with cargo-xwin,
+    # which existed to keep a four-minute build off the machine someone was
+    # sitting at; a hosted runner has no such owner, so the simpler path wins
+    # and the triple is the same one the installer ships either way.
+    runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          targets: x86_64-pc-windows-msvc
-      - name: Cross-compile toolchain
-        run: |
-          if ! command -v clang-cl >/dev/null || ! command -v llvm-rc >/dev/null; then
-            sudo apt-get install -y -q clang llvm lld
-          fi
-          if ! command -v cargo-xwin >/dev/null; then
-            cargo install cargo-xwin --locked
-          fi
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: src-tauri
+
       # src-tauri is deliberately not a workspace member - it pulls webkit2gtk
       # on Linux, which the development box does not have - so it is only ever
       # compiled here. A commit that does not build has reached main more than
       # once because this step did not exist.
       - name: Build the desktop app
         working-directory: src-tauri
-        run: cargo xwin build --locked --target x86_64-pc-windows-msvc
+        run: cargo build --locked
 
   mutants:
     name: mutants — what the tests would not have noticed
@@ -112,30 +133,37 @@ jobs:
     # number here would produce tests written to kill mutants instead of tests
     # written to state rules.
     #
-    # Schedule rather than per push because the output is only worth anything
-    # when someone sits down with it, and it costs ~12 minutes of 32 cores.
+    # It took twelve minutes on a 32-core box and takes hours on a hosted
+    # two-core one, since every mutant is a rebuild. That is affordable weekly
+    # and would not be on a push — which is why the schedule was already the
+    # trigger before the runner changed.
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    runs-on: [self-hosted, linux, dove]
+    runs-on: ubuntu-latest
     continue-on-error: true
+    timeout-minutes: 350
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: cargo-mutants
         run: |
           command -v cargo-mutants >/dev/null || cargo install cargo-mutants --locked
           # No --check and no threshold: a non-zero exit here would make this a
           # gate, which is the one thing it must not become.
-          cargo mutants -j16 --minimum-test-timeout 60 || true
+          cargo mutants --minimum-test-timeout 60 || true
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '22'
+          cache: npm
       - run: npm ci
       - name: stryker
         run: npx stryker run || true
 
       # The whole point of the job. Nothing is asserted; the artefact is read.
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
           name: mutation-report

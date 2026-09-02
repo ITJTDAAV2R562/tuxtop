@@ -1,16 +1,19 @@
 #!/usr/bin/env bash
-# Everything CI runs, locally.
+# Everything CI runs, locally - plus the one thing it cannot.
 #
-# CI exists (.github/workflows/ci.yml) but depends on a GitHub account being in
-# good standing, and the gate that matters most is the Windows build - src-tauri
-# is outside the workspace (ADR-006) so nothing on a Linux box compiles it, and
-# a commit that did not build has reached main more than once.
-#
-# This box can reach the Windows toolchain through /mnt/c, so it can close that
-# gap without CI. Where it cannot, it says so rather than passing quietly.
+# CI covers the tests, the lints, the checkers and the scanners
+# (.github/workflows/ci.yml and security.yml). What it cannot do is launch the
+# built app: compiling is not running, and two startup panics shipped past a
+# green build in one afternoon. This box reaches the Windows toolchain through
+# /mnt/c, so it closes that gap. Where it cannot, it says so rather than
+# passing quietly - a skip is not a pass.
 #
 #     bash scripts/verify.sh            # everything available
 #     bash scripts/verify.sh --quick    # skip the browser suite
+#
+# The scanners are skipped rather than installed on demand: cargo-audit and
+# cargo-deny are several minutes of build each and CI runs them regardless, so
+# a missing one should not stop you committing.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
@@ -34,6 +37,33 @@ step "aggregation rules"    python3 scripts/check-agg-declared.py
 step "command reachability" python3 scripts/check-commands-reachable.py
 step "version agreement"    python3 scripts/check-version.py
 
+# The scanners. Each is a gate in .github/workflows/security.yml; here they run
+# only if the tool happens to be installed, and say so plainly when it is not.
+if command -v gitleaks >/dev/null; then
+  # History and working tree both: hosts.toml is gitignored precisely because
+  # it holds real addresses, and gitignored is not absent.
+  step "secrets (history)"     gitleaks git --no-banner --redact --exit-code 1 .
+  step "secrets (working tree)" gitleaks dir --no-banner --redact --exit-code 1 .
+else
+  skip "secret scan" "gitleaks not installed - https://github.com/gitleaks/gitleaks"
+fi
+
+# Both lockfiles. src-tauri is outside the workspace (ADR-006) and carries its
+# own, which no workspace-wide command ever opens.
+if command -v cargo-audit >/dev/null; then
+  step "advisories (workspace)" cargo audit
+  step "advisories (src-tauri)" cargo audit --file src-tauri/Cargo.lock
+else
+  skip "advisories" "cargo-audit not installed - cargo install cargo-audit --locked"
+fi
+
+if command -v cargo-deny >/dev/null; then
+  step "licences and sources (workspace)" cargo deny check
+  step "licences and sources (src-tauri)" cargo deny --manifest-path src-tauri/Cargo.toml check
+else
+  skip "licences and sources" "cargo-deny not installed - cargo install cargo-deny --locked"
+fi
+
 if [ "${1:-}" != "--quick" ]; then
   if [ -d node_modules/@playwright ]; then
     step "browser suite" npx playwright test
@@ -44,8 +74,14 @@ fi
 
 # The one CI can do and a Linux box cannot - unless the Windows checkout and
 # toolchain are reachable, which on this machine they are.
-WIN_CARGO=/mnt/c/Users/sam/.cargo/bin/cargo.exe
-WIN_REPO=/mnt/c/Users/sam/tuxtop
+#
+# The Windows side is one person's machine, so nothing about it is hardcoded:
+# TUXTOP_WIN_USER names the Windows account (defaulting to this shell's user,
+# which is what a WSL install usually matches), and TUXTOP_WIN_REPO points at
+# the separate clone if it does not sit in that account's home.
+WIN_USER=${TUXTOP_WIN_USER:-$USER}
+WIN_CARGO=${TUXTOP_WIN_CARGO:-/mnt/c/Users/$WIN_USER/.cargo/bin/cargo.exe}
+WIN_REPO=${TUXTOP_WIN_REPO:-/mnt/c/Users/$WIN_USER/tuxtop}
 WIN_SRC=$WIN_REPO/src-tauri
 
 # Is the Windows checkout actually holding the code we just tested?

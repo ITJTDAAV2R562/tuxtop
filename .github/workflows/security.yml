@@ -1,0 +1,184 @@
+# The scanners. Separate from ci.yml because they answer a different question:
+# ci.yml asks whether the code works, this asks whether shipping it publicly is
+# safe. Both are required — a failure here blocks the merge exactly as a failed
+# test does.
+#
+# Four things get checked, and each catches something the others cannot:
+#
+#   secrets   a credential committed by accident, anywhere in history
+#   deps      a known-vulnerable crate or npm package
+#   codeql    an exploitable pattern in our own JavaScript
+#   workflows a misconfigured GitHub Action — the class of bug that made
+#             going public a security decision in the first place
+name: Security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  # Weekly, because an advisory published after a commit lands makes a
+  # previously-clean tree vulnerable without anybody pushing anything.
+  schedule:
+    - cron: '0 4 * * 1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  secrets:
+    name: secrets — gitleaks over the full history
+    runs-on: ubuntu-latest
+    steps:
+      # fetch-depth 0 on purpose: scanning only the tip would pass a tree whose
+      # history still contains the key somebody force-pushed away from. A
+      # secret that was ever committed is a secret that must be rotated, and
+      # this is the check that says so.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # The binary rather than the action, and verified against a pinned
+      # checksum. It is the same trust decision as pinning an action to a SHA,
+      # made explicit: this exact artefact or nothing.
+      - name: Install gitleaks
+        env:
+          VERSION: 8.30.1
+          SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+        run: |
+          set -euo pipefail
+          curl -sSfL -o gitleaks.tar.gz \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${VERSION}/gitleaks_${VERSION}_linux_x64.tar.gz"
+          echo "${SHA256}  gitleaks.tar.gz" | sha256sum -c -
+          tar xzf gitleaks.tar.gz gitleaks
+          rm gitleaks.tar.gz
+
+      # --redact so a finding does not print the secret into a public build log,
+      # which would publish it a second time. The exit code is the gate; the
+      # detail is in the SARIF artefact.
+      - name: Scan history
+        run: ./gitleaks git --no-banner --redact --exit-code 1 --report-format sarif --report-path gitleaks.sarif .
+
+      # Untracked and ignored files too. hosts.toml is gitignored precisely
+      # because it holds real addresses, and "gitignored" is not "absent".
+      - name: Scan the working tree
+        if: always()
+        run: ./gitleaks dir --no-banner --redact --exit-code 1 .
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: gitleaks-report
+          path: gitleaks.sarif
+          retention-days: 30
+          if-no-files-found: ignore
+
+  deps:
+    name: deps — advisories, licences and npm
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      - name: Install cargo-audit and cargo-deny
+        run: |
+          command -v cargo-audit >/dev/null || cargo install cargo-audit --locked
+          command -v cargo-deny  >/dev/null || cargo install cargo-deny  --locked
+
+      # Both lockfiles. src-tauri is outside the workspace (ADR-006), so a
+      # workspace-wide audit never opens it — and it is the one with 435
+      # dependencies rather than 68.
+      #
+      # Vulnerabilities fail the job; `unmaintained` and `unsound` are reported
+      # and do not, which is cargo-audit's default and the right line here. The
+      # src-tauri tree carries seventeen unmaintained warnings, all of them GTK
+      # crates Tauri pulls for a Linux build this project never makes. Blocking
+      # on those would mean pinning a transitive dependency we do not choose,
+      # and a gate nobody can clear is a gate somebody switches off.
+      - name: RustSec advisories — workspace
+        run: cargo audit
+      - name: RustSec advisories — src-tauri
+        working-directory: src-tauri
+        run: cargo audit
+
+      # Licences and duplicate/banned crates, which cargo-audit does not cover.
+      # Configuration and the reason for every exception is in deny.toml.
+      - name: cargo-deny — workspace
+        run: cargo deny check
+      - name: cargo-deny — src-tauri
+        run: cargo deny --manifest-path src-tauri/Cargo.toml check
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      # Everything in package.json is a devDependency — test and release
+      # tooling, nothing that ships inside the product — so `high` is the bar.
+      # A moderate DoS in a build tool is not a finding worth blocking a merge.
+      - name: npm advisories
+        run: npm audit --audit-level=high
+
+  codeql:
+    name: codeql — the frontend
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Results go to the Security tab rather than only a log line.
+      security-events: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: github/codeql-action/init@fddeee1a7ece751b577e409a89057319e3172939 # v4
+        with:
+          languages: javascript-typescript
+          # The frontend is what a browser executes; tests and the harness are
+          # not shipped and their findings would be noise.
+          config: |
+            paths:
+              - src
+      - uses: github/codeql-action/analyze@fddeee1a7ece751b577e409a89057319e3172939 # v4
+        with:
+          category: /language:javascript-typescript
+
+  workflows:
+    name: workflows — actionlint and zizmor
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Shell inside a `run:` block is not checked by anything else, and a
+      # typo in a `runs-on` label makes a job queue forever rather than fail.
+      - name: actionlint
+        env:
+          VERSION: 1.7.12
+          SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+        run: |
+          set -euo pipefail
+          curl -sSfL -o actionlint.tar.gz \
+            "https://github.com/rhysd/actionlint/releases/download/v${VERSION}/actionlint_${VERSION}_linux_amd64.tar.gz"
+          echo "${SHA256}  actionlint.tar.gz" | sha256sum -c -
+          tar xzf actionlint.tar.gz actionlint
+          ./actionlint -color
+
+      # actionlint checks that a workflow is well-formed; zizmor checks that it
+      # is not exploitable — unpinned actions, template injection through an
+      # untrusted `github.*` value, credentials left in the checkout, an
+      # over-broad token. That is the class of bug this repo has to care about
+      # now that anyone can open a pull request against it.
+      - name: zizmor
+        run: pipx run zizmor==1.30.0 --persona=regular --config .github/zizmor.yml .github/workflows/

@@ -427,22 +427,38 @@ that catches a plausible-but-wrong result.
 
 | job | runs on | covers |
 | --- | --- | --- |
-| `core` | **dove**, self-hosted | `cargo fmt --check`, `clippy -D warnings`, `cargo test`, JS unit tests, the four checkers |
-| `browser` | **dove**, self-hosted | the Playwright suite — layout and load order |
-| `windows` | **dove**, self-hosted | **`cargo xwin build` for `x86_64-pc-windows-msvc`** |
+| `core` | `ubuntu-latest` | `cargo fmt --check`, `clippy -D warnings`, `cargo test`, JS unit tests, the four checkers |
+| `browser` | `ubuntu-latest` | the Playwright suite — layout and load order |
+| `windows` | `windows-latest` | `cargo build --locked` in `src-tauri` |
 
-Every job runs on our own hardware, because GitHub-hosted jobs on this account
-do not start — a payment state — so CI was written and never ran. Self-hosted
-minutes are not billed, and dove is 32 cores against a hosted runner's 2.
-**This is only safe because the repo is private with no forks**: on a public
-repo any fork PR would execute on dove. See [docs/CI.md](docs/CI.md).
+`.github/workflows/security.yml` runs beside it on the same triggers, plus
+weekly: gitleaks over the full history, `cargo audit` and `cargo deny` on both
+lockfiles, `npm audit`, CodeQL on the frontend, and actionlint + zizmor on the
+workflows themselves. A failure there blocks a merge exactly as a failing test
+does. What each covers, and what is deliberately out of scope, is in
+[SECURITY.md](SECURITY.md).
 
-The Windows job cross-compiles rather than running on n1, which is the machine
-someone is actually using: a four-minute build on every push was taking cores
-from the person at the keyboard. `cargo-xwin` supplies the MSVC headers and
-CRT, so it is the real target triple the installer ships, not a gnu
-approximation. Only the **installer** still needs n1, because the MSI needs
-WiX — and that runs on a tag, not on every push.
+**Everything is GitHub-hosted, and nothing here may go back to a self-hosted
+runner.** CI used to run on our own hardware, which was safe under one stated
+condition — a private repo with no forks. The repo is public now, and a
+self-hosted runner executes whatever a pull request contains: a fork PR would
+be code execution on the runner host, which ran as a user with passwordless
+sudo. Public repos get hosted minutes at no charge, so going public removed
+both the reason for self-hosting and the option. See [docs/CI.md](docs/CI.md).
+
+**Third-party actions are pinned to a commit SHA, not a tag,** with the version
+in a trailing comment; Dependabot moves the pins weekly. A tag is mutable — the
+action's owner can repoint `v4` at new code, which then runs with our token.
+Tools downloaded inside a job are pinned to a version *and* checked against a
+SHA-256 in the workflow. Values from `github.*` and `needs.*` reach a `run:`
+block through `env:`, never by `${{ }}` interpolation, because GitHub expands
+the template before the shell parses the line.
+
+`release.yml` deliberately has **no build cache**, unlike `ci.yml`: an Actions
+cache is writable from a pull-request run and readable by the release build,
+which is a path from "anyone can open a PR" to "unknown bytes inside a
+published installer". A tag build happens a few times a year; provenance is
+worth more than the minutes.
 
 The Windows job exists at all because a commit that does not compile has
 reached `main` more than once: `src-tauri` is deliberately outside the
@@ -462,7 +478,7 @@ a type registered under a different one. Neither is visible to a compiler and
 both are obvious a second after launch. If you change anything about
 construction, state registration or the runtime, run the smoke test.
 
-**Run `verify.sh` before pushing, and do not rely on CI being available.** It
+**Run `verify.sh` before pushing.** It
 runs the same gates, including `cargo clippy --all-targets -- -D warnings`
 (stricter than a bare `cargo clippy`) — and it builds `src-tauri` through the
 Windows toolchain at `/mnt/c`, which is the one gate a Linux box cannot
@@ -470,7 +486,8 @@ otherwise close. It skips loudly rather than passing quietly when something is
 unavailable.
 
 **That Windows build is a separate clone, and the script now refuses a stale
-one.** `/mnt/c/Users/sam/tuxtop` is its own checkout, so it can only build what
+one.** The Windows checkout — `TUXTOP_WIN_REPO`, defaulting to
+`/mnt/c/Users/$USER/tuxtop` — is its own clone, so it can only build what
 you have committed *and pushed* and then pulled there. The script used to say
 so in a note and report `ok` anyway — it was caught reporting a green Windows
 build while that checkout sat several commits behind, in the one gate that

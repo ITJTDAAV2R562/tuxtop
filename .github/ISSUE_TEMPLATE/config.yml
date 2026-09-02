@@ -1,0 +1,10 @@
+# A security issue must not arrive as a public issue, and this is the only
+# place a person looking at the "New issue" screen will be told so.
+blank_issues_enabled: true
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/UZ1sFED3yS/tuxtop/security/advisories/new
+    about: >-
+      Anything exploitable goes through private vulnerability reporting, not a
+      public issue. See SECURITY.md for what is in scope and what is a
+      documented design decision rather than a bug.

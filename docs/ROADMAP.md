@@ -517,11 +517,15 @@ Work that arrived from design conversation rather than the plan:
 
   GitHub Actions was unavailable on this account for billing, which is why it
   sat written-but-unrun for a day. **Self-hosted runners are not billed**, so
-  moving CI and the release onto dove and n1 removed the constraint entirely -
-  and dove's 32 cores are faster than a hosted runner's 2. See
-  [CI.md](CI.md), including the two traps that only bite a self-hosted Windows
-  runner: `shell: bash` is WSL's bash, not Git Bash, and a runner inherits the
-  PATH of whatever launched it.
+  moving CI and the release onto our own hardware removed the constraint, and
+  32 cores beat a hosted runner's 2.
+
+  **Superseded when the repo was made public.** That arrangement was safe under
+  one condition written down at the time — a private repo with no forks — and
+  publishing fired it: a self-hosted runner executes whatever a pull request
+  contains. Everything is back on GitHub-hosted runners, which a public repo
+  gets at no charge, so the billing constraint that caused all of this no
+  longer applies either. See [CI.md](CI.md).
 
   Nothing is code-signed, so SmartScreen warns on first run and the notes say
   so. `v0.1.0` remains the old `tuxtop-watch` CLI release; the number was not

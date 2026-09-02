@@ -1,0 +1,61 @@
+# cargo-deny: what cargo-audit does not cover.
+#
+# cargo-audit answers "is any of this known-vulnerable". This answers three
+# other questions that only start to matter once the repo is public and the
+# releases are downloadable by strangers: what licence does the shipped binary
+# actually carry, is anything being pulled from somewhere other than crates.io,
+# and is a crate present twice under two versions.
+#
+# Run against both lockfiles — src-tauri is outside the workspace (ADR-006) and
+# is never opened by a workspace-wide command:
+#
+#     cargo deny check
+#     cargo deny --manifest-path src-tauri/Cargo.toml check
+
+[advisories]
+# cargo-audit is the gate for these; leaving them at "deny" here would make the
+# same seventeen unmaintained GTK crates fail twice for one reason.
+yanked = "deny"
+unmaintained = "none"
+
+[licenses]
+# Permissive only. The one thing that must not appear is a copyleft licence in
+# a binary we hand people as an .exe.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    "MPL-2.0",           # file-level copyleft; linking is unaffected
+    "CC0-1.0",
+    "Unlicense",
+    "BSL-1.0",
+    "OpenSSL",
+]
+confidence-threshold = 0.8
+# The allow list carries licences this tree does not currently pull. That is
+# deliberate — it is the set we are willing to accept, not an inventory — so a
+# new dependency under one of them is not a merge blocked at midnight.
+unused-allowed-license = "allow"
+
+[bans]
+# A duplicate version is usually harmless and always noisy — Tauri's tree has
+# many. Warn so it is visible in the log; do not fail a merge on it.
+multiple-versions = "warn"
+# `foo = "*"` from a registry is the real hazard: it resolves to whatever was
+# published most recently, so the build is not reproducible and an compromised
+# release lands without anyone bumping a version. A path dependency inside this
+# repo has no such property, and both of ours are path dependencies.
+wildcards = "deny"
+allow-wildcard-paths = true
+
+[sources]
+# Everything comes from crates.io. A git dependency in a lockfile is how a
+# supply chain acquires an unreviewed, unversioned, force-pushable input.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
