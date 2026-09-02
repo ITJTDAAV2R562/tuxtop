@@ -3,6 +3,12 @@ name = "tuxtop-serve"
 version = "0.5.1"
 edition = "2021"
 description = "Tuxtop as a headless server: the same fleet, viewed in a browser."
+license = "MIT"
+repository = "https://github.com/UZ1sFED3yS/tuxtop"
+# Not a crates.io crate: this is an application, and it depends on
+# tuxtop-core by path. cargo-deny also needs this to tell an internal
+# path dependency from a `foo = "*"` pulled off a registry.
+publish = false
 
 [dependencies]
 tuxtop-core = { path = "../tuxtop-core" }
