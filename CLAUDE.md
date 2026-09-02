@@ -499,9 +499,16 @@ git tag v0.3.0 && git push --tags
 and attaches them to a GitHub Release: a Windows installer (`.msi` and an NSIS
 `-setup.exe`) and a `tuxtop-serve` tarball for Linux.
 
-**The version lives in four files** — three `Cargo.toml`s and
-`tauri.conf.json` — and nothing keeps them together, so
-`scripts/check-version.py` asserts they agree. It runs in CI on every push, and
+**The version lives in six files** — three `Cargo.toml`s, `tauri.conf.json`
+and **both `Cargo.lock`s** — and nothing keeps them together, so
+`scripts/check-version.py` asserts they agree. The locks are in that list
+because a stale one is a *build failure*, not a reporting discrepancy:
+`src-tauri` is outside the workspace (ADR-006) and carries its own lock, which
+a workspace `cargo build` never touches, so bumping the four obvious files
+leaves it behind and the release job dies at `cargo xwin build --locked` with
+"cannot update the lock file". That sank the first v0.5.0 tag, after the
+four-file check had said OK. Refresh it with
+`cargo update -p tuxtop -p tuxtop-core --manifest-path src-tauri/Cargo.toml --offline`. It runs in CI on every push, and
 again in the release guard *with the tag*, before any build minutes are spent.
 A release whose binaries report a different version than the tag is worse than
 no release: the tag is what anyone quotes in a bug report.
