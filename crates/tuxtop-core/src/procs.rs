@@ -317,12 +317,53 @@ pub struct ProcInfo {
 /// is the whole reason for shipping it.
 pub const CMD_MAX_CHARS: usize = 200;
 
-/// The remote command: snapshot, wait, snapshot, delta, sort, emit the top N.
+/// Shell definitions the process plane needs, emitted once before the loop.
+///
+/// `snap` is the whole per-process scan and `tot` the denominator it is
+/// measured against. Both are functions rather than inline text because the
+/// metric loop calls them on two different iterations - opening the window and
+/// closing it - and a copy in each place is a copy that can drift.
+///
+/// `PG` is read once here rather than every cycle: the page size of a running
+/// kernel does not change, and it was costing a `getconf` per frame.
+///
+/// **`comm` is not escaped in `/proc/[pid]/stat`, so the fields after it
+/// cannot be read positionally.** The line is `pid (comm) state ...`, and a
+/// process named `spiceproxy work` or `postgres: writer` splits into one extra
+/// whitespace field, shifting everything after it by one. `$24` then reads a
+/// neighbour: on a Proxmox host it reported 102,117,376 pages — 408 GB of
+/// resident memory for a process using 55.8 MB, an overstatement of 7,300×,
+/// with no error and a well-formatted number. Stripping through the **last**
+/// `)` first — awk's `.*` is greedy, so one `sub` does it — puts the remaining
+/// fields back on their true offsets, where stat field *N* is `f[N-2]`:
+/// starttime 22 is `f[20]`, utime+stime 14+15 are `f[12]+f[13]`, rss 24 is
+/// `f[22]`. Measured cost of the change: 9.5 ms to 10.5 ms per snapshot.
+///
+/// Measured on a 32-core host with 629 processes: `snap` is **9.5 ms**. That
+/// number is why the process plane rides the metric connection at all. The
+/// second connection it used to own existed to pay for a `sleep 1` that was
+/// never work, only a window - and the metric loop is already sleeping exactly
+/// that window, every iteration.
+pub const PROC_DEFS: &str = "\
+  snap() { awk '{p=$1; s=$0; sub(/^[0-9]+ \\(.*\\) /,\"\",s); split(s,f,\" \"); \
+    print p\" \"f[20]\" \"(f[12]+f[13])\" \"f[22]}' /proc/[0-9]*/stat 2>/dev/null; }; \
+  tot() { awk '/^cpu /{print $2+$3+$4+$5+$6+$7+$8+$9}' /proc/stat; }; \
+  PG=$(getconf PAGESIZE 2>/dev/null || echo 4096);";
+
+/// Open the ranking window: the snapshot the next one is differentiated from.
+///
+/// Held in shell variables, so nothing is written to the monitored host and
+/// the "only reads" property of ADR-004 holds unchanged.
+pub const PROC_OPEN: &str = "A=$(snap); TA=$(tot);";
+
+/// Close the window and emit one process frame: delta, sort, expand, cgroups.
+///
+/// `window_ms` is how far apart the metric loop's iterations put the two
+/// snapshots — computed by [`proc_schedule`], never slept for here.
 ///
 /// Deliberately POSIX `sh`. Nothing is written to the host — both snapshots
 /// live in shell variables, so the "nothing but reads" property holds.
-pub fn process_command(top_n: usize, window_ms: u32) -> String {
-    let secs = (window_ms as f64 / 1000.0).max(0.2);
+pub fn proc_emit(top_n: usize, window_ms: u32) -> String {
     let cmd_chars = CMD_MAX_CHARS;
     // Fields from /proc/[pid]/stat: 1 pid, 22 starttime, 14+15 cpu jiffies,
     // 24 rss in pages. Taking rss from the same snapshot avoids reading
@@ -333,12 +374,7 @@ pub fn process_command(top_n: usize, window_ms: u32) -> String {
     // burned a jiffy in the window appear - which reads as a broken view
     // rather than a quiet one.
     format!(
-        "snap() {{ awk '{{print $1\" \"$22\" \"($14+$15)\" \"$24}}' /proc/[0-9]*/stat 2>/dev/null; }}; \
-         tot() {{ awk '/^cpu /{{print $2+$3+$4+$5+$6+$7+$8+$9}}' /proc/stat; }}; \
-         A=$(snap); TA=$(tot); \
-         sleep {secs}; \
-         B=$(snap); TB=$(tot); \
-         PG=$(getconf PAGESIZE 2>/dev/null || echo 4096); \
+        "B=$(snap); TB=$(tot); \
          echo \"TXPT|$((TB-TA))|{window_ms}|$PG\"; \
          CPU=$(printf '%s\\n' \"$A\" | awk -v B=\"$B\" '\
            BEGIN{{ n=split(B,rows,\"\\n\"); for(i=1;i<=n;i++){{ split(rows[i],f,\" \"); \
@@ -351,7 +387,8 @@ pub fn process_command(top_n: usize, window_ms: u32) -> String {
          | while read d p; do \
              [ -n \"$p\" ] || continue; \
              c=$(tr -d '\\0' < /proc/$p/comm 2>/dev/null) || continue; \
-             r=$(awk '{{print $24}}' /proc/$p/stat 2>/dev/null); \
+             r=$(awk '{{s=$0; sub(/^[0-9]+ \\(.*\\) /,\"\",s); \
+               split(s,f,\" \"); print f[22]}}' /proc/$p/stat 2>/dev/null); \
              u=$(awk '/^Uid:/{{print $2; exit}}' /proc/$p/status 2>/dev/null); \
              n=$(awk -F: -v U=\"$u\" '$3==U{{print $1; exit}}' /etc/passwd 2>/dev/null); \
              echo \"TXP|$p|$d|$(( ${{r:-0}} * PG / 1024 ))|${{n:-$u}}|${{c:-?}}\"; \
@@ -366,8 +403,46 @@ pub fn process_command(top_n: usize, window_ms: u32) -> String {
            u=$(awk '/^usage_usec/{{print $2}}' \"$d/cpu.stat\" 2>/dev/null); \
            [ -n \"$u\" ] || continue; \
            echo \"TXG|$n|$u|$(cat \"$d/memory.current\" 2>/dev/null || echo 0)|$(cat \"$d/pids.current\" 2>/dev/null || echo 0)\"; \
-         done"
+         done;"
     )
+}
+
+/// How many processes each host ranks and returns.
+pub const TOP_N: usize = 20;
+
+/// How often a process frame is emitted, in milliseconds of wall clock.
+pub const EMIT_EVERY_MS: u32 = 5_000;
+
+/// The window the CPU delta is measured over, in milliseconds.
+///
+/// A floor expressed in whole metric iterations, not a target: a host sampling
+/// slower than this measures over one iteration instead.
+pub const WINDOW_MS: u32 = 1_000;
+
+/// Where the process plane sits inside the metric loop, in iterations:
+/// `(emit_every, win_back)`.
+///
+/// The opening snapshot is taken when `i % emit_every == 0` and the frame is
+/// emitted when `i % emit_every == win_back`, so the ranking window is
+/// `win_back` metric iterations wide and costs no sleep of its own.
+///
+/// Two rules keep it honest at every sample rate:
+///
+/// - `win_back` is at least one iteration, so the two snapshots are never the
+///   same instant. A zero-width window means a zero jiffy delta, which
+///   `parse_processes` refuses to divide by - correctly, but arriving there at
+///   all would mean the process view went silently blank at some sample rates
+///   and not others.
+/// - `emit_every` is at least two, so the opening iteration and the emitting
+///   iteration are always distinct. At a sample interval slower than
+///   [`EMIT_EVERY_MS`] this makes the process cadence twice the sample
+///   interval rather than every frame, which is the intended shape: a process
+///   list is read, not watched.
+pub fn proc_schedule(interval_ms: u32) -> (u32, u32) {
+    let interval = interval_ms.max(1);
+    let emit_every = (EMIT_EVERY_MS / interval).max(2);
+    let win_back = WINDOW_MS.div_ceil(interval).clamp(1, emit_every - 1);
+    (emit_every, win_back)
 }
 
 /// Parse one process frame.
@@ -490,47 +565,20 @@ pub fn parse_processes(host: &str, text: &str) -> Vec<ProcInfo> {
     out
 }
 
-/// Wrap the one-shot ranking in a loop, for a long-lived channel.
+/// How many process cycles pass between restart-count sweeps. At the default
+/// 5 s process cadence this is once a minute.
 ///
-/// Processes run on their own connection at their own cadence: the ranking
-/// needs two snapshots separated by a real interval, and doing that inside
-/// the metric loop would stall 1 Hz sampling for the whole window.
-pub fn process_loop_command(top_n: usize, window_ms: u32, interval_ms: u32) -> String {
-    // Never faster than 1 Hz, whatever the metric sampler was set to. A host
-    // watched at 4 Hz wants its *counters* four times a second; running a
-    // two-snapshot process ranking that often would spend real CPU on the
-    // watched machine to re-sort a list that a human reads once. Sub-second is
-    // for the cheap kernel counters a spike lives in.
-    let interval_ms = interval_ms.max(PROC_MIN_INTERVAL_MS);
-    // Restart counts ride the same connection but on a slower cycle. A unit
-    // that restarts is news for hours, and the `systemctl show` call costs
-    // ~108 ms of remote CPU against ~0 for everything else in the frame - so
-    // paying it every five seconds would be the most expensive part of the
-    // sample, for the slowest-moving number in it.
-    let every = RESTART_EVERY_N_CYCLES;
-    format!(
-        "i=0; while :; do {}; \
-         if [ $((i % {every})) -eq 0 ]; then {} ; fi; \
-         i=$((i+1)); echo '{}'; sleep {}; done",
-        process_command(top_n, window_ms),
-        RESTART_SNIPPET,
-        crate::sampler::FRAME_DELIMITER,
-        crate::sampler::sleep_arg(interval_ms),
-    )
-}
-
-/// The floor on the process loop's cadence, in milliseconds.
-pub const PROC_MIN_INTERVAL_MS: u32 = 1000;
-
-/// How many process cycles pass between restart-count sweeps. At the 5 s
-/// process cadence this is once a minute.
+/// Deliberately the slowest thing in the frame: a unit that restarts is news
+/// for hours, and `systemctl show` costs ~170 ms of remote CPU against ~10 ms
+/// for everything else in the cycle - so paying it every time would make the
+/// slowest-moving number in the sample the most expensive part of taking it.
 pub const RESTART_EVERY_N_CYCLES: u32 = 12;
 
 /// Emit `TXR|unit|count` for every service that has restarted.
 ///
 /// Only non-zero counts cross the wire. On dove that is two units out of 137,
 /// and a zero says nothing anyone needs.
-const RESTART_SNIPPET: &str =
+pub const RESTART_SNIPPET: &str =
     "systemctl show --property=Id --property=NRestarts '*.service' 2>/dev/null \
      | awk -v RS='' -F'\\n' '{{ id=\"\"; n=0; \
          for (i=1; i<=NF; i++) {{ split($i, kv, \"=\"); \
@@ -642,14 +690,42 @@ TXP|68|32|0|root|migration/8
     fn the_command_guards_against_pid_reuse() {
         // The awk compares start time as well as PID: a recycled PID is a
         // different process and its delta would be nonsense.
-        let cmd = process_command(20, 1000);
+        let cmd = proc_emit(20, 1000);
         assert!(cmd.contains("bp[$1]==$2"), "start time must be compared");
-        assert!(cmd.contains("$22"), "field 22 is the process start time");
+        // The snapshot that carries it is in PROC_DEFS, since both ends of the
+        // window take it - a comparison against a field nobody collects would
+        // silently always hold.
+        assert!(
+            PROC_DEFS.contains("f[20]"),
+            "stat field 22 is the start time, and f[20] once comm is stripped"
+        );
+    }
+
+    #[test]
+    fn a_comm_with_a_space_does_not_shift_the_stat_fields() {
+        // `/proc/[pid]/stat` is `pid (comm) state ...` with comm neither
+        // quoted nor escaped, so `spiceproxy work` is two whitespace fields
+        // and every field after it moves by one. Read positionally, field 24
+        // on a live Proxmox host gave 102,117,376 pages - 408 GB of RSS for a
+        // process using 55.8 MB. Proxmox and Postgres both name processes this
+        // way by default; it is not an exotic case, and it is precisely the
+        // shape of failure this project exists to design against.
+        let emit = proc_emit(20, 1000);
+        for src in [PROC_DEFS, emit.as_str()] {
+            assert!(
+                src.contains("sub(/^[0-9]+ \\(.*\\) /"),
+                "comm is not stripped before the fields are split"
+            );
+            assert!(
+                !src.contains("print $24") && !src.contains("$24}"),
+                "a field after comm is still being read positionally"
+            );
+        }
     }
 
     #[test]
     fn the_command_stays_posix_and_writes_nothing() {
-        let cmd = process_command(20, 1000);
+        let cmd = proc_emit(20, 1000);
         assert!(!cmd.contains("[["), "no bashisms");
         assert!(
             !cmd.contains('>') || !cmd.contains("/tmp/"),
@@ -678,26 +754,54 @@ TXP|4|50|100|root|middling
     }
 
     #[test]
-    fn the_loop_command_delimits_frames_and_sleeps() {
-        let c = process_loop_command(20, 1000, 5_000);
-        assert!(c.contains(crate::sampler::FRAME_DELIMITER));
-        assert!(c.contains("sleep 5"));
-        assert!(!c.contains("[["), "still POSIX sh");
+    fn the_ranking_window_is_never_zero_wide() {
+        // Two snapshots taken on the same iteration differ by no jiffies, and
+        // `parse_processes` refuses to divide by that - correctly, but the
+        // visible result would be a process view that goes blank at some
+        // sample rates and not others, with nothing to say why.
+        for ms in [1, 50, 250, 999, 1000, 1001, 5_000, 30_000, 60_000] {
+            let (_, win_back) = proc_schedule(ms);
+            assert!(win_back >= 1, "zero-width window at {ms} ms");
+        }
     }
 
     #[test]
-    fn the_process_loop_never_runs_faster_than_once_a_second() {
-        // A host watched at 4 Hz wants its counters four times a second, not
-        // a two-snapshot process ranking - that would spend real CPU on the
-        // watched machine to re-sort a list a human reads once.
-        let c = process_loop_command(20, 1000, 250);
-        assert!(c.contains("sleep 1"), "clamped to the floor: {c}");
-        assert!(!c.contains("sleep 0.25"));
+    fn the_opening_and_emitting_iterations_are_never_the_same() {
+        // `i % every == 0` opens the window and `i % every == win_back`
+        // closes it. Equal, and the loop would open and close on one pass:
+        // the emit would read an `A` from five seconds ago on one iteration
+        // and its own on the next, which is a wrong number, not a missing one.
+        for ms in [1, 250, 1000, 2_500, 5_000, 30_000, 60_000] {
+            let (every, win_back) = proc_schedule(ms);
+            assert!(every >= 2, "single-iteration cycle at {ms} ms");
+            assert!(win_back < every, "window spans the whole cycle at {ms} ms");
+        }
+    }
+
+    #[test]
+    fn a_four_hertz_host_still_ranks_over_a_full_second() {
+        // A host watched at 4 Hz wants its *counters* four times a second. The
+        // process ranking is not a counter: measured over 250 ms it reports
+        // almost nothing, because only a process that burned a whole jiffy in
+        // the window appears at all.
+        let (every, win_back) = proc_schedule(250);
+        assert_eq!(win_back * 250, WINDOW_MS, "window is not a full second");
+        assert_eq!(every * 250, EMIT_EVERY_MS, "cadence is not five seconds");
+    }
+
+    #[test]
+    fn a_host_slower_than_the_process_cadence_does_not_rank_every_frame() {
+        // At a 30 s interval there is no way to emit every 5 s. Ranking on
+        // every frame would open and close the window on the same pass; the
+        // cycle stretches to two frames instead.
+        let (every, win_back) = proc_schedule(30_000);
+        assert_eq!((every, win_back), (2, 1));
     }
 
     #[test]
     fn a_zero_interval_is_clamped_not_obeyed() {
-        assert!(process_loop_command(20, 1000, 0).contains("sleep 1"));
+        // Guards a division by zero: the schedule divides by the interval.
+        assert_eq!(proc_schedule(0), proc_schedule(1));
     }
 }
 
@@ -759,7 +863,7 @@ TXP|68|32|0|root|migration/8
     fn the_remote_command_truncates_before_sending() {
         // Truncation must happen on the far side or the bytes are already
         // spent by the time we decide not to want them.
-        let cmd = process_command(20, 1000);
+        let cmd = proc_emit(20, 1000);
         assert!(
             cmd.contains(&format!("cut -c1-{CMD_MAX_CHARS}")),
             "no remote truncation"
@@ -870,7 +974,7 @@ TXP|68|32|0|root|migration/8
     fn the_remote_command_reads_the_cgroup_for_both_versions() {
         // `-F:` with $NF yields the path from cgroup v2's `0::/path` and from
         // v1's `N:name=systemd:/path` alike, so one expression covers both.
-        let cmd = process_command(20, 1000);
+        let cmd = proc_emit(20, 1000);
         assert!(cmd.contains("/proc/$p/cgroup"), "no cgroup read");
         assert!(cmd.contains("TXO|"), "no owner line emitted");
     }
@@ -1043,9 +1147,10 @@ mod restart_tests {
 
     #[test]
     fn the_sweep_runs_on_a_slower_cycle_than_the_processes() {
-        // ~108 ms of remote CPU for the slowest-moving number in the frame;
-        // paying it every five seconds would make it the most expensive part.
-        let cmd = process_loop_command(20, 1000, 5);
+        // 170 ms of remote CPU for the slowest-moving number in the frame,
+        // against ~10 ms for everything else in the cycle. Paying it every
+        // cycle would make it the most expensive part of the sample.
+        let cmd = crate::sampler::sampler_command(1000);
         assert!(
             cmd.contains(&format!("% {RESTART_EVERY_N_CYCLES}")),
             "no cycle gate"

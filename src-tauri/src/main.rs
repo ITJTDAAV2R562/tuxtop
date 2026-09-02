@@ -115,11 +115,6 @@ fn traffic_stats(svc: Svc<'_>) -> Vec<tuxtop_core::supervisor::HostTraffic> {
 }
 
 #[tauri::command]
-fn set_processes_enabled(svc: Svc<'_>, enabled: bool) -> Result<(), String> {
-    svc.set_processes_enabled(enabled)
-}
-
-#[tauri::command]
 fn process_list(svc: Svc<'_>) -> Vec<tuxtop_core::procs::ProcInfo> {
     svc.process_list()
 }
@@ -183,7 +178,6 @@ fn main() {
             set_host_os,
             set_host_paused,
             traffic_stats,
-            set_processes_enabled,
             process_list,
             cgroup_list,
             query_history,

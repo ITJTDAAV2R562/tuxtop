@@ -118,6 +118,16 @@ fn watchdog_sleep(ms: u32) -> String {
 /// the encoding below is the only thing between here and the wire.
 fn win_script(interval_ms: u32) -> String {
     let ms = interval_ms.max(1);
+    let top_n = crate::procs::TOP_N;
+    // Both planes in one loop, so a Windows host runs **one** PowerShell rather
+    // than two. That halves what the watchdog above has to catch as well: an
+    // orphan is one runtime per launch now, not two.
+    //
+    // The process query is gated to its own cadence rather than run every
+    // frame. It is the expensive thing here - ~574 ms against every process
+    // and every service on the box, measured on n1 - while the metric frame is
+    // cheap and wants the full sample rate.
+    let (proc_every, _) = crate::procs::proc_schedule(interval_ms);
     // Facts are read once, outside the loop: none of them change between
     // frames, and Win32_Processor is among the slower classes to query.
     format!(
@@ -129,6 +139,10 @@ fn win_script(interval_ms: u32) -> String {
          'TXWI|kernel|'+$os.Version\n\
          'TXWI|cpu|'+$cpu.Name\n\
          'TXWI|arch|'+$os.OSArchitecture\n\
+         $ncpu=(Get-CimInstance Win32_ComputerSystem).NumberOfLogicalProcessors\n\
+         $prev=@{{}}\n\
+         $prevTs=0\n\
+         $i=0\n\
          while($true){{\n\
            $os=Get-CimInstance Win32_OperatingSystem\n\
            'TXWM|'+$os.TotalVisibleMemorySize+'|'+$os.FreePhysicalMemory\n\
@@ -140,9 +154,37 @@ fn win_script(interval_ms: u32) -> String {
            foreach($d in Get-CimInstance Win32_PerfRawData_PerfDisk_PhysicalDisk){{\n\
              'TXWD|'+$d.Name+'|'+$d.DiskReadBytesPersec+'|'+$d.DiskWriteBytesPersec }}\n\
            '{delim}'\n\
+           if($i % {proc_every} -eq 0){{\n\
+             $q='SELECT IDProcess,Name,PercentProcessorTime,WorkingSetPrivate,Timestamp_Sys100NS FROM Win32_PerfRawData_PerfProc_Process'\n\
+             $rows=Get-CimInstance -Query $q | Where-Object {{ $_.Name -ne '_Total' -and $_.Name -ne 'Idle' }}\n\
+             $ts=0; if($rows){{ $ts=$rows[0].Timestamp_Sys100NS }}\n\
+             $cur=@{{}}\n\
+             foreach($r in $rows){{ $cur[[string]$r.IDProcess]=$r.PercentProcessorTime }}\n\
+             if($prevTs -gt 0 -and $ts -gt $prevTs){{\n\
+               $win=$ts-$prevTs\n\
+               $svc=@{{}}\n\
+               foreach($s in Get-CimInstance -Query 'SELECT Name,ProcessId FROM Win32_Service WHERE ProcessId <> 0'){{\n\
+                 $k=[string]$s.ProcessId\n\
+                 if($svc.ContainsKey($k)){{ $svc[$k]=$svc[$k]+','+$s.Name }} else {{ $svc[$k]=$s.Name }}\n\
+               }}\n\
+               'TXWPT|'+$ncpu+'|'+$win\n\
+               $rows | ForEach-Object {{\n\
+                 $k=[string]$_.IDProcess\n\
+                 $d=0; if($prev.ContainsKey($k)){{ $d=$cur[$k]-$prev[$k] }}\n\
+                 [pscustomobject]@{{ pid=$k; d=$d; ws=$_.WorkingSetPrivate; n=$_.Name }}\n\
+               }} | Sort-Object -Property d,ws -Descending | Select-Object -First {top_n} | ForEach-Object {{\n\
+                 $sv=''; if($svc.ContainsKey($_.pid)){{ $sv=$svc[$_.pid] }}\n\
+                 'TXWP|'+$_.pid+'|'+$_.d+'|'+$_.ws+'|'+$_.n+'|'+$sv\n\
+               }}\n\
+               '{pdelim}'\n\
+             }}\n\
+             $prev=$cur; $prevTs=$ts\n\
+           }}\n\
+           $i=$i+1\n\
            {watchdog_wait}\
          }}\n",
         delim = crate::sampler::FRAME_DELIMITER,
+        pdelim = crate::sampler::PROC_FRAME_DELIMITER,
         watchdog_setup = watchdog_preamble(),
         watchdog_wait = watchdog_sleep(ms),
     )
@@ -191,72 +233,6 @@ pub fn win_sampler_command(interval_ms: u32) -> String {
     format!(
         "powershell -NoProfile -NonInteractive -EncodedCommand {}",
         encode_command(&win_script(interval_ms))
-    )
-}
-
-/// The process-sampling script, run as its own persistent loop.
-///
-/// Ranking happens on the far side, as it does for Linux: 409 processes are
-/// 16 KB per sample and the top twenty are about 650 bytes. The difference is
-/// how the delta is obtained. Linux takes two snapshots inside one iteration;
-/// here the loop is persistent, so it keeps the previous snapshot in a
-/// variable and differentiates against that — one CIM query per cycle rather
-/// than two. Measured on N1: ~574 ms per query against 409 processes, so the
-/// saving is real remote CPU on somebody's workstation.
-///
-/// The consequence, stated because it differs from the Linux path: the window
-/// is the sampling interval rather than a fixed second, so a Windows process
-/// figure is averaged over five seconds where a Linux one is averaged over
-/// one. Both are percentages of the whole box; the Windows one is smoother.
-///
-/// The interval is floored at [`crate::procs::PROC_MIN_INTERVAL_MS`], the same
-/// 1 Hz the Linux loop enforces. The floor used to be `max(1)`, which is not a
-/// floor: a caller that passed 5 meaning seconds got a 200 Hz loop, and each
-/// cycle is two CIM queries against every process and every service on the box.
-/// One such caller cost a sixteen-core workstation three cores until it was
-/// killed by hand. A monitoring tool has no business being the load.
-pub fn win_process_command(top_n: usize, interval_ms: u32) -> String {
-    let ms = interval_ms.max(crate::procs::PROC_MIN_INTERVAL_MS);
-    let script = format!(
-        "$ErrorActionPreference='SilentlyContinue'\n\
-         {watchdog_setup}\
-         $ncpu=(Get-CimInstance Win32_ComputerSystem).NumberOfLogicalProcessors\n\
-         $prev=@{{}}\n\
-         $prevTs=0\n\
-         while($true){{\n\
-           $q='SELECT IDProcess,Name,PercentProcessorTime,WorkingSetPrivate,Timestamp_Sys100NS FROM Win32_PerfRawData_PerfProc_Process'\n\
-           $rows=Get-CimInstance -Query $q | Where-Object {{ $_.Name -ne '_Total' -and $_.Name -ne 'Idle' }}\n\
-           $ts=0; if($rows){{ $ts=$rows[0].Timestamp_Sys100NS }}\n\
-           $cur=@{{}}\n\
-           foreach($r in $rows){{ $cur[[string]$r.IDProcess]=$r.PercentProcessorTime }}\n\
-           if($prevTs -gt 0 -and $ts -gt $prevTs){{\n\
-             $win=$ts-$prevTs\n\
-             $svc=@{{}}\n\
-             foreach($s in Get-CimInstance -Query 'SELECT Name,ProcessId FROM Win32_Service WHERE ProcessId <> 0'){{\n\
-               $k=[string]$s.ProcessId\n\
-               if($svc.ContainsKey($k)){{ $svc[$k]=$svc[$k]+','+$s.Name }} else {{ $svc[$k]=$s.Name }}\n\
-             }}\n\
-             'TXWPT|'+$ncpu+'|'+$win\n\
-             $rows | ForEach-Object {{\n\
-               $k=[string]$_.IDProcess\n\
-               $d=0; if($prev.ContainsKey($k)){{ $d=$cur[$k]-$prev[$k] }}\n\
-               [pscustomobject]@{{ pid=$k; d=$d; ws=$_.WorkingSetPrivate; n=$_.Name }}\n\
-             }} | Sort-Object -Property d,ws -Descending | Select-Object -First {top_n} | ForEach-Object {{\n\
-               $sv=''; if($svc.ContainsKey($_.pid)){{ $sv=$svc[$_.pid] }}\n\
-               'TXWP|'+$_.pid+'|'+$_.d+'|'+$_.ws+'|'+$_.n+'|'+$sv\n\
-             }}\n\
-             '{delim}'\n\
-           }}\n\
-           $prev=$cur; $prevTs=$ts\n\
-           {watchdog_wait}\
-         }}\n",
-        delim = crate::sampler::FRAME_DELIMITER,
-        watchdog_setup = watchdog_preamble(),
-        watchdog_wait = watchdog_sleep(ms),
-    );
-    format!(
-        "powershell -NoProfile -NonInteractive -EncodedCommand {}",
-        encode_command(&script)
     )
 }
 
@@ -603,7 +579,7 @@ TXWP|9100|0|4194304|explorer|
     fn the_process_script_keeps_its_own_previous_snapshot() {
         // The point of the design: one CIM query per cycle instead of two,
         // because the loop is persistent and can remember.
-        let c = win_process_command(20, 5_000);
+        let c = win_sampler_command(1000);
         assert!(c.starts_with("powershell -NoProfile"));
         let script = decode_command(&c);
         assert!(script.contains("$prev"), "no previous snapshot kept");
@@ -619,21 +595,47 @@ TXWP|9100|0|4194304|explorer|
         // `PROC_INTERVAL_SECS = 5` was once passed to a parameter called
         // `interval_ms`. Every cycle is two CIM queries over every process and
         // every service, so the mistake cost a sixteen-core box three cores.
-        // The floor is what makes the unit mix-up survivable rather than
-        // something a human notices in Task Manager an hour later.
-        let script = decode_command(&win_process_command(20, 5));
-        assert!(
-            script.contains(&format!(
-                "while($slept -lt {})",
-                crate::procs::PROC_MIN_INTERVAL_MS
-            )),
-            "interval was not floored: {script}"
+        //
+        // A floor on the loop was the guard while the process sampler had its
+        // own loop. It cannot be, now that this *is* the metric loop and 4 Hz
+        // is a rate somebody legitimately asks for. What replaces it is
+        // stronger: the query is gated to its own cadence, so however fast the
+        // loop runs, the expensive part cannot run more often than
+        // `EMIT_EVERY_MS`. There is no longer a second interval to get the
+        // unit of.
+        for interval in [1, 5, 250, 1_000, 2_500, 5_000, 60_000] {
+            let (every, _) = crate::procs::proc_schedule(interval);
+            let script = decode_command(&win_sampler_command(interval));
+            assert!(
+                script.contains(&format!("$i % {every} -eq 0")),
+                "the CIM query is not gated at {interval} ms: {script}"
+            );
+            assert!(
+                u64::from(every) * u64::from(interval.max(1))
+                    >= u64::from(crate::procs::EMIT_EVERY_MS),
+                "the query would run every {}ms at a {interval}ms interval",
+                every * interval.max(1)
+            );
+        }
+    }
+
+    #[test]
+    fn one_powershell_runs_both_planes() {
+        // Two scripts meant two PowerShell runtimes resident on a machine
+        // somebody is using - and, until the watchdog above, two orphans per
+        // launch rather than one.
+        let script = decode_command(&win_sampler_command(1000));
+        assert!(script.contains("TXWC|"), "no metric plane");
+        assert!(script.contains("TXWP|"), "no process plane");
+        assert_eq!(
+            script.matches("while($true)").count(),
+            1,
+            "two loops in one script"
         );
-        // And an interval above the floor is still honoured.
-        let script = decode_command(&win_process_command(20, 5_000));
         assert!(
-            script.contains("while($slept -lt 5000)"),
-            "floor clobbered a legitimate interval: {script}"
+            script.contains(crate::sampler::FRAME_DELIMITER)
+                && script.contains(crate::sampler::PROC_FRAME_DELIMITER),
+            "the two planes must be delimited apart"
         );
     }
 
@@ -647,7 +649,7 @@ TXWP|9100|0|4194304|explorer|
         // leaks a PowerShell loop that runs until the host reboots; three had
         // piled up on n1 before anyone looked.
         for script in [
-            decode_command(&win_process_command(20, 5_000)),
+            decode_command(&win_sampler_command(1000)),
             decode_command(&win_sampler_command(2_000)),
         ] {
             assert!(
@@ -671,7 +673,7 @@ TXWP|9100|0|4194304|explorer|
         // host sampled hourly still dies within a second of losing its session.
         // Sampling slowly is a reason to cost the host less, not to hold an
         // orphan for the rest of the hour.
-        let script = decode_command(&win_process_command(20, 3_600_000));
+        let script = decode_command(&win_sampler_command(3_600_000));
         assert!(
             script.contains("$step=[Math]::Min(1000,3600000-$slept)"),
             "a slow interval sleeps past its own watchdog check: {script}"
@@ -685,7 +687,7 @@ TXWP|9100|0|4194304|explorer|
         // legitimate, so something else has to bound the lifetime - otherwise
         // "never runs forever" holds only when the walk succeeds, which is
         // exactly the case nobody would notice breaking.
-        let script = decode_command(&win_process_command(20, 5_000));
+        let script = decode_command(&win_sampler_command(5_000));
         assert!(
             script.contains(&format!("$wds.ElapsedMilliseconds -gt {UNWATCHED_MAX_MS}")),
             "an unwatched loop runs forever: {script}"

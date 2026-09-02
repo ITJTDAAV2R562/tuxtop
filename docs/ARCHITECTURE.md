@@ -20,6 +20,7 @@
   │  └──────┬─────────────────────────────────────────────┘  │
   └─────────┼────────────────────────────────────────────────┘
             │ one persistent ssh per host, configurable rate
+            │ metrics and processes, two frame kinds on one stream
             ▼
   ┌──────────────────────┐
   │ Linux host           │

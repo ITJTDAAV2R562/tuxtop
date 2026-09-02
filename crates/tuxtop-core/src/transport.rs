@@ -115,10 +115,18 @@ impl SshSampler {
     /// task. Errors after startup arrive through `tx` as [`HostFault`] rather
     /// than being returned, because by then there is a card on screen that
     /// needs to say what went wrong.
+    ///
+    /// `ptx` carries the process plane, which rides this same connection.
+    /// It used to have one of its own — a second `ssh` per host, started for
+    /// every host in the fleet the moment anyone opened the process view, at a
+    /// measured ~10 MB of client RSS each. The window its ranking needs is a
+    /// window, not work: this loop is already sleeping exactly that long every
+    /// iteration, so the second connection was paying for a `sleep` twice.
     pub fn start(
         host: HostConfig,
         interval_ms: u32,
         tx: mpsc::Sender<Result<Sample, HostFault>>,
+        ptx: mpsc::Sender<crate::procs::ProcFrame>,
         traffic: Arc<TrafficCounter>,
     ) -> std::io::Result<Self> {
         // Windows has no /proc. Same transport, same loop, same frame
@@ -153,9 +161,9 @@ impl SshSampler {
         });
 
         if windows {
-            tokio::spawn(win_pump(host, stdout, erx, tx, traffic));
+            tokio::spawn(win_pump(host, stdout, erx, tx, ptx, traffic));
         } else {
-            tokio::spawn(pump(host, stdout, erx, tx, traffic));
+            tokio::spawn(pump(host, stdout, erx, tx, ptx, traffic));
         }
 
         Ok(Self { child })
@@ -168,11 +176,17 @@ impl SshSampler {
 }
 
 /// Read stdout, split frames, differentiate, and emit samples.
+///
+/// Two planes arrive on this one stream, told apart by which delimiter ended
+/// the frame — never by their line tags, which are not as distinct as they
+/// look (see [`sampler::PROC_FRAME_DELIMITER`]). Each frame reaches exactly
+/// one parser, so neither had to learn about the other's wire format.
 async fn pump(
     host: HostConfig,
     stdout: tokio::process::ChildStdout,
     stderr: tokio::sync::oneshot::Receiver<String>,
     tx: mpsc::Sender<Result<Sample, HostFault>>,
+    ptx: mpsc::Sender<crate::procs::ProcFrame>,
     traffic: Arc<TrafficCounter>,
 ) {
     let mut reader = BufReader::new(stdout);
@@ -180,6 +194,13 @@ async fn pump(
     let mut chunk = vec![0u8; 16 * 1024];
     let mut tracker = RateTracker::new();
     let mut last = Instant::now();
+    // Cgroup CPU is a cumulative counter, so it needs the previous frame and
+    // the real time between them. Kept here, per connection, for the same
+    // reason `RateTracker` is: the configured interval is what we asked for,
+    // not what we got.
+    let mut cg_rates = crate::procs::CgroupRates::new();
+    let mut restarts = crate::procs::RestartTracker::new();
+    let mut proc_last: Option<Instant> = None;
 
     loop {
         let n = match reader.read(&mut chunk).await {
@@ -201,9 +222,38 @@ async fn pump(
 
         let (frames, rest) = sampler::split_frames(&buf);
         let mut emitted = Vec::new();
+        let mut proc_frames = Vec::new();
 
-        for text in frames {
+        for (kind, text) in frames {
             traffic.add_frame(text.len() as u64);
+
+            if kind == sampler::FrameKind::Proc {
+                let procs = crate::procs::parse_processes(&host.name, text);
+                // An empty frame means the denominator was missing, which is
+                // reported as nothing rather than as an idle machine.
+                if procs.is_empty() {
+                    continue;
+                }
+                let now = Instant::now();
+                let elapsed = proc_last.map(|t| now.duration_since(t).as_secs_f64());
+                proc_last = Some(now);
+                let cg = crate::procs::parse_cgroups(text);
+                // The first frame has nothing to differentiate against; its
+                // cgroups still carry memory and pid counts, which need no
+                // delta.
+                let cgroups = cg_rates.update(&cg, elapsed.unwrap_or(0.0));
+                // Empty on cycles that did not sweep, which the consumer keeps
+                // rather than reading as "nothing has restarted".
+                let seen = crate::procs::parse_restarts(text);
+                proc_frames.push(crate::procs::ProcFrame {
+                    host: host.name.clone(),
+                    procs,
+                    cgroups,
+                    restarts: restarts.update(&seen),
+                });
+                continue;
+            }
+
             let frame = sampler::parse_frame(text);
             let now = Instant::now();
             let elapsed = now.duration_since(last).as_secs_f64();
@@ -270,6 +320,14 @@ async fn pump(
                 return; // receiver dropped; nobody is listening
             }
         }
+        for frame in proc_frames {
+            // A dropped process receiver is not fatal to the connection: the
+            // metric plane is the one that keeps a card alive, and losing the
+            // process view must not take the grid down with it.
+            if ptx.send(frame).await.is_err() {
+                break;
+            }
+        }
     }
 
     // Process ended. Whatever ssh said on stderr is the real explanation.
@@ -277,113 +335,6 @@ async fn pump(
     let trimmed = msg.trim();
     let fault = classify_ssh_error(trimmed);
     let _ = tx.send(Err(fault)).await;
-}
-
-/// A running process sampler: its own connection, its own cadence.
-///
-/// Separate from [`SshSampler`] because the ranking needs two snapshots a
-/// second apart, and doing that inside the metric loop would stall 1 Hz
-/// sampling for the whole window. Started only while the process view is
-/// open, so a view nobody is looking at costs nothing.
-pub struct ProcSampler {
-    child: Child,
-}
-
-impl ProcSampler {
-    pub fn start(
-        host: HostConfig,
-        top_n: usize,
-        window_ms: u32,
-        interval_ms: u32,
-        tx: mpsc::Sender<crate::procs::ProcFrame>,
-    ) -> std::io::Result<Self> {
-        let windows = host.os.eq_ignore_ascii_case("windows");
-        let cmd = if windows {
-            crate::windows::win_process_command(top_n, interval_ms)
-        } else {
-            crate::procs::process_loop_command(top_n, window_ms, interval_ms)
-        };
-        let args = ssh_args(&host, &cmd);
-
-        let mut child = ssh_command(&args)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .kill_on_drop(true)
-            .spawn()?;
-
-        let stdout = child.stdout.take().expect("stdout was piped");
-        if windows {
-            tokio::spawn(win_proc_pump(host, stdout, tx));
-        } else {
-            tokio::spawn(proc_pump(host, stdout, tx));
-        }
-
-        Ok(Self { child })
-    }
-
-    pub async fn stop(mut self) {
-        let _ = self.child.kill().await;
-    }
-}
-
-async fn proc_pump(
-    host: HostConfig,
-    stdout: tokio::process::ChildStdout,
-    tx: mpsc::Sender<crate::procs::ProcFrame>,
-) {
-    let mut reader = BufReader::new(stdout);
-    let mut buf = String::new();
-    let mut chunk = vec![0u8; 16 * 1024];
-    // Cgroup CPU is a cumulative counter, so it needs the previous frame and
-    // the real time between them. Kept here, per connection, for the same
-    // reason `RateTracker` is: the configured interval is what we asked for,
-    // not what we got.
-    let mut rates = crate::procs::CgroupRates::new();
-    let mut restarts = crate::procs::RestartTracker::new();
-    let mut last_at: Option<std::time::Instant> = None;
-
-    loop {
-        let n = match reader.read(&mut chunk).await {
-            Ok(0) | Err(_) => break,
-            Ok(n) => n,
-        };
-        buf.push_str(&String::from_utf8_lossy(&chunk[..n]));
-
-        let (frames, rest) = sampler::split_frames(&buf);
-        let texts: Vec<String> = frames.into_iter().map(str::to_string).collect();
-        buf = rest.to_string();
-
-        for text in texts {
-            let procs = crate::procs::parse_processes(&host.name, &text);
-            // An empty frame means the denominator was missing, which is
-            // reported as nothing rather than as an idle machine.
-            if procs.is_empty() {
-                continue;
-            }
-
-            let now = std::time::Instant::now();
-            let elapsed = last_at.map(|t| now.duration_since(t).as_secs_f64());
-            last_at = Some(now);
-            let cg = crate::procs::parse_cgroups(&text);
-            // The first frame has nothing to differentiate against; its
-            // cgroups still carry memory and pid counts, which need no delta.
-            let cgroups = rates.update(&cg, elapsed.unwrap_or(0.0));
-
-            // Empty on cycles that did not sweep, which the consumer keeps
-            // rather than reading as "nothing has restarted".
-            let seen = crate::procs::parse_restarts(&text);
-            let frame = crate::procs::ProcFrame {
-                host: host.name.clone(),
-                procs,
-                cgroups,
-                restarts: restarts.update(&seen),
-            };
-            if tx.send(frame).await.is_err() {
-                return;
-            }
-        }
-    }
 }
 
 /// Turn ssh's stderr into a typed fault.
@@ -444,50 +395,6 @@ fn first_useful_line(s: &str) -> String {
         .to_string()
 }
 
-/// Read a Windows host's process frames.
-///
-/// Simpler than the Linux pump: the ranking and the delta both happen on the
-/// far side, because the persistent loop can hold its own previous snapshot.
-/// There are no cgroups and no unit restart counts on Windows, so those parts
-/// of the frame stay empty rather than being faked.
-async fn win_proc_pump(
-    host: HostConfig,
-    stdout: tokio::process::ChildStdout,
-    tx: mpsc::Sender<crate::procs::ProcFrame>,
-) {
-    let mut reader = BufReader::new(stdout);
-    let mut buf = String::new();
-    let mut chunk = vec![0u8; 16 * 1024];
-
-    loop {
-        let n = match reader.read(&mut chunk).await {
-            Ok(0) | Err(_) => break,
-            Ok(n) => n,
-        };
-        buf.push_str(&String::from_utf8_lossy(&chunk[..n]));
-
-        let (frames, rest) = sampler::split_frames(&buf);
-        let texts: Vec<String> = frames.into_iter().map(str::to_string).collect();
-        buf = rest.to_string();
-
-        for text in texts {
-            let procs = crate::windows::parse_win_processes(&host.name, &text);
-            if procs.is_empty() {
-                continue;
-            }
-            let frame = crate::procs::ProcFrame {
-                host: host.name.clone(),
-                procs,
-                cgroups: Vec::new(),
-                restarts: Vec::new(),
-            };
-            if tx.send(frame).await.is_err() {
-                return;
-            }
-        }
-    }
-}
-
 /// Read a Windows host's frames and emit samples.
 ///
 /// The Linux pump's shape, with the counters that differ. CPU comes from an
@@ -499,6 +406,7 @@ async fn win_pump(
     stdout: tokio::process::ChildStdout,
     stderr: tokio::sync::oneshot::Receiver<String>,
     tx: mpsc::Sender<Result<Sample, HostFault>>,
+    ptx: mpsc::Sender<crate::procs::ProcFrame>,
     traffic: Arc<TrafficCounter>,
 ) {
     use crate::windows::{busy_pct, parse_win_frame, WinFrame};
@@ -522,11 +430,37 @@ async fn win_pump(
         buf.push_str(&String::from_utf8_lossy(&chunk[..n]));
 
         let (frames, rest) = sampler::split_frames(&buf);
-        let texts: Vec<String> = frames.into_iter().map(str::to_string).collect();
+        let texts: Vec<(sampler::FrameKind, String)> = frames
+            .into_iter()
+            .map(|(k, t)| (k, t.to_string()))
+            .collect();
         buf = rest.to_string();
 
-        for text in texts {
+        for (kind, text) in texts {
             traffic.add_frame(text.len() as u64);
+
+            if kind == sampler::FrameKind::Proc {
+                // Simpler than the Linux path: the ranking and the delta both
+                // happen on the far side, because the loop holds its own
+                // previous snapshot. There are no cgroups and no unit restart
+                // counts on Windows, so those stay empty rather than faked.
+                let procs = crate::windows::parse_win_processes(&host.name, &text);
+                if procs.is_empty() {
+                    continue;
+                }
+                let frame = crate::procs::ProcFrame {
+                    host: host.name.clone(),
+                    procs,
+                    cgroups: Vec::new(),
+                    restarts: Vec::new(),
+                };
+                if ptx.send(frame).await.is_err() {
+                    // Losing the process view must not take the grid with it.
+                    continue;
+                }
+                continue;
+            }
+
             let f = parse_win_frame(&text);
             if !f.facts.is_empty() {
                 facts = f.facts.clone();

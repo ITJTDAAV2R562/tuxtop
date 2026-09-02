@@ -226,7 +226,6 @@
           }
           return out;
         }
-        if (cmd === 'set_processes_enabled') return null;
         if (cmd === 'process_list') {
           const names = ['tailscaled','searchd','python','node','postgres',
                          'kworker/3:1','dockerd','nginx','redis-server','java'];

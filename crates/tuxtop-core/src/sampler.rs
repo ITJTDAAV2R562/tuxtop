@@ -7,11 +7,45 @@
 //! Beszel rather than replacing it.
 
 use crate::proc::{self, MemInfo, StatSnapshot};
+use crate::procs;
 
 /// Marks the end of one sample in the remote stream.
 ///
 /// Chosen because it cannot appear in any `/proc` file we read.
 pub const FRAME_DELIMITER: &str = "--=TUXTOP=--";
+
+/// Ends a **process** frame. A second delimiter, not a second connection.
+///
+/// The two planes share one ssh process and one byte stream, so something has
+/// to say which frame is which — and it cannot be the line tags, however
+/// distinct they look. Both parsers scan for their own prefixes and skip
+/// everything else, which makes one merged frame look free. It is not: a
+/// single `TXC|` command line is enough to fabricate a metric reading.
+/// `parse_net_dev` splits on the first `:` and `is_whole_disk` is a denylist,
+/// so
+///
+/// ```text
+/// TXC|1481|/usr/bin/java -Xms512m -Xmx4096m -XX:+UseG1GC -Dserver.port 8080 -Dworkers 16 -jar /opt/app.jar
+/// ```
+///
+/// parses as a disk named `-Xmx4096m` that read field 6 — `8080` sectors, 4.1
+/// MB — in the last second. No error, no warning, a plausible number: exactly
+/// the failure this project exists to design against.
+/// `a_process_line_cannot_fabricate_a_disk_reading` is the test that holds it.
+///
+/// Keeping the frames apart means each parser only ever sees its own text, and
+/// neither had to learn about the other. The tags also genuinely collide:
+/// `TXG|` is a GPU in a metric frame and a cgroup in a process frame.
+pub const PROC_FRAME_DELIMITER: &str = "--=TUXTOP-PROC=--";
+
+/// Which plane a frame came off.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FrameKind {
+    /// `/proc` counters — the live grid.
+    Metric,
+    /// The process ranking, cgroups and unit restarts.
+    Proc,
+}
 
 /// The command Tuxtop executes on the remote host.
 ///
@@ -37,9 +71,21 @@ pub fn sampler_command(interval_ms: u32) -> String {
     let df_every = every(DF_EVERY_MS);
     let slow_every = every(SLOW_EVERY_MS);
     let nap = sleep_arg(interval_ms);
+
+    // The process plane rides this loop rather than a second connection. It
+    // opens its ranking window on one iteration and closes it on another, so
+    // the window is the sleep this loop was already doing — see
+    // `procs::proc_schedule`.
+    let (proc_every, win_back) = procs::proc_schedule(interval_ms);
+    let proc_defs = procs::PROC_DEFS;
+    let proc_open = procs::PROC_OPEN;
+    let proc_emit = procs::proc_emit(procs::TOP_N, win_back * interval_ms.max(1));
+    let restart_every = procs::RESTART_EVERY_N_CYCLES;
+    let restart = procs::RESTART_SNIPPET;
+
     format!(
-        "{FACTS_SNIPPET} \
-         i=0; \
+        "{FACTS_SNIPPET} {proc_defs} \
+         i=0; j=0; \
          while :; do \
            cat /proc/stat /proc/meminfo /proc/diskstats /proc/net/dev /proc/loadavg 2>/dev/null; \
            echo \"TXU|$(cut -d' ' -f1 /proc/uptime 2>/dev/null)\"; \
@@ -50,8 +96,15 @@ pub fn sampler_command(interval_ms: u32) -> String {
            if [ $((i % {df_every})) -eq 0 ]; then \
              df -P -k 2>/dev/null | tail -n +2 | sed 's/^/TXF|/'; \
            fi; \
-           i=$((i+1)); \
            echo '{FRAME_DELIMITER}'; \
+           if [ $((i % {proc_every})) -eq 0 ]; then {proc_open} fi; \
+           if [ $((i % {proc_every})) -eq {win_back} ]; then \
+             {proc_emit} \
+             if [ $((j % {restart_every})) -eq 0 ]; then {restart} ; fi; \
+             j=$((j+1)); \
+             echo '{PROC_FRAME_DELIMITER}'; \
+           fi; \
+           i=$((i+1)); \
            sleep {nap}; \
          done"
     )
@@ -169,13 +222,23 @@ pub struct Frame {
 /// is never parsed — that is the whole point of the delimiter, since a 1 MB
 /// read can land mid-`/proc/stat` and half a stat file parses as a plausible
 /// but wrong snapshot.
-pub fn split_frames(buf: &str) -> (Vec<&str>, &str) {
+pub fn split_frames(buf: &str) -> (Vec<(FrameKind, &str)>, &str) {
     let mut frames = Vec::new();
     let mut rest = buf;
 
-    while let Some(idx) = rest.find(FRAME_DELIMITER) {
-        frames.push(&rest[..idx]);
-        rest = &rest[idx + FRAME_DELIMITER.len()..];
+    loop {
+        // Whichever delimiter comes first, not whichever is looked for first:
+        // scanning for one and then the other would swallow an entire process
+        // frame into the metric frame that preceded it.
+        let next = match (rest.find(FRAME_DELIMITER), rest.find(PROC_FRAME_DELIMITER)) {
+            (Some(m), Some(p)) if p < m => Some((p, PROC_FRAME_DELIMITER.len(), FrameKind::Proc)),
+            (Some(m), _) => Some((m, FRAME_DELIMITER.len(), FrameKind::Metric)),
+            (None, Some(p)) => Some((p, PROC_FRAME_DELIMITER.len(), FrameKind::Proc)),
+            (None, None) => None,
+        };
+        let Some((idx, len, kind)) = next else { break };
+        frames.push((kind, &rest[..idx]));
+        rest = &rest[idx + len..];
     }
 
     (frames, rest)
@@ -631,8 +694,115 @@ tailscale0: 500 5 0 0 0 0 0 0 700 7 0 0 0 0 0 0
     fn split_frames_returns_only_complete_frames() {
         let buf = format!("one{FRAME_DELIMITER}two{FRAME_DELIMITER}partial");
         let (frames, rest) = split_frames(&buf);
-        assert_eq!(frames, vec!["one", "two"]);
+        assert_eq!(
+            frames,
+            vec![(FrameKind::Metric, "one"), (FrameKind::Metric, "two")]
+        );
         assert_eq!(rest, "partial", "incomplete frame must stay buffered");
+    }
+
+    #[test]
+    fn a_process_frame_is_not_swallowed_by_the_metric_frame_before_it() {
+        // Scanning for one delimiter and then the other would find the metric
+        // delimiter that follows the process frame and hand the parser both
+        // frames as one - which is the contamination the split exists to
+        // prevent, arriving by a different door.
+        let buf = format!("m1{FRAME_DELIMITER}p1{PROC_FRAME_DELIMITER}m2{FRAME_DELIMITER}");
+        let (frames, rest) = split_frames(&buf);
+        assert_eq!(
+            frames,
+            vec![
+                (FrameKind::Metric, "m1"),
+                (FrameKind::Proc, "p1"),
+                (FrameKind::Metric, "m2"),
+            ]
+        );
+        assert_eq!(rest, "");
+    }
+
+    #[test]
+    fn neither_delimiter_contains_the_other() {
+        // `find` would match the shorter one inside the longer, splitting a
+        // frame at a boundary that is not one and leaving the tail of a
+        // delimiter at the head of the next frame.
+        assert!(!PROC_FRAME_DELIMITER.contains(FRAME_DELIMITER));
+        assert!(!FRAME_DELIMITER.contains(PROC_FRAME_DELIMITER));
+    }
+
+    #[test]
+    fn a_process_line_cannot_fabricate_a_disk_reading() {
+        // Why the two planes get two delimiters rather than sharing one.
+        // Both parsers skip lines they do not recognise, which makes a merged
+        // frame look free - but `parse_net_dev` splits on the first `:` and
+        // `is_whole_disk` is a denylist, so this command line parses as a disk
+        // named `-Xmx4096m` that read 8080 sectors: 4.1 MB of I/O that never
+        // happened, with no error and a plausible number. That is the bug this
+        // project was built in response to, so the guard is that the parser
+        // never sees the line at all.
+        let stat = "cpu  1 2 3 4 5 6 7 8\ncpu0 1 2 3 4 5 6 7 8\n";
+        let cmdline = "TXC|1481|/usr/bin/java -Xms512m -Xmx4096m -XX:+UseG1GC \
+                       -Dserver.port 8080 -Dworkers 16 -jar /opt/app.jar\n";
+
+        let buf = format!("{stat}{FRAME_DELIMITER}{cmdline}{PROC_FRAME_DELIMITER}");
+        let (frames, _) = split_frames(&buf);
+        let metric: Vec<&str> = frames
+            .iter()
+            .filter(|(k, _)| *k == FrameKind::Metric)
+            .map(|(_, t)| *t)
+            .collect();
+        assert_eq!(metric.len(), 1);
+        assert_eq!(
+            parse_frame(metric[0]).disk_read_bytes,
+            0,
+            "a process line reached the metric parser"
+        );
+
+        // And the line really is dangerous - this is not a test that would
+        // pass against no guard at all.
+        assert_ne!(
+            parse_frame(&format!("{stat}{cmdline}")).disk_read_bytes,
+            0,
+            "the contamination this guards against no longer exists; \
+             re-derive the guard before deleting it"
+        );
+    }
+
+    #[test]
+    fn the_process_plane_rides_the_metric_connection() {
+        // It had a second ssh process per host, started for every host in the
+        // fleet the moment anyone opened the process view.
+        let cmd = sampler_command(1000);
+        assert!(cmd.contains(FRAME_DELIMITER));
+        assert!(cmd.contains(PROC_FRAME_DELIMITER));
+        assert!(cmd.contains("snap()"), "no process snapshot");
+        assert!(!cmd.contains("[["), "still POSIX sh");
+    }
+
+    #[test]
+    fn the_process_work_happens_after_the_metric_frame_is_flushed() {
+        // The ranking costs ~10 ms of remote CPU. Doing it before the echo
+        // would add that to every frame's latency for no reason: the metric
+        // plane is what the live grid is waiting on.
+        let cmd = sampler_command(1000);
+        let flush = cmd.find(&format!("echo '{FRAME_DELIMITER}'")).unwrap();
+        let rank = cmd.find("B=$(snap)").unwrap();
+        assert!(flush < rank, "the grid waits on the process ranking");
+    }
+
+    #[test]
+    fn the_ranking_window_is_slept_by_the_metric_loop_not_by_itself() {
+        // The second connection existed to pay for a `sleep 1` that was only
+        // a window, never work - and this loop was already sleeping it. A
+        // sleep inside the process branch would reintroduce the stall that
+        // splitting them was meant to avoid.
+        let cmd = sampler_command(1000);
+        let open = cmd.find("A=$(snap)").unwrap();
+        let close = cmd.find("B=$(snap)").unwrap();
+        let between = &cmd[open..close];
+        assert!(
+            !between.contains("sleep"),
+            "the ranking sleeps on its own again"
+        );
     }
 
     #[test]

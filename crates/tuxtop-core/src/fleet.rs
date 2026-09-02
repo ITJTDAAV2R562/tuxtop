@@ -40,6 +40,9 @@ pub fn backoff_secs(attempt: usize) -> u64 {
 pub enum HostEvent {
     Sample(Box<Sample>),
     Fault(HostFault),
+    /// The process ranking, cgroups and unit restarts, off the same
+    /// connection as the samples. Boxed for the reason `Sample` is.
+    Processes(Box<crate::procs::ProcFrame>),
 }
 
 /// What to report when a sampler connection ends.
@@ -77,7 +80,7 @@ pub fn closing_fault(got_data: bool, already_reported: bool) -> Option<HostFault
 /// card, and attributing one to the wrong card is worse than dropping it.
 pub async fn watch_host(
     cfg: HostConfig,
-    interval_secs: u32,
+    interval_ms: u32,
     traffic: Arc<TrafficCounter>,
     out: mpsc::Sender<(String, HostEvent)>,
 ) {
@@ -85,8 +88,26 @@ pub async fn watch_host(
 
     loop {
         let (tx, mut rx) = mpsc::channel(16);
+        // The process plane rides the same connection but not the same
+        // channel: a process frame is not a `Sample` and must never be able to
+        // reset the backoff or stand in for one. Forwarded by its own task so
+        // the loop below keeps the shape its fault handling was written for.
+        let (ptx, mut prx) = mpsc::channel(4);
+        let pout = out.clone();
+        let pname = cfg.name.clone();
+        let procs = tokio::spawn(async move {
+            while let Some(frame) = prx.recv().await {
+                if pout
+                    .send((pname.clone(), HostEvent::Processes(Box::new(frame))))
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+            }
+        });
 
-        let sampler = match SshSampler::start(cfg.clone(), interval_secs, tx, traffic.clone()) {
+        let sampler = match SshSampler::start(cfg.clone(), interval_ms, tx, ptx, traffic.clone()) {
             Ok(s) => s,
             Err(e) => {
                 // Could not even spawn ssh — almost always "not on PATH".
@@ -98,6 +119,7 @@ pub async fn watch_host(
                 {
                     return;
                 }
+                procs.abort();
                 sleep_backoff(&mut attempt).await;
                 continue;
             }
@@ -120,6 +142,7 @@ pub async fn watch_host(
             };
             let fatal = matches!(event, HostEvent::Fault(_));
             if out.send((cfg.name.clone(), event)).await.is_err() {
+                procs.abort();
                 sampler.stop().await;
                 return;
             }
@@ -128,6 +151,7 @@ pub async fn watch_host(
             }
         }
 
+        procs.abort();
         sampler.stop().await;
 
         if let Some(fault) = closing_fault(got_data, reported) {

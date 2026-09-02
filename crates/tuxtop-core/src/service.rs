@@ -7,7 +7,6 @@
 //! test.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use tokio::sync::mpsc;
@@ -33,14 +32,6 @@ pub struct Service {
     sup: Arc<Supervisor>,
     history: Arc<HistoryStore>,
     events: mpsc::Sender<Event>,
-    /// Whether the process view is open, and so whether a host resumed from
-    /// pause should start ranking processes as well as sampling metrics.
-    ///
-    /// Tracked here rather than inferred from the supervisor's task map: with
-    /// one paused host the map is empty, which is indistinguishable from the
-    /// view being closed, and resuming that host would silently leave its
-    /// process list blank.
-    procs_enabled: AtomicBool,
 }
 
 impl Service {
@@ -55,7 +46,6 @@ impl Service {
             sup,
             history,
             events,
-            procs_enabled: AtomicBool::new(false),
         }
     }
 
@@ -241,38 +231,19 @@ impl Service {
         let updated = h.clone();
         self.config.save_file(&f)?;
 
+        // One call, one connection: the process plane rides the same ssh
+        // process, so pause is enforced in exactly one place - `start` - and
+        // there is no second sampler for a caller to forget.
         self.sup.start(
             updated.clone(),
             effective_interval_ms(&updated, &f.settings),
         );
-        // The process sampler is a second ssh connection and needs the same
-        // treatment, but only while anyone is looking at the process view.
-        if self.procs_enabled.load(Ordering::Relaxed) {
-            self.sup.start_procs(vec![updated]);
-        }
         self.announce_hosts(&f.hosts);
         Ok(f.hosts)
     }
 
     pub fn traffic_stats(&self) -> Vec<HostTraffic> {
         self.sup.traffic()
-    }
-
-    /// Start or stop fleet-wide process sampling.
-    ///
-    /// Driven by the view being open: sampling costs remote wall clock per
-    /// host per cycle, so a view nobody is looking at should cost nothing.
-    pub fn set_processes_enabled(&self, on: bool) -> Result<(), String> {
-        self.procs_enabled.store(on, Ordering::Relaxed);
-        if on {
-            // Paused hosts are skipped inside `start_procs`, so a paused host
-            // does not acquire an ssh connection just because someone opened
-            // the process view.
-            self.sup.start_procs(self.config.load()?);
-        } else {
-            self.sup.stop_procs();
-        }
-        Ok(())
     }
 
     pub fn process_list(&self) -> Vec<ProcInfo> {

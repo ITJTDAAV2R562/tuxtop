@@ -94,8 +94,30 @@ No Beszel agent means no history — the live grid still works. SSH down means n
 live data — history still renders, marked stale. Always state which part is
 missing; never show a generic "offline".
 
+**One SSH connection per host carries both planes.**
+Metrics and the process ranking share one `ssh` and one byte stream, told apart
+by two frame delimiters — never by their line tags, however distinct those look.
+Both parsers skip what they do not recognise, so a merged frame looks free: it
+is not, and `a_process_line_cannot_fabricate_a_disk_reading` shows a Java
+command line parsing as 4.1 MB of disk I/O that never happened. The process
+ranking's window is the metric loop's own sleep, not one of its own
+([ADR-014](docs/DECISIONS.md#adr-014--one-connection-per-host-carries-both-planes)).
+A second connection is also how the pause rule below acquired its one loophole.
+
+**Fields after `comm` in `/proc/[pid]/stat` cannot be read positionally.**
+The line is `pid (comm) state ...` and `comm` is neither quoted nor escaped, so
+`spiceproxy work` or `postgres: writer` is two whitespace fields and everything
+after it shifts by one. `awk '{print $24}'` reported **408 GB** of RSS for a
+process using 55.8 MB — a confident, well-formatted, 7,300× wrong number, which
+is this project's founding bug in a place nobody had looked. Strip through the
+last `)` first (`sub(/^[0-9]+ \(.*\) /, "", s)`, greedy `.*`), after which
+stat field *N* is `f[N-2]`.
+
 **Pause is enforced in `Supervisor::start`, and nowhere else.**
-`start` stops the host's task and refuses to restart a paused one. Do not add a
+`start` stops the host's task and refuses to restart a paused one. This is true
+again rather than aspirationally: `start_procs` used to be a second way a host
+acquired an ssh connection, with its own `cfg.paused` check to remember, and
+folding the planes onto one connection deleted it. Do not add a
 `cfg.paused` check to a *caller* instead — five of them restart a host as a side
 effect of an unrelated edit (`start_all`, `set_settings`, `set_host_interval`,
 `set_host_os`, `add_host`), and the one that forgets silently resumes a machine
@@ -244,7 +266,7 @@ one is how a monitoring tool acquires its first remote code execution.
 ## Testing
 
 ```sh
-cargo test        # 255 tests, no GUI toolchain needed, runs anywhere
+cargo test        # 269 tests, no GUI toolchain needed, runs anywhere
 cargo clippy --all-targets
 cargo fmt
 node --test 'tests/*.test.js'           # pure logic: aggregation, scale, filters

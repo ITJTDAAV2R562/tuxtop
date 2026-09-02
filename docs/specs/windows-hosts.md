@@ -99,16 +99,30 @@ so is one word.
 ## Processes, and why there is no services view
 
 **Processes** rank on the far side, as they do for Linux — 409 processes are
-16 KB per sample and the top twenty are about 1 KB. The delta is obtained
-differently: Linux takes two snapshots inside one iteration, while here the
-loop is persistent, so it keeps the previous snapshot in a variable and
-differentiates against that. One CIM query per cycle instead of two, which on
-a measured ~574 ms query is real CPU on somebody's workstation.
+16 KB per sample and the top twenty are about 1 KB. They ride the host's one
+connection and one PowerShell, in the same loop as the metrics
+([ADR-014](../DECISIONS.md#adr-014--one-connection-per-host-carries-both-planes));
+a second script meant a second PowerShell runtime resident on a machine
+somebody is using.
+
+The delta is obtained differently from Linux, and this is the reason the fold
+looks slightly different here. Linux opens its ranking window on one loop
+iteration and closes it on the next but one; Windows keeps the previous
+snapshot in a variable and differentiates against that, so it runs **one** CIM
+query per process cycle rather than two — which on a measured ~574 ms query is
+real CPU on somebody's workstation.
+
+That query once ran in a loop that slept **5 milliseconds** — `PROC_INTERVAL_SECS
+= 5` passed to a parameter measured in milliseconds — and took three of n1's
+sixteen cores. It was fixed in f2479bb by flooring the loop. The fold then
+removed the second interval entirely: the query is gated to `EMIT_EVERY_MS`
+inside the metric loop, so there is no longer a unit to get wrong.
+`an_interval_in_the_wrong_unit_cannot_become_a_two_hundred_hertz_poll` moved
+with it and now asserts the gate rather than the floor.
 
 The consequence is worth stating because it differs: a Windows process figure
-is averaged over the sampling interval where a Linux one is averaged over a
-fixed second. Both are percentages of the whole box; the Windows one is
-smoother.
+is averaged over the process cadence where a Linux one is averaged over a fixed
+second. Both are percentages of the whole box; the Windows one is smoother.
 
 Measured on N1: **1,061 bytes per frame**, top twenty of 409.
 

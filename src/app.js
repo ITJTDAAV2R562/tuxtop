@@ -2455,9 +2455,12 @@
   const PROC_REFRESH_MS = 2000;
   let procTimer = null, procBusy = false;
 
+  // Nothing to switch on: the ranking rides each host's metric connection and
+  // is always arriving, so opening this view only starts reading what is
+  // already there. It costs the monitored host ~10 ms per five seconds, and
+  // the list is populated the moment the view opens rather than five seconds
+  // later.
   function startProcs() {
-    if (LIVE) TAURI.core.invoke('set_processes_enabled', { enabled: true })
-      .catch(err => showError(String(err)));
     clearInterval(procTimer);
     procTimer = setInterval(tickProcs, PROC_REFRESH_MS);
   }
@@ -2465,9 +2468,6 @@
   function stopProcs() {
     clearInterval(procTimer);
     procTimer = null;
-    // Sampling costs a second of remote wall clock per host per cycle, so a
-    // view nobody is looking at must cost nothing at all.
-    if (LIVE) TAURI.core.invoke('set_processes_enabled', { enabled: false }).catch(() => {});
   }
 
   async function tickProcs() {

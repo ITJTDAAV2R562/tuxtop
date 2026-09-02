@@ -325,9 +325,34 @@ process per host, and reads framed `/proc` output from its stdout.
 
 ### Revisit when
 
-An `ssh` binary cannot be assumed — e.g. shipping to a locked-down environment
-without OpenSSH. Then `russh` returns, and `transport.rs` grows a second
-implementation behind the same interface.
+Reviewed 2026-09-02 on the weight argument — one `ssh` process per stream — and
+declined. The measurement, taken on a real `-C -T` connection streaming `/proc`
+frames, is **~10 MB RSS per client**, and there are two streams per host because
+`ProcSampler` opens its own connection and `start_procs` starts one for every
+host rather than the focused one. Nineteen hosts: ~190 MB for the grid, ~380 MB
+with the process view open. Real, and the cheaper half of it is addressed by
+folding the process loop onto the metric connection rather than by changing
+clients.
+
+What russh would buy beyond that is ~1 MB per session, no child processes, and
+typed errors in place of `classify_ssh_error` pattern-matching English on
+stderr. What it would cost is everything under Rationale above becoming ours to
+write — `~/.ssh/config`, `ProxyJump`, `known_hosts`, agent auth against
+`\\.\pipe\openssh-ssh-agent` and Pageant, FIDO keys, certificates, encrypted
+keys — and ~40–60 transitive crates of network-facing crypto against core's four
+direct dependencies. That is the same line drawn in the `tuxtop-serve` note: we
+hand-rolled base64 and refused to hand-roll an HTTP parser.
+
+Three triggers, any one of which reopens this:
+
+1. An `ssh` binary cannot be assumed — e.g. shipping to a locked-down
+   environment without OpenSSH. The original trigger.
+2. Client memory is a real complaint *after* the connection fold has landed.
+3. `classify_ssh_error` misclassifies a reworded OpenSSH message and costs
+   someone real diagnosis time.
+
+Then `russh` returns as a **second** implementation behind the same interface,
+feature-flagged, with the system `ssh` still the default — not a replacement.
 
 ---
 
@@ -773,3 +798,93 @@ host to kill a process is also exactly what ADR-010 forbids.
 unconditional, but it trades a permanent orphan for a sampling gap on every
 host forever. It survives here only as the fallback for the case where the
 watchdog cannot arm, where the alternative is the original bug.
+
+## ADR-014 — One connection per host carries both planes
+
+**Date:** 2026-09-02 · **Status:** accepted · **Supersedes** the separate
+`ProcSampler` connection introduced with the process list
+
+### Context
+
+The process view had its own `ssh` per host. It was started fleet-wide the
+moment anyone opened the view — `start_procs` iterated every host, not the one
+being looked at — so nineteen hosts went from nineteen connections to
+thirty-eight. Measured on a real `-C -T` connection streaming `/proc` frames,
+each client is **~10 MB RSS**: ~190 MB became ~380 MB, on the Windows box
+somebody is using.
+
+The reason recorded in the code was that the ranking needs two snapshots a
+second apart, and taking them inside the metric loop would stall 1 Hz sampling
+for the whole window. Measured, that reason does not hold. On a 32-core host
+with 629 processes the snapshot costs **9.5 ms**; the second is a *window*, not
+work — and the metric loop is already sleeping exactly that window, every
+iteration.
+
+### Decision
+
+One `ssh` per host. The metric loop opens the ranking window on one iteration
+(`i % emit_every == 0`) and closes it on another (`i % emit_every == win_back`),
+so the window is the sleep the loop was already doing. `procs::proc_schedule`
+derives both numbers from the sample interval.
+
+The two planes are told apart on the wire by **two delimiters**, never by their
+line tags.
+
+### Rationale
+
+- **Nineteen fewer processes and ~190 MB of client RSS** with the process view
+  open, and nineteen fewer sshd sessions, TCP connections and auth handshakes
+  on the fleet.
+- **No added remote cost.** It is the same two snapshots per five seconds that
+  the second connection was already taking.
+- **Pause is enforced in one place again.** `start_procs` was the second way a
+  host acquired an ssh connection, and it needed its own `cfg.paused` check —
+  precisely the shape [ADR-012](#adr-012--pause-is-a-third-host-state-and-it-lives-in-hoststoml)
+  warns about. It is gone.
+- **The process list is populated when the view opens**, not five seconds
+  later, because it was already arriving.
+- On Windows the saving is larger: the second connection was a second
+  **PowerShell runtime** resident on the monitored workstation — and, until
+  [ADR-013](#adr-013--a-windows-remote-loop-watches-its-sshd-session-not-its-pipes),
+  a second orphan per launch. One script means the watchdog has one loop to
+  reap rather than two.
+
+### Why two delimiters and not one
+
+Both parsers scan for their own line prefixes and skip everything else, which
+makes a single merged frame look free. It is not. `parse_net_dev` splits on the
+first `:` and `is_whole_disk` is a denylist, so one process command line —
+
+```text
+TXC|1481|/usr/bin/java -Xms512m -Xmx4096m -XX:+UseG1GC -Dserver.port 8080 -Dworkers 16 -jar /opt/app.jar
+```
+
+— parses as a disk named `-Xmx4096m` that read 8080 sectors: **4.1 MB of I/O
+that never happened**, no error, plausible number. That is the failure this
+project was built in response to, so the guard is that the parser never sees
+the line. Verified by test rather than argued: the tags genuinely collide too
+(`TXG|` is a GPU in a metric frame and a cgroup in a process frame).
+
+### Consequences
+
+- **The process plane is always on.** There is no longer a command to switch it
+  off, and `set_processes_enabled` is deleted rather than left as a no-op — a
+  control that cannot change anything looks like a capability. The cost paid by
+  a host nobody is looking at is ~25 ms of remote CPU per five seconds, about
+  0.5% of one core, against 0.016% of a 32-core box.
+- Turning it back into something switchable would mean restarting every metric
+  connection on a view toggle, which blips every card: a fresh `RateTracker`
+  has nothing to differentiate against. The alternative considered was a
+  make-before-break swap, and it was judged more complexity than the saving is
+  worth.
+- Concurrent writers in one remote shell were rejected outright: a metric frame
+  is 12,430 bytes, well over `PIPE_BUF`, so two writers splice mid-frame — and
+  a backgrounded loop that is not writing to stdout never takes `SIGPIPE`, so
+  it outlives the connection on a machine we promised only to observe.
+
+### Revisit when
+
+A host is watched fast enough that 9.5 ms per snapshot stops being noise, or
+somebody wants the process plane genuinely off. The schedule already stretches
+its cadence at slow intervals; making it *stop* needs the make-before-break
+swap above.

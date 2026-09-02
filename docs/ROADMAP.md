@@ -126,7 +126,9 @@ Full spec: **[specs/process-list.md](specs/process-list.md)**.
 - [x] CPU as a percentage of the whole box, stated on screen.
 - [x] Remote ranking - 655 bytes measured against a real 479-process host,
       against 85 KB for shipping `/proc/*/stat` raw.
-- [x] Own SSH channel at its own cadence, started only while the view is open.
+- [x] Its own cadence on the host's **one** SSH connection — it had a second
+      per host, started fleet-wide on view open, at ~10 MB of client RSS each
+      ([ADR-014](DECISIONS.md#adr-014--one-connection-per-host-carries-both-planes)).
 - [x] Kernel threads flagged and hidden behind a toggle.
 - [x] **Full command lines**, as an expandable row in the fleet list rather
       than a separate per-host view — that list already carries the host

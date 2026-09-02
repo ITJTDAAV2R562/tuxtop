@@ -108,8 +108,13 @@ async fn main() -> ExitCode {
     };
 
     let (tx, mut rx) = mpsc::channel(16);
+    // This tool draws one host's metrics. The process plane rides the same
+    // connection now, so it is accepted and dropped rather than left with no
+    // receiver at all, which would stall the pump on a full channel.
+    let (ptx, mut prx) = mpsc::channel(4);
+    tokio::spawn(async move { while prx.recv().await.is_some() {} });
     let traffic = std::sync::Arc::new(tuxtop_core::TrafficCounter::new());
-    let sampler = match SshSampler::start(cfg.clone(), args.interval, tx, traffic.clone()) {
+    let sampler = match SshSampler::start(cfg.clone(), args.interval, tx, ptx, traffic.clone()) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("could not launch ssh: {e}");

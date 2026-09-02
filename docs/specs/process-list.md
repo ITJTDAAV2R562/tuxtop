@@ -41,15 +41,29 @@ still reads high. For a task manager that is not an approximation, it is the
 wrong number — so CPU comes from a delta of `utime + stime` in
 `/proc/[pid]/stat` across a known interval.
 
-### Why a separate channel
+### Why it is not a separate channel — superseded 2026-09-02
 
-Process sampling needs two snapshots separated by a real interval. Doing that
-inside the metric loop would stall the 1 Hz sampling by however long the
-process window takes.
+Process sampling needs two snapshots separated by a real interval, and for a
+while that was taken as a reason to give it its own SSH channel: taking them
+inside the metric loop would stall 1 Hz sampling for however long the window
+lasts.
 
-So processes run on their **own SSH channel, on a slower cadence, started only
-while the view is open**. A view nobody is looking at costs nothing — which is
-also what makes fleet-wide affordable.
+Measured, that reasoning was wrong, and the correction is
+[ADR-014](../DECISIONS.md#adr-014--one-connection-per-host-carries-both-planes).
+The snapshot costs **9.5 ms** on a 32-core host with 629 processes. The second
+was a *window*, not work — and the metric loop is already sleeping exactly that
+window every iteration. The separate channel was paying for a `sleep` twice, at
+~10 MB of client RSS per host, on every host in the fleet rather than the one
+being looked at.
+
+So the ranking now opens its window on one metric iteration and closes it on
+another, over the host's single connection. The two planes are kept apart on
+the wire by two frame delimiters, never by their line tags — see the ADR for
+the fabricated disk reading that rule exists to prevent.
+
+The consequence is that it is always on: ~25 ms of remote CPU per five seconds,
+and the list is already there when the view opens rather than five seconds
+later.
 
 ---
 

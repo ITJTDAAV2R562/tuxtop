@@ -7,14 +7,13 @@
 
 use std::collections::HashMap;
 use std::sync::Mutex;
-use std::time::Duration;
 
 use std::sync::{Arc, Weak};
 
 use crate::fleet::{watch_host, HostEvent};
 use crate::history_store::HistoryStore;
 use crate::procs::{CgroupUsage, ProcInfo, UnitRestarts};
-use crate::{HostConfig, HostFault, ProcSampler, Sample, TrafficCounter, TrafficStats};
+use crate::{HostConfig, HostFault, Sample, TrafficCounter, TrafficStats};
 use tokio::sync::mpsc;
 
 /// What the supervisor tells whoever is listening.
@@ -40,21 +39,6 @@ pub enum Event {
     SettingsChanged(crate::hostlist::Settings),
 }
 
-/// How many processes each host ranks and returns.
-const PROC_TOP_N: usize = 20;
-/// The window the CPU delta is measured over.
-const PROC_WINDOW_MS: u32 = 1000;
-/// Milliseconds between process samples. Slower than metrics on purpose: a
-/// process list is read, not watched, and each sample costs a second of remote
-/// wall clock inside its own window.
-///
-/// Named in milliseconds because milliseconds is what `ProcSampler::start`
-/// takes. This was `PROC_INTERVAL_SECS = 5` passed straight into that function's
-/// `interval_ms` parameter, so five seconds became five milliseconds: a 200 Hz
-/// WMI poll on every Windows host in the fleet. The Linux path floors the
-/// interval at 1 Hz and so absorbed it; the Windows path had no floor.
-const PROC_INTERVAL_MS: u32 = 5_000;
-
 pub struct Supervisor {
     /// Where samples are recorded. Held directly rather than looked up out of
     /// a framework's state bag.
@@ -75,8 +59,6 @@ pub struct Supervisor {
     traffic: Mutex<HashMap<String, Arc<TrafficCounter>>>,
     // The interval each host is currently sampling at, for the meter.
     intervals: Mutex<HashMap<String, u32>>,
-    // Process samplers, present only while the view is open.
-    procs: Mutex<HashMap<String, tokio::task::JoinHandle<()>>>,
     // Latest ranking per host, merged into one fleet list on read.
     latest: Mutex<HashMap<String, Vec<ProcInfo>>>,
     // Latest cgroup accounting per host, keyed the same way.
@@ -107,7 +89,6 @@ impl Supervisor {
             tasks: Mutex::new(HashMap::new()),
             traffic: Mutex::new(HashMap::new()),
             intervals: Mutex::new(HashMap::new()),
-            procs: Mutex::new(HashMap::new()),
             latest: Mutex::new(HashMap::new()),
             cgroups: Mutex::new(HashMap::new()),
             restarts: Mutex::new(HashMap::new()),
@@ -193,42 +174,9 @@ impl Supervisor {
     pub fn forget(&self, name: &str) {
         self.traffic.lock().unwrap().remove(name);
         self.intervals.lock().unwrap().remove(name);
-        self.stop_procs_for(name);
         self.latest.lock().unwrap().remove(name);
         self.cgroups.lock().unwrap().remove(name);
         self.restarts.lock().unwrap().remove(name);
-    }
-
-    /// Begin process sampling on every host.
-    ///
-    /// Paused hosts are stopped and skipped, for the same reason `start` skips
-    /// them: this is the other way a host acquires an ssh connection, and pause
-    /// means no connection.
-    pub fn start_procs(self: &Arc<Self>, hosts: Vec<HostConfig>) {
-        for cfg in hosts {
-            self.stop_procs_for(&cfg.name);
-            if cfg.paused {
-                continue;
-            }
-            let name = cfg.name.clone();
-            let me = Arc::downgrade(self);
-            let handle = self.rt.spawn(watch_procs(me, cfg));
-            self.procs.lock().unwrap().insert(name, handle);
-        }
-    }
-
-    /// Stop sampling everywhere. A view nobody is looking at costs nothing.
-    pub fn stop_procs(&self) {
-        let mut map = self.procs.lock().unwrap();
-        for (_, h) in map.drain() {
-            h.abort();
-        }
-    }
-
-    fn stop_procs_for(&self, name: &str) {
-        if let Some(h) = self.procs.lock().unwrap().remove(name) {
-            h.abort();
-        }
     }
 
     pub fn record_procs(
@@ -302,43 +250,6 @@ impl Supervisor {
     }
 }
 
-/// One host's process sampler, restarted with backoff if the channel drops.
-async fn watch_procs(sup: Weak<Supervisor>, cfg: HostConfig) {
-    loop {
-        let (tx, mut rx) = mpsc::channel(4);
-        let sampler = match ProcSampler::start(
-            cfg.clone(),
-            PROC_TOP_N,
-            PROC_WINDOW_MS,
-            PROC_INTERVAL_MS,
-            tx,
-        ) {
-            Ok(s) => s,
-            Err(_) => {
-                tokio::time::sleep(Duration::from_secs(10)).await;
-                continue;
-            }
-        };
-
-        while let Some(frame) = rx.recv().await {
-            // The supervisor is gone: nobody is watching this fleet any more.
-            let Some(s) = sup.upgrade() else { return };
-            s.record_procs(&cfg.name, frame.procs, frame.cgroups, frame.restarts);
-            // The consumer pulls the list; this only says it changed.
-            if s.events
-                .send(Event::Processes(cfg.name.clone()))
-                .await
-                .is_err()
-            {
-                return;
-            }
-        }
-
-        sampler.stop().await;
-        tokio::time::sleep(Duration::from_secs(5)).await;
-    }
-}
-
 /// One cgroup, tagged with the host it lives on.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct HostCgroup {
@@ -391,6 +302,13 @@ async fn watch(
                     Event::Sample(sample)
                 }
                 HostEvent::Fault(fault) => Event::Fault { host, fault },
+                HostEvent::Processes(frame) => {
+                    // Recorded before announcing, for the reason a sample is:
+                    // the consumer pulls the list, so it must already be there
+                    // when the name arrives.
+                    s.record_procs(&host, frame.procs, frame.cgroups, frame.restarts);
+                    Event::Processes(host)
+                }
             };
             if s.events.send(out).await.is_err() {
                 return; // nobody is listening; nothing left to feed

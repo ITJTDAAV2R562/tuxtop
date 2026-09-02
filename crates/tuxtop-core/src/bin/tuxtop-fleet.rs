@@ -170,6 +170,9 @@ async fn main() -> ExitCode {
                         s.cpu = sample.cpu;
                         s.last = Some(Instant::now());
                     }
+                    // Rides the same connection; this tool measures the
+                    // metric plane, so it is counted and not printed.
+                    HostEvent::Processes(_) => {}
                     HostEvent::Fault(f) => {
                         let text = format!("{f:?}");
                         println!("{:>6.1}s  !! {host} {text}", started.elapsed().as_secs_f32());

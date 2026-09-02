@@ -162,9 +162,6 @@ async fn command(
             .set_host_paused(&s("name"), arg("paused").as_bool().unwrap_or(false))
             .map(|v| json!(v)),
         "traffic_stats" => Ok(json!(svc.traffic_stats())),
-        "set_processes_enabled" => svc
-            .set_processes_enabled(arg("enabled").as_bool().unwrap_or(false))
-            .map(|_| Value::Null),
         "process_list" => Ok(json!(svc.process_list())),
         "cgroup_list" => Ok(json!(svc.cgroup_list())),
         "history_usage" => Ok(json!(svc.history_usage())),

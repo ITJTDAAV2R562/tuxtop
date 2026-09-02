@@ -149,10 +149,11 @@ attached to the question people actually ask.
 
 ## Cadence
 
-Not the 1 Hz stream. Ownership and cgroup sweeps ride the **process channel**
-at its existing 5 s cadence, and only while the Processes view is open —
-sampling nobody is looking at should cost nothing, which is already how
-`set_processes_enabled` works.
+Not the 1 Hz stream. Ownership and cgroup sweeps ride the **process frame** at
+its 5 s cadence, which since the connection fold arrives on the host's one ssh
+connection rather than a second one opened when the view opens. There is no
+longer anything to switch on: `set_processes_enabled` is gone, and the ~10 ms
+per five seconds is paid whether or not anyone is looking.
 
 Restart counts are slower still: a unit that restarts is news for hours, so
 once a minute is generous. Fetch on view open and on a slow timer.
