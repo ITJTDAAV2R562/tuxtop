@@ -16,6 +16,7 @@
           machine, machineLabel, stealIsMeaningful } = TuxPick;
   const { matchesHost, matchesProcess } = TuxFilter;
   const { heatRow, coverage, heatOrder, groupBreaks, ramp, mixHex } = TuxHeat;
+  const { shouldNotify } = TuxVersion;
 
   const $ = s => document.querySelector(s);
   const grid = $('#grid');
@@ -2995,6 +2996,8 @@
         $('#s-interval').value = String(s.interval_ms);
         $('#s-cap').value = String(s.history_cap_mb);
         $('#s-ontop').checked = !!s.always_on_top;
+        $('#s-update').checked = !!s.update_check;
+        $('#updStatus').textContent = updateStatusText(s.update_check);
       } catch (e) { showError(String(e)); }
     }
     perHostRows();
@@ -3023,10 +3026,15 @@
     if (e.submitter && e.submitter.value !== 'save') return;
     if (!LIVE) return;
     try {
+      // Every field, named. This object replaces the stored settings
+      // wholesale, so one left out is not "unchanged" - it is dropped, and
+      // comes back as its default on the next load. That is how turning the
+      // update check off would have silently turned itself back on.
       await TAURI.core.invoke('set_settings', { settings: {
         interval_ms: +$('#s-interval').value,
         history_cap_mb: +$('#s-cap').value,
         always_on_top: $('#s-ontop').checked,
+        update_check: $('#s-update').checked,
       }});
     } catch (err) { showError(String(err)); }
   });
@@ -3404,11 +3412,175 @@
     </div>`;
   }
 
+  // ---- update check ----
+  //
+  // The only thing in this app that reaches anywhere other than the fleet, and
+  // the only reason it has a setting. Three rules hold it in place:
+  //
+  //   nothing is automatic beyond the check itself - the check can do no more
+  //   than raise a banner, and the download starts when a button is pressed;
+  //
+  //   a failure is never a banner. Offline, rate-limited or behind a proxy is
+  //   the normal state of an isolated fleet, and interrupting someone to tell
+  //   them we could not reach GitHub would be noise. It is logged and shown in
+  //   Settings, which is where you go when you want to know;
+  //
+  //   a dismissal is per version, so dismissing 0.6.0 does not also silence
+  //   0.6.1. TuxVersion.shouldNotify owns that rule and is tested.
+  const RELEASES = 'https://github.com/ITJTDAAV2R562/tuxtop/releases';
+
+  /// What the last check found, for the Settings dialog to report. Null until
+  /// one has run.
+  let updateState = null;
+  /// The Metadata handle from the plugin, needed to start a download.
+  let updateMeta = null;
+
+  function showUpdate(meta) {
+    $('#updVersion').textContent = meta.version;
+    $('#updCurrent').textContent = meta.currentVersion;
+    // A Channel is how the plugin reports download progress. It is part of the
+    // core API, so withGlobalTauri provides it - but if a future Tauri moves
+    // it, installing would fail at the click with no explanation. Better to
+    // offer only what we can actually do.
+    $('#updInstall').hidden = !(TAURI && TAURI.core && TAURI.core.Channel);
+    $('#updNote').hidden = false;
+  }
+
+  async function checkForUpdate() {
+    if (!LIVE) return;
+    try {
+      const s = await TAURI.core.invoke('get_settings');
+      if (!s.update_check) { updateState = { state: 'off' }; return; }
+    } catch (e) {
+      // Reading settings failing is a real fault, but not this feature's to
+      // report - the rest of the app surfaces it. Skip the check.
+      console.error('update check: could not read settings', e);
+      updateState = { state: 'error', detail: String(e) };
+      return;
+    }
+    try {
+      const meta = await TAURI.core.invoke('plugin:updater|check');
+      if (!meta) { updateState = { state: 'current', at: Date.now() }; return; }
+      updateMeta = meta;
+      updateState = { state: 'available', at: Date.now(), version: meta.version };
+      if (shouldNotify(meta.currentVersion, meta.version, prefs.updDismissed)) {
+        showUpdate(meta);
+      }
+    } catch (e) {
+      // Deliberately quiet in the UI and loud in the log: see the note above.
+      console.error('update check failed', e);
+      updateState = { state: 'error', at: Date.now(), detail: String(e) };
+    }
+  }
+
+  /// What to say in Settings about the last check.
+  ///
+  /// This exists because the check is deliberately quiet: a failure raises no
+  /// banner, so without somewhere to read the outcome a permanently broken
+  /// check would look exactly like a fleet that is always up to date. That is
+  /// the silent-wrong-answer shape this project exists to avoid.
+  function updateStatusText(enabled) {
+    if (!enabled) return 'Not checking. Tuxtop makes no request of its own.';
+    if (!updateState) return 'Not checked yet.';
+    switch (updateState.state) {
+      case 'off': return 'Not checking. Tuxtop makes no request of its own.';
+      case 'current': return `Up to date as of the last check.`;
+      case 'available': return `${updateState.version} is available.`;
+      case 'error': return `Last check failed: ${updateState.detail}`;
+      default: return 'Not checked yet.';
+    }
+  }
+
+  $('#s-update').addEventListener('change', async e => {
+    if (!LIVE) return;
+    try {
+      const s = await TAURI.core.invoke('get_settings');
+      await TAURI.core.invoke('set_settings', {
+        settings: { ...s, update_check: e.target.checked },
+      });
+      $('#updStatus').textContent = updateStatusText(e.target.checked);
+    } catch (err) { showError(String(err)); }
+  });
+
+  $('#updCheckNow').addEventListener('click', async () => {
+    const btn = $('#updCheckNow');
+    btn.disabled = true;
+    $('#updStatus').textContent = 'Checking...';
+    try {
+      // Asked for explicitly, so it runs even when the launch check is off -
+      // pressing a button labelled "Check now" and having nothing happen is
+      // worse than the request it avoids.
+      const meta = await TAURI.core.invoke('plugin:updater|check');
+      if (meta) {
+        updateMeta = meta;
+        updateState = { state: 'available', at: Date.now(), version: meta.version };
+        showUpdate(meta);
+      } else {
+        updateState = { state: 'current', at: Date.now() };
+      }
+    } catch (e) {
+      console.error('update check failed', e);
+      updateState = { state: 'error', at: Date.now(), detail: String(e) };
+    }
+    $('#updStatus').textContent = updateStatusText(true);
+    btn.disabled = false;
+  });
+
+  $('#updDismiss').addEventListener('click', () => {
+    if (updateMeta) { prefs.updDismissed = updateMeta.version; savePrefs(); }
+    $('#updNote').hidden = true;
+  });
+
+  $('#updPage').addEventListener('click', async () => {
+    if (!LIVE) return;
+    try {
+      await TAURI.core.invoke('plugin:opener|open_url', { url: RELEASES });
+    } catch (e) { showError(`Could not open ${RELEASES}: ${e}`); }
+  });
+
+  $('#updInstall').addEventListener('click', async () => {
+    if (!LIVE || !updateMeta) return;
+    const note = $('#updProgress');
+    // The app exits partway through this on Windows - the installer replaces a
+    // running binary - so say so before it happens rather than looking like a
+    // crash. Every ssh session goes with it and comes back on relaunch.
+    note.textContent = 'Downloading the update. Tuxtop will close and reopen to finish installing.';
+    note.hidden = false;
+    $('#updInstall').disabled = true;
+    try {
+      const ch = new TAURI.core.Channel();
+      let total = 0, got = 0;
+      ch.onmessage = ev => {
+        if (!ev || !ev.event) return;
+        if (ev.event === 'Started') { total = (ev.data && ev.data.contentLength) || 0; got = 0; }
+        else if (ev.event === 'Progress') {
+          got += (ev.data && ev.data.chunkLength) || 0;
+          note.textContent = total
+            ? `Downloading ${Math.round(got / total * 100)}% - Tuxtop will close and reopen to finish.`
+            : 'Downloading the update...';
+        } else if (ev.event === 'Finished') {
+          note.textContent = 'Installing. Tuxtop will close and reopen.';
+        }
+      };
+      await TAURI.core.invoke('plugin:updater|download_and_install',
+                              { rid: updateMeta.rid, onEvent: ch });
+    } catch (e) {
+      // This one *is* worth interrupting for: the user asked for it and it did
+      // not happen, so failing quietly would leave them believing it did.
+      $('#updInstall').disabled = false;
+      note.hidden = true;
+      showError(`Update failed: ${e}. Download it from ${RELEASES} instead.`);
+    }
+  });
+
   addEventListener('unhandledrejection', e => fatal('Startup failed', e.reason));
   addEventListener('error', e => fatal('Script error', e.error || e.message));
 
   if (LIVE) {
     startLive().catch(err => fatal('Could not start live monitoring', err));
+    // After the fleet, never before it: a slow or hanging request must not
+    // delay the grid, which is the thing the app was opened to look at.
+    checkForUpdate();
   } else {
     startSim();
   }

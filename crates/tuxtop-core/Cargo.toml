@@ -4,7 +4,7 @@ version = "0.5.1"
 edition = "2021"
 description = "Sampling, parsing and rate maths for Tuxtop. No GUI dependency."
 license = "MIT"
-repository = "https://github.com/UZ1sFED3yS/tuxtop"
+repository = "https://github.com/ITJTDAAV2R562/tuxtop"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

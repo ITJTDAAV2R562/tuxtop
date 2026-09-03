@@ -35,6 +35,12 @@ allow = [
     "Unlicense",
     "BSL-1.0",
     "OpenSSL",
+    # The Mozilla CA root bundle (webpki-root-certs), reached through rustls ->
+    # reqwest -> tauri-plugin-updater. CDLA-Permissive-2.0 is a *data* licence
+    # rather than a code one, which is what a list of certificates is; it is
+    # permissive, carries no copyleft and no attribution requirement that would
+    # follow the binary. Allowed on that basis, not because it was in the way.
+    "CDLA-Permissive-2.0",
 ]
 confidence-threshold = 0.8
 # The allow list carries licences this tree does not currently pull. That is

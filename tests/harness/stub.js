@@ -42,7 +42,15 @@
     ],
   };
 
-  const settings = { interval_ms: 1000, history_cap_mb: 256, always_on_top: false };
+  const settings = { interval_ms: 1000, history_cap_mb: 256, always_on_top: false,
+                     update_check: true };
+
+  /// What `plugin:updater|check` answers with.
+  ///
+  /// Null means up to date, which is the default so the suite is not staring
+  /// at an update banner in every unrelated test. A spec that wants the banner
+  /// sets window.__stubUpdate before loading the page.
+  const stubUpdate = () => (window.__stubUpdate ?? null);
   const emit = (ev, payload) => (listeners[ev] || []).forEach(f => f({ payload }));
 
   const sample = (name, nCores) => ({
@@ -124,7 +132,20 @@
 
   window.__TAURI__ = {
     core: {
+      /// Tauri's IPC channel, as much of it as the updater's progress
+      /// reporting uses. Real one lives in @tauri-apps/api/core.
+      Channel: class { constructor() { this.onmessage = () => {}; } },
       invoke: async (cmd, args) => {
+        // Plugin IPC, same names the real plugins register.
+        if (cmd === 'plugin:updater|check') return stubUpdate();
+        if (cmd === 'plugin:updater|download_and_install') {
+          window.__stubInstalled = true;
+          return null;
+        }
+        if (cmd === 'plugin:opener|open_url') {
+          window.__stubOpened = args.url;
+          return null;
+        }
         if (cmd === 'list_hosts') return structuredClone(hosts);
         if (cmd === 'add_host') {
           const cfg = args.cfg;

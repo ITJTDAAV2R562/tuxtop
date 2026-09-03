@@ -79,6 +79,20 @@
     <button class="btn primary" id="addBtn">Add host</button>
   </div>
 
+  <div class="update-note" id="updNote" role="status" hidden>
+    <span class="update-text">
+      Tuxtop <b id="updVersion"></b> is available &mdash; you are running
+      <b id="updCurrent"></b>.
+    </span>
+    <span class="update-actions">
+      <button class="btn primary" id="updInstall">Install and restart</button>
+      <button class="btn ghost" id="updPage">Release notes</button>
+      <button class="btn ghost update-x" id="updDismiss"
+              aria-label="Dismiss this update notice">&times;</button>
+    </span>
+  </div>
+  <p class="update-note update-progress" id="updProgress" role="status" hidden></p>
+
   <p class="filter-note" id="filterNote" hidden></p>
 
   <p class="cadence-note" id="cadNote">Sampling at the Beszel agent's cadence &mdash; the grid now refreshes once a minute. This is the lag the direct <code>/proc/stat</code> path removes.</p>
@@ -171,6 +185,19 @@
       </span>
     </label>
 
+    <label class="checkfield">
+      <input type="checkbox" id="s-update">
+      <span>
+        Check for updates at launch
+        <em>One request to GitHub when Tuxtop starts &mdash; the only thing it
+          asks of anywhere other than your fleet. Nothing installs itself: a
+          newer release raises a notice you can dismiss, and the download runs
+          when you press the button. Turn this off on an isolated network.</em>
+      </span>
+    </label>
+    <p class="hint" id="updStatus"></p>
+    <p><button class="btn ghost" id="updCheckNow" type="button">Check now</button></p>
+
     <details class="perhost" open>
       <summary>Per-host interval, group and pause</summary>
       <table class="meter-table">
@@ -243,6 +270,7 @@
 <script src="filter.js" charset="utf-8"></script>
 <script src="agg.js" charset="utf-8"></script>
 <script src="heat.js" charset="utf-8"></script>
+<script src="version.js" charset="utf-8"></script>
 <!-- Installs a fetch/SSE backend only when neither Tauri nor the test stub has. -->
 <script src="http.js" charset="utf-8"></script>
 <script src="app.js" charset="utf-8"></script>

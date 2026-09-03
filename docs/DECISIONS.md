@@ -888,3 +888,103 @@ A host is watched fast enough that 9.5 ms per snapshot stops being noise, or
 somebody wants the process plane genuinely off. The schedule already stretches
 its cadence at slow intervals; making it *stop* needs the make-before-break
 swap above.
+
+---
+
+## ADR-015 — The app asks GitHub about updates, and installs nothing on its own
+
+**Date:** 2026-09-03 · **Status:** accepted
+
+### Context
+
+Until now Tuxtop made no outbound connection of its own at all. It shells out
+to `ssh` for the hosts you listed ([ADR-007](#adr-007--shell-out-to-the-system-ssh-dont-link-an-ssh-library)),
+and nothing else. `beszel_url` is stored in `hosts.toml` and round-tripped, but
+[ADR-009](#adr-009--we-own-history-beszel-is-optional-enrichment) closed with
+nothing to build, so it has never been fetched. There was no HTTP client in the
+tree: `tuxtop-core` is serde, toml and tokio.
+
+That is a property worth naming before spending it. Everything this app talks
+to is a machine the user named in a config file. Adding an update check makes
+it talk to somewhere they did not.
+
+Against that: a monitoring tool silently running a build from six months ago is
+its own hazard, and the installers are unsigned and downloaded by hand, so
+there is no OS mechanism that would ever tell anyone a new one exists.
+
+### Decision
+
+The app checks GitHub for a newer release **once per launch**, and can do
+nothing else on its own.
+
+- **The check is a setting.** `[settings] update_check`, default `true`. Set it
+  false and the app makes no request of its own, ever. An isolated fleet is a
+  normal deployment for this tool, not an edge case.
+- **A newer release raises a dismissable notice and nothing more.** No
+  download starts, no version changes, until somebody presses the button.
+  Dismissal is recorded **per version**, so dismissing 0.6.0 does not silence
+  0.6.1 — `TuxVersion.shouldNotify` owns that rule and is tested.
+- **A failed check is silent in the UI and loud in the log.** Offline,
+  proxied or rate-limited is the ordinary condition of an isolated fleet;
+  interrupting someone on every launch to say so trains them to dismiss the
+  notice that matters. Settings reports the last outcome, which is where you
+  look when you want to know — without that, a permanently broken check is
+  indistinguishable from a fleet that is always current, which is this
+  project's founding failure in miniature.
+- **The check runs after the fleet starts**, never before, so a hanging
+  request cannot delay the grid.
+
+### The signature, which is not the other signature
+
+The updater downloads an installer and runs it. Unverified, that is remote
+code execution by design, so the update artifacts are signed with a **minisign
+keypair**: public half in `tauri.conf.json`, private half and its password in
+the repository's Actions secrets, and the release job fails if the `.sig` did
+not appear.
+
+This is **not** Authenticode. Code signing stays declined for the reasons in
+`CLAUDE.md` under *Releasing* — SmartScreen still warns on first run of a
+manually downloaded installer. The two are unrelated mechanisms that happen to
+share the word: one proves the update came from this release pipeline, the
+other buys a warning-free first launch from Microsoft. We have the first
+because it is free and load-bearing; we still decline the second.
+
+**Losing the private key is unrecoverable.** Installed copies trust only the
+public key compiled into them, so a lost key means no existing install can ever
+update again — a re-key requires everyone to reinstall by hand.
+
+### Consequences
+
+`src-tauri` gains reqwest and rustls through the updater plugin, and the opener
+plugin for the release-notes link: **435 crates to 521**, +86. That is a real
+increase, and it lands entirely in the shell — `tuxtop-core` is untouched at 68
+and still builds and tests anywhere, which is the property ADR-006 exists to
+protect. `cargo audit` reports no new advisories; the seventeen unmaintained
+GTK warnings are the same seventeen as before.
+
+One licence exception followed: `webpki-root-certs`, the Mozilla CA bundle
+rustls uses, is CDLA-Permissive-2.0. That is a *data* licence — which is what a
+list of certificates is — permissive, with no copyleft and no attribution that
+follows the binary. Allowed in `deny.toml` with that reasoning recorded.
+
+The opener is **scoped** in `capabilities/default.json` to this repository's
+releases URL. An unscoped opener would let anything in the webview launch a
+browser at any address.
+
+`tuxtop-serve` gets none of this. It is a tarball on a Linux box, updated the
+way tarballs are.
+
+### Rejected
+
+**Notify only, with a link and no in-app install.** Tempting as the smaller
+surface, but it is not actually smaller: it still needs an HTTP client, so the
+dependency weight is nearly the same, and it gets no signature verification for
+it. The link exists anyway, as the fallback when an install fails.
+
+**Checking periodically while the window is open.** This is a seeing tool, not
+a watching one; it is not meant to run unattended, so a release landing
+mid-session is not a case worth a recurring outbound request.
+
+**Silent background updates.** Never considered seriously. The app exits
+partway through a Windows install, taking every ssh session with it. Deciding
+when that happens belongs to the person watching the fleet.

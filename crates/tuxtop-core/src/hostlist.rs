@@ -177,6 +177,18 @@ pub struct Settings {
     /// alt-tab to is half useless.
     #[serde(default)]
     pub always_on_top: bool,
+    /// Ask GitHub once per launch whether a newer release exists.
+    ///
+    /// This is the only thing the app does that reaches anywhere other than
+    /// the fleet, which is why it is a setting at all: everything else here
+    /// talks to hosts you listed. An isolated deployment sets it false and the
+    /// app makes no outbound connection of its own ever again.
+    ///
+    /// It governs the *check* only. Nothing installs itself: the check can do
+    /// no more than raise a dismissable banner, and the download runs when
+    /// somebody presses the button.
+    #[serde(default = "default_update_check")]
+    pub update_check: bool,
 }
 
 /// One second: the rate this shipped with, and still the sensible default.
@@ -192,12 +204,19 @@ fn default_history_mb() -> u32 {
     256
 }
 
+/// On by default: a monitoring tool that silently runs a stale build is worse
+/// than one outbound request per launch. Turn it off for an isolated fleet.
+fn default_update_check() -> bool {
+    true
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
             interval_ms: default_interval_ms(),
             interval_secs: None,
             history_cap_mb: default_history_mb(),
+            update_check: default_update_check(),
             always_on_top: false,
         }
     }
@@ -561,6 +580,9 @@ mod settings_tests {
                 interval_secs: None,
                 history_cap_mb: 512,
                 always_on_top: true,
+                // Non-default on purpose: a setting that does not survive the
+                // round trip is one the user turns off and finds back on.
+                update_check: false,
             },
             hosts: vec![host("dove", None), host("heron", Some(30))],
         };
@@ -600,9 +622,7 @@ mod settings_tests {
     fn a_host_without_an_override_follows_the_global_interval() {
         let s = Settings {
             interval_ms: 10000,
-            interval_secs: None,
-            history_cap_mb: 256,
-            always_on_top: false,
+            ..Settings::default()
         };
         assert_eq!(effective_interval_ms(&host("dove", None), &s), 10_000);
     }
@@ -611,9 +631,7 @@ mod settings_tests {
     fn a_per_host_override_wins() {
         let s = Settings {
             interval_ms: 10000,
-            interval_secs: None,
-            history_cap_mb: 256,
-            always_on_top: false,
+            ..Settings::default()
         };
         assert_eq!(effective_interval_ms(&host("dove", Some(1_000)), &s), 1_000);
     }
@@ -623,9 +641,7 @@ mod settings_tests {
         // Zero would spin the remote loop as fast as sh can fork.
         let s = Settings {
             interval_ms: 1000,
-            interval_secs: None,
-            history_cap_mb: 256,
-            always_on_top: false,
+            ..Settings::default()
         };
         assert_eq!(
             effective_interval_ms(&host("dove", Some(0)), &s),

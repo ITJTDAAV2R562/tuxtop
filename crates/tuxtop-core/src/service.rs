@@ -134,6 +134,7 @@ impl Service {
             interval_secs: None,
             history_cap_mb: settings.history_cap_mb.clamp(MIN_CAP_MB, MAX_CAP_MB),
             always_on_top: settings.always_on_top,
+            update_check: settings.update_check,
         };
         self.config.save_file(&f)?;
         self.history.set_cap_mb(f.settings.history_cap_mb);
@@ -448,13 +449,33 @@ mod tests {
         let out = s
             .set_settings(Settings {
                 interval_ms: 99_999_999,
-                interval_secs: None,
                 history_cap_mb: 1,
-                always_on_top: false,
+                ..Settings::default()
             })
             .unwrap();
         assert_eq!(out.interval_ms, MAX_INTERVAL_MS);
         assert_eq!(out.history_cap_mb, MIN_CAP_MB);
+        let _ = std::fs::remove_file(p);
+    }
+
+    #[tokio::test]
+    async fn turning_the_update_check_off_survives_a_save() {
+        // `set_settings` rebuilds the struct field by field so it can clamp,
+        // which means anything it forgets to name is dropped on every save -
+        // silently, and only noticed by whoever set it and found it back on.
+        // This is the guard for that shape of bug, not for this field alone.
+        let (s, _rx, p) = svc("update-check");
+        let out = s
+            .set_settings(Settings {
+                update_check: false,
+                ..Settings::default()
+            })
+            .unwrap();
+        assert!(!out.update_check, "the value returned to the caller");
+        assert!(
+            !s.get_settings().unwrap().update_check,
+            "and the value read back from disk"
+        );
         let _ = std::fs::remove_file(p);
     }
 
@@ -504,9 +525,7 @@ mod tests {
 
         s.set_settings(Settings {
             interval_ms: 5_000,
-            interval_secs: None,
-            history_cap_mb: 256,
-            always_on_top: false,
+            ..Settings::default()
         })
         .unwrap();
 

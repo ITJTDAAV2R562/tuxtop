@@ -14,7 +14,7 @@ anything across restarts, or tell anyone when something breaks. Those are jobs
 for Uptime Kuma, Pulse or Proxmox, and they are deliberately out of scope.
 
 > **Status: released.**
-> [**v0.5.1**](https://github.com/UZ1sFED3yS/tuxtop/releases/latest) ships a
+> [**v0.5.1**](https://github.com/ITJTDAAV2R562/tuxtop/releases/latest) ships a
 > Windows installer and a headless Linux server. Twelve phases are done — live
 > grid, history, processes, host facts, groups, Windows hosts, the Heat view.
 > What is still open is in [docs/ROADMAP.md](docs/ROADMAP.md).
@@ -105,7 +105,7 @@ severity comes from the worst member
 
 ## Install
 
-**[Latest release](https://github.com/UZ1sFED3yS/tuxtop/releases/latest)**
+**[Latest release](https://github.com/ITJTDAAV2R562/tuxtop/releases/latest)**
 
 ### Windows desktop app
 
@@ -186,6 +186,18 @@ monitoring tool has no business spending a watched machine's CPU.
 
 Authentication is delegated to the Windows OpenSSH agent or Pageant. Tuxtop
 never reads a private key, stores a credential, or prompts for a passphrase.
+
+**Updates are offered, never applied.** Once per launch the app asks GitHub
+whether a newer release exists. If one does you get a dismissable notice — and
+nothing else happens until you press Install, at which point the update is
+downloaded, its signature checked, and the app closes and reopens to finish.
+Dismissing is remembered per version, so it stays quiet about that release and
+speaks up about the next.
+
+This is the only thing Tuxtop asks of anywhere other than the hosts you listed.
+`update_check = false` turns it off and the app makes no request of its own,
+ever, which is the right setting for an isolated network
+([ADR-015](docs/DECISIONS.md#adr-015--the-app-asks-github-about-updates-and-installs-nothing-on-its-own)).
 
 ---
 
@@ -270,8 +282,8 @@ own go in `hosts.toml`, which is gitignored — see
 ## Testing
 
 ```sh
-cargo test                              # 269 tests, no GUI toolchain needed
-node --test 'tests/*.test.js'           # 88 tests: aggregation, scale, heat
+cargo test                              # 270 tests, no GUI toolchain needed
+node --test 'tests/*.test.js'           # 101 tests: aggregation, scale, heat
 npx playwright test                     # layout, load order, controls
 bash scripts/verify.sh                  # everything CI runs, locally
 ```

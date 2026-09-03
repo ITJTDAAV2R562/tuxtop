@@ -102,7 +102,19 @@ jobs:
 
       # Run from the repo root: the CLI finds src-tauri/tauri.conf.json by its
       # own convention, and that config points frontendDist at ../src.
+      # The signing key is what makes the updater safe to have at all: it
+      # downloads an installer and runs it, so an unverified one would be
+      # remote code execution by design. Without these variables the bundler
+      # still produces installers but no .sig files, and every client rejects
+      # the update - which is the correct failure, but a silent one at release
+      # time, so the step below checks the signatures actually appeared.
+      #
+      # This is *not* Authenticode. Code signing stays declined (CLAUDE.md,
+      # "Releasing"); SmartScreen will still warn on first run.
       - name: Build installer
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: npx tauri build
 
       # Named by hand rather than globbed into the release, so a bundle that
@@ -128,6 +140,16 @@ jobs:
           if (-not $exe) { throw 'no NSIS -setup.exe was produced' }
           Copy-Item $msi "dist/tuxtop-$env:VERSION-x64.msi"
           Copy-Item $exe "dist/tuxtop-$env:VERSION-x64-setup.exe"
+
+          # The updater installs the NSIS build, so its signature is the one
+          # that has to exist. A missing .sig is not a broken build - it is a
+          # release every installed copy will silently refuse to update to,
+          # which is far more expensive to discover later than here.
+          $sig = "$($exe.FullName).sig"
+          if (-not (Test-Path $sig)) {
+            throw "no .sig beside $($exe.Name) - was TAURI_SIGNING_PRIVATE_KEY set?"
+          }
+          Copy-Item $sig "dist/tuxtop-$env:VERSION-x64-setup.exe.sig"
           Get-ChildItem dist | ForEach-Object {
             '{0}  {1:N1} MB' -f $_.Name, ($_.Length / 1MB)
           }
@@ -200,8 +222,35 @@ jobs:
           path: dist
           merge-multiple: true
 
-      # Checksums, because these binaries are unsigned. Someone who wants to
-      # verify what they downloaded has no certificate to check against.
+      # The manifest the updater actually reads. Without it the endpoint in
+      # tauri.conf.json 404s and every installed copy quietly concludes it is
+      # up to date - the feature would look fine and do nothing, which is this
+      # project's least favourite kind of bug.
+      #
+      # `releases/latest/download/latest.json` always resolves to the newest
+      # non-prerelease, so the URL never changes and nothing has to rewrite it.
+      # The `signature` field is the *contents* of the .sig file, not a path.
+      #
+      # Built with jq rather than string interpolation: every value arrives as
+      # a bound argument, so a version or signature cannot break out of the
+      # JSON it is being written into.
+      - name: Update manifest
+        env:
+          VERSION: ${{ needs.guard.outputs.version }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          sig=$(cat "dist/tuxtop-$VERSION-x64-setup.exe.sig")
+          url="https://github.com/$REPO/releases/download/v$VERSION/tuxtop-$VERSION-x64-setup.exe"
+          jq -n --arg v "$VERSION" --arg sig "$sig" --arg url "$url" \
+                --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '{
+            version: $v,
+            notes: ("Tuxtop " + $v),
+            pub_date: $date,
+            platforms: { "windows-x86_64": { signature: $sig, url: $url } }
+          }' > dist/latest.json
+          cat dist/latest.json
+
       - name: Checksums
         run: |
           cd dist

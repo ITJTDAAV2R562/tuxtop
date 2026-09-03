@@ -565,3 +565,42 @@ Work that arrived from design conversation rather than the plan:
   collects.
 - **Linux and macOS builds.** Tauri is cross-platform; only `window-vibrancy`
   is Windows-specific. Not a goal, but nothing blocks it.
+
+---
+
+## Phase 13 — Update notices - **done**
+
+**Goal:** the app tells you a newer release exists, and installs nothing until
+you say so.
+
+Twelve phases shipped with no way to learn about a new build. The installers
+are unsigned and downloaded by hand, so no OS mechanism was ever going to
+mention one — in practice a machine ran whatever was installed on it, for as
+long as nobody thought to look.
+
+The shape is settled in
+[ADR-015](DECISIONS.md#adr-015--the-app-asks-github-about-updates-and-installs-nothing-on-its-own):
+one check per launch, a dismissable notice, and a download that starts on a
+button press and not before. Dismissal is per version, so it goes quiet about
+the release you dismissed and speaks up about the next one.
+
+What this cost, and what was learned:
+
+- **It is the first outbound connection the app makes on its own.** Everything
+  else talks to a host named in `hosts.toml`. That is why it is a setting -
+  `update_check`, default on, false for an isolated fleet - rather than
+  unconditional behaviour.
+- **A failed check is silent in the UI.** Settings reports the outcome instead.
+  Without somewhere to read it, a permanently broken check looks exactly like a
+  fleet that is always current.
+- **`set_settings` rebuilds `Settings` field by field so it can clamp**, and
+  the frontend's save handler rebuilt it too. Both would have dropped the new
+  field and had serde hand back its default - turning the check *back on* for
+  anyone who turned it off. Fixed in both places, and
+  `turning_the_update_check_off_survives_a_save` fails if either regresses.
+- **The signing key is minisign, not Authenticode.** Different mechanism, same
+  word; code signing stays declined. Losing the minisign key is unrecoverable.
+
+### Not done, deliberately
+
+`tuxtop-serve` gets no updater. It is a tarball on a Linux box.

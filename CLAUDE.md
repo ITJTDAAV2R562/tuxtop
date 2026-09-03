@@ -157,6 +157,19 @@ to the workspace breaks `cargo test` on the machine where development happens.
 **No blocking I/O in async tasks.**
 One Tokio task per host. A host that hangs must degrade only its own card.
 
+**The update check is the only thing that reaches outside the fleet, and it
+installs nothing by itself.**
+Everything else here talks to a machine the user named in `hosts.toml`. The
+check runs once per launch, is off entirely when `[settings] update_check` is
+false, and can do no more than raise a dismissable notice — the download starts
+when a button is pressed, never before. A *failed* check is silent in the UI
+and logged: an isolated fleet cannot reach GitHub and that is its normal state,
+so a banner on every launch would train people to dismiss the one that matters.
+Settings reports the last outcome, because without it a permanently broken
+check is indistinguishable from a fleet that is always up to date — which is
+this project's founding failure wearing a different hat.
+[ADR-015](docs/DECISIONS.md#adr-015--the-app-asks-github-about-updates-and-installs-nothing-on-its-own).
+
 ---
 
 ## A feature is not done until you can name the click path
@@ -339,6 +352,7 @@ the DOM; everything that decides a *value* lives in a UMD module and is tested:
 | `src/filter.js` | what to show and in what order |
 | `src/agg.js` | how a group combines (ADR-008) |
 | `src/heat.js` | how a span of time becomes one cell (ADR-011) |
+| `src/version.js` | whether a release is newer than what is running (ADR-015) |
 
 Load order in `index.html` matters: the modules come first and `app.js` binds
 them at the top of its IIFE. Adding logic to `app.js` that could be in a module
@@ -555,6 +569,17 @@ pushed together, or moved afterwards.
 **The Linux tarball ships `src/` beside the binary.** `--web` defaults to
 `./src`, so the binary alone is a server that starts and then 404s every page.
 The tarball is laid out so the default resolves from the extracted directory.
+
+**The updater's minisign key is not the code signing we declined.** They
+share a word and nothing else. The updater downloads an installer and runs it,
+so its artifacts are signed with a free, self-generated minisign keypair —
+public half in `tauri.conf.json`, private half in Actions secrets, and the
+release job fails if the `.sig` did not appear. That proves an update came from
+this pipeline. It does not buy a warning-free first launch, which is what
+Authenticode below is about, and which stays declined. **Losing the minisign
+private key is unrecoverable**: installed copies trust only the public key
+compiled into them, so no existing install could ever update again.
+[ADR-015](docs/DECISIONS.md#adr-015--the-app-asks-github-about-updates-and-installs-nothing-on-its-own).
 
 **Nothing is code-signed, and that is a decision rather than a gap.** Windows
 SmartScreen warns on first run of the installer; the release notes say so,

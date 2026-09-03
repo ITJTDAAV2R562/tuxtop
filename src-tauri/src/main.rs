@@ -166,6 +166,11 @@ fn history_usage(svc: Svc<'_>) -> HistoryUsage {
 
 fn main() {
     tauri::Builder::default()
+        // The updater never checks on its own — `check()` is an explicit call
+        // from the frontend, gated behind a setting and a button. Registering
+        // the plugin grants the capability; it does not start any polling.
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             list_hosts,
             add_host,

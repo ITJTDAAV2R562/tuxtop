@@ -46,3 +46,19 @@ port = 22
 # name = "wader"
 # addr = "wader"
 # paused = true
+
+# Global settings. Everything here is also editable from Settings in the
+# window; this file is what a fresh install starts from.
+#
+# [settings]
+# interval_ms = 1000       # 250 and 500 are offered too
+# history_cap_mb = 256
+# always_on_top = false
+#
+# Ask GitHub once per launch whether a newer Tuxtop exists. Default true.
+#
+# This is the only thing Tuxtop asks of anywhere other than the hosts above.
+# Set it false on an isolated network and the app makes no request of its own,
+# ever. It governs the *check* only: a newer release raises a notice you can
+# dismiss, and nothing downloads until you press the button (ADR-015).
+# update_check = true

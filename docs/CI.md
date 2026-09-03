@@ -148,6 +148,21 @@ Two details worth knowing:
   of those are GTK crates Tauri pulls for a Linux desktop build this project
   never makes; a gate nobody can clear is a gate somebody switches off.
 
+## The release needs two secrets
+
+`release.yml` signs the updater artifacts with `TAURI_SIGNING_PRIVATE_KEY` and
+`TAURI_SIGNING_PRIVATE_KEY_PASSWORD`, repository secrets holding a minisign
+keypair. Without them the bundler still produces working installers but no
+`.sig` files, and every installed copy silently refuses the update — a release
+that looks fine and cannot be updated to. The `Collect` step therefore checks
+the signature exists and fails the build if it does not, because discovering
+this after publishing is far more expensive.
+
+The public half lives in `src-tauri/tauri.conf.json`. **Losing the private half
+is unrecoverable** — installed copies trust only the key compiled into them.
+See [ADR-015](DECISIONS.md#adr-015--the-app-asks-github-about-updates-and-installs-nothing-on-its-own);
+note this is minisign, not Authenticode, which stays declined.
+
 ## The mutation job
 
 `mutants` runs **weekly** (Sunday 03:00 UTC) and on manual dispatch. Every

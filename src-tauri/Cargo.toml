@@ -9,7 +9,7 @@ version = "0.5.1"
 edition = "2021"
 description = "A Windows-native Task Manager for remote Linux hosts"
 license = "MIT"
-repository = "https://github.com/UZ1sFED3yS/tuxtop"
+repository = "https://github.com/ITJTDAAV2R562/tuxtop"
 # Not a crates.io crate: this is an application, and it depends on
 # tuxtop-core by path. cargo-deny also needs this to tell an internal
 # path dependency from a `foo = "*"` pulled off a registry.
@@ -26,6 +26,17 @@ serde_json = "1"
 toml = "0.8"
 # SSH is handled by tuxtop-core, which shells out to the system ssh (ADR-007).
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+# The only dependency that reaches the network on the app's own behalf. It is
+# also the reason a minisign keypair exists: the updater downloads and runs an
+# installer, so an unverified one would be remote code execution by design.
+# Note this is a *different* signature from Authenticode, which stays declined
+# (CLAUDE.md, "Releasing").
+tauri-plugin-updater = "2"
+# Opening the release notes in the user's real browser. A plain <a href> would
+# navigate the webview away from the app itself, which is not recoverable
+# without a restart. Scoped in capabilities/default.json to this repo's
+# releases and nothing else.
+tauri-plugin-opener = "2"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 window-vibrancy = "0.6"
