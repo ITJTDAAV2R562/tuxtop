@@ -1,6 +1,6 @@
 [package]
 name = "tuxtop-core"
-version = "0.5.1"
+version = "0.6.0"
 edition = "2021"
 description = "Sampling, parsing and rate maths for Tuxtop. No GUI dependency."
 license = "MIT"

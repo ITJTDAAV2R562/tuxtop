@@ -5,7 +5,7 @@
 
 [package]
 name = "tuxtop"
-version = "0.5.1"
+version = "0.6.0"
 edition = "2021"
 description = "A Windows-native Task Manager for remote Linux hosts"
 license = "MIT"
