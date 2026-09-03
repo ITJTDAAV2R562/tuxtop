@@ -140,6 +140,15 @@ Two details worth knowing:
   the repository is published, and needs no edit to do so. If GitHub's
   **default setup** for code scanning is enabled it conflicts with this
   workflow; pick one, not both.
+- **`.gitleaks.toml` holds exactly one allowance**, for the updater's minisign
+  *public* key. Worth knowing how it is written, because two obvious spellings
+  do not work: listing the file under `paths` exempts every finding in that
+  file rather than the one string, and an allowlist regex is matched against
+  the captured secret rather than the source line. Also, gitleaks decodes the
+  base64 `pubkey` and reports the key id from inside it — so the thing to
+  allowlist is that id, not the blob you can see in the file. The block is
+  checked by planting a `ghp_` token beside the key and confirming the scan
+  still fails.
 - **`cargo audit` runs against both lockfiles.** `src-tauri` is outside the
   workspace ([ADR-006](DECISIONS.md#adr-006--tuxtop-core-is-a-separate-crate-outside-the-tauri-workspace))
   and carries its own lock, which no workspace-wide command ever opens — and it

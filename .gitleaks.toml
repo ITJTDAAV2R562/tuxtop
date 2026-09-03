@@ -1,0 +1,31 @@
+# gitleaks configuration.
+#
+# The default ruleset, plus exactly one allowance. Everything else is left
+# alone deliberately: this scan is a merge gate, and a config that accumulates
+# broad exclusions stops being one.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = """
+The updater's minisign PUBLIC key id, which generic-api-key flags on entropy.
+
+The key belongs in the tree. Tauri compiles it into every installer so a client
+can verify an update came from this release pipeline; it ships to everyone who
+downloads the app, and it can only verify, never sign. Publishing it is the
+whole point of it existing. The private half lives in Actions secrets and never
+touches the repository.
+
+What is allowlisted is the value gitleaks actually reports, which is not what
+it looks like in the file. `pubkey` in tauri.conf.json is base64; gitleaks
+decodes it and matches inside the decoded text, so the finding is the key id
+from minisign's comment line - not the base64 blob. A regex against the JSON
+line therefore never matches, whatever regexTarget says.
+
+Two dead ends worth not repeating: listing the file under `paths` exempts every
+finding in it, with or without `matchCondition`, so a planted ghp_ token in
+tauri.conf.json went undetected; and an allowlist regex matches the captured
+secret by default. Both were found by planting a token beside the key and
+checking the scan still failed.
+"""
+regexes = ['''E32AB9E4173865DF''']
