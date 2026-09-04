@@ -64,6 +64,18 @@ That removes most of the usual surface, and leaves these:
 
 A failure blocks the merge exactly as a failing test does.
 
+**`npm audit` runs at `--audit-level=high`.** Everything in `package.json` is a
+devDependency — test and release tooling that never ships inside the product,
+which has no runtime dependencies at all — so a moderate advisory in a build
+tool does not block a merge. It is still fixed when a fix is cheap. Three DoS
+advisories against `qs` reached us that way: `typed-rest-client` pins it to an
+exact version and the mutation tester pins `typed-rest-client`, so no upgrade
+anywhere in the chain moves it and `overrides` in `package.json` is the only
+lever. That is why the override is there, and why it should go when the pin
+upstream loosens. The argument for spending anything on a moderate finding in a
+tool that runs weekly on one machine is not the risk — it is that a Dependabot
+alert nobody can close teaches everyone to stop reading them.
+
 ## If a secret is ever committed
 
 Rotate it first, then remove it. The gitleaks job scans full history with
