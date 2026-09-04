@@ -199,3 +199,19 @@ test('changing the sample rate updates the status line', async ({ page }) => {
   await page.click('#setForm button[value="save"]');
   await expect(page.locator('[data-mode-note]')).toContainText('4 Hz over ssh');
 });
+
+test('release notes are reachable without an update being available', async ({ page }) => {
+  // The banner's button was the only route to the notes, so it could only be
+  // pressed on a build that was already out of date. That is how a wrong URL
+  // scope survived a release: on the newest version there was no button to
+  // press, so neither the user nor the tests could reach it.
+  await loadSettled(page, null);            // nothing newer - no banner at all
+  await expect(page.locator('#updNote')).toBeHidden();
+
+  await page.click('#settingsBtn');
+  await expect(page.locator('#updVersionLine')).toContainText('0.0.0-test');
+  await page.click('#updNotesNow');
+  await expect
+    .poll(() => page.evaluate(() => window.__stubOpened))
+    .toBe('https://github.com/ITJTDAAV2R562/tuxtop/releases/tag/v0.0.0-test');
+});

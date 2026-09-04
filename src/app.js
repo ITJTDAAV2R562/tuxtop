@@ -2993,6 +2993,9 @@
         $('#s-ontop').checked = !!s.always_on_top;
         $('#s-update').checked = !!s.update_check;
         $('#updStatus').textContent = updateStatusText(s.update_check);
+        const v = await getAppVersion();
+        $('#updVersionLine').textContent = v ? `Running Tuxtop ${v}.` : '';
+        $('#updNotesNow').hidden = !v;
       } catch (e) { showError(String(e)); }
     }
     perHostRows();
@@ -3566,6 +3569,16 @@
     }
     $('#updStatus').textContent = updateStatusText(true);
     btn.disabled = false;
+  });
+
+  $('#updNotesNow').addEventListener('click', async () => {
+    if (!LIVE) return;
+    const v = await getAppVersion();
+    if (!v) return;
+    const url = `${RELEASES}/tag/v${v}`;
+    try {
+      await TAURI.core.invoke('plugin:opener|open_url', { url });
+    } catch (e) { showError(`Could not open ${url}: ${e}`); }
   });
 
   $('#updDismiss').addEventListener('click', () => {
