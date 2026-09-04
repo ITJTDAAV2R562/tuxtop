@@ -88,9 +88,13 @@ WSL, macOS or Windows.
 1. **Connect.** One SSH session per host, authenticated through the Windows
    OpenSSH agent or Pageant. Host list comes from `hosts.toml`, with
    `~/.ssh/config` resolving aliases, jump hosts and keys.
-2. **Start the loop.** One channel runs `sampler::sampler_command(1)` — a POSIX
-   `sh` loop catting `/proc/stat`, `/proc/meminfo`, `/proc/diskstats`,
-   `/proc/net/dev` and `/proc/loadavg`, then echoing a delimiter and sleeping.
+2. **Start the loop.** One channel runs `sampler::sampler_command(interval)` —
+   a POSIX `sh` loop catting `/proc/stat`, `/proc/meminfo`, `/proc/diskstats`,
+   `/proc/net/dev`, `/proc/loadavg` and `/proc/uptime`, then echoing a
+   delimiter and sleeping. Temperatures, GPU, disk capacity and the process
+   ranking ride the same loop on slower divisors, so raising the sample rate
+   speeds up the `cat`s and nothing else. The complete list of what is read,
+   and how often, is the table in [the README](../README.md#what-it-reads).
 3. **Frame.** Reads are appended to a buffer; `split_frames` returns only
    *complete* frames and keeps the tail. A partial `/proc/stat` parses as a
    plausible-but-wrong snapshot, so it must never reach the parser.

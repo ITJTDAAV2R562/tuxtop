@@ -75,6 +75,67 @@ Reasoning, with rejected alternatives: [docs/DECISIONS.md](docs/DECISIONS.md).
 
 ---
 
+## What it reads
+
+"Nothing is installed" invites the obvious question of what is running there
+instead, so here it is in full. One `ssh` per host runs a POSIX `sh` loop,
+which is the entire remote footprint:
+
+```sh
+while :; do
+  cat /proc/stat /proc/meminfo /proc/diskstats /proc/net/dev /proc/loadavg
+  echo "TXU|$(cut -d' ' -f1 /proc/uptime)"          # uptime
+  ...                                               # temps, GPU, df: slower
+  echo '--=TUXTOP=--'                               # frame delimiter
+  sleep 1
+done
+```
+
+| read | every | gives |
+| --- | --- | --- |
+| `/proc/stat` | interval | per-core CPU, as a delta of two samples |
+| `/proc/meminfo` | interval | memory and swap, via `MemAvailable` |
+| `/proc/diskstats` | interval | disk read/write rates |
+| `/proc/net/dev` | interval | network rx/tx rates |
+| `/proc/loadavg` | interval | 1/5/15-minute load |
+| `/proc/uptime` | interval | uptime |
+| `/sys/class/hwmon/*/temp*_input` | 1 s | temperatures, with their labels |
+| `nvidia-smi --query-gpu=...` | 1 s | GPU utilisation, memory, watts — if present |
+| `df -P -k` | 30 s | filesystem capacity |
+| `/proc/[0-9]*/stat`, `comm`, `cmdline`, `status`, `cgroup` | 5 s | the process ranking |
+| `/sys/fs/cgroup/system.slice/*/` | 5 s | per-unit CPU, memory, pid count |
+| `systemctl show --property=Id --property=NRestarts` | 60 s | units that are flapping |
+| `uname`, `/etc/os-release`, `/proc/cpuinfo`, `systemd-detect-virt` | once | kernel, distro, CPU model, bare metal or VM |
+
+Every line of that is a **read**. There is no `kill`, no `renice`, no
+`systemctl start|stop|restart`, nothing written to disk or to `/proc` — not as
+an omission but as a rule, argued in
+[ADR-010](docs/DECISIONS.md#adr-010--tuxtop-only-observes-it-never-changes-a-monitored-host),
+and one you can check against the list above. The process ranking holds both
+ends of its window in shell variables for the same reason: a temp file would
+be a write.
+
+Three details are load-bearing rather than incidental:
+
+- **The ranking happens on the host, and only the winners cross the wire.** A
+  479-process box is 85 KB of raw `/proc/*/stat` per sample; ranked to the top
+  20 by CPU and by memory it is about 800 bytes.
+- **Frames are delimited, and a partial one is never parsed.** A read can land
+  mid-`/proc/stat`, and half a stat file parses into a plausible wrong
+  snapshot rather than an error — which is the whole failure this project
+  exists to design against.
+- **The expensive reads keep their own cadence.** Raising the sample rate to
+  4 Hz speeds up the `cat`s and nothing else: `nvidia-smi` is a process spawn
+  costing hundreds of milliseconds, and running it four times a second on a
+  machine we are only supposed to be watching is not monitoring.
+
+Cost on the watched host, measured:
+[docs/evidence/sampling-cost.md](docs/evidence/sampling-cost.md). Windows hosts
+have no `/proc`; what they are asked for instead is in
+[docs/specs/windows-hosts.md](docs/specs/windows-hosts.md).
+
+---
+
 ## The views
 
 The fleet is a matrix of **hosts × metrics**, and time is its third axis.
@@ -138,6 +199,49 @@ a browser tab should have merely by reaching the port.
 
 ---
 
+## SSH access
+
+**If `ssh <name>` works from your terminal, Tuxtop works.** That is not a
+slogan — it is literally the same client. Tuxtop spawns the system `ssh` and
+reads its stdout
+([ADR-007](docs/DECISIONS.md#adr-007--shell-out-to-the-system-ssh-dont-link-an-ssh-library)),
+so `~/.ssh/config` applies in full: host aliases, `User`, `Port`,
+`IdentityFile`, `ProxyJump`, `Match` blocks, agent forwarding, hardware and
+FIDO keys, certificate auth. `addr` in `hosts.toml` can be a bare alias, and
+the jump host you already wrote down keeps working without Tuxtop knowing what
+a jump host is.
+
+**All of this is the operating system's, not ours.** Tuxtop never reads a
+private key, stores a credential, prompts for a passphrase, or contains any
+crypto of its own — there is no credential store and there will not be
+([ADR-001](docs/DECISIONS.md#adr-001--build-a-client-not-another-monitoring-system)).
+Reimplementing even half of what OpenSSH does is a project of its own, and it
+would be a project whose bugs are remote-code-execution shaped. Delegating
+means your existing keys, your existing agent and your existing policy are the
+whole story.
+
+The options Tuxtop adds are `-T` and `-C`, a short `ConnectTimeout`, the
+`ServerAlive` keepalives, and **`BatchMode=yes`**. The last is the only one you
+can feel, because it means **no prompt is possible** — there is no terminal
+to answer one. Three consequences, all of them things to do once, by hand,
+before adding a host:
+
+- **Key authentication only.** A host that accepts only a password cannot be
+  sampled: there is no prompt, nowhere to type it, and no `user:password@host`
+  form to write it in. `ssh-copy-id` first.
+- **An encrypted key needs an agent.** Load it into the Windows OpenSSH agent
+  or Pageant; nothing can ask you for the passphrase.
+- **The host key must already be trusted.** An unknown host fails rather than
+  offering to accept the fingerprint, so run `ssh <name>` once in a terminal —
+  that first connection is where you check the fingerprint, which is the one
+  moment it is worth checking.
+
+Each of those surfaces as `AuthFailed` on the card, carrying ssh's own message,
+rather than as a host that is merely "down" — telling those apart is the
+difference between a thirty-second fix and an hour of guessing.
+
+---
+
 ## Configuration
 
 `hosts.toml` — `%APPDATA%\dev.tuxtop.app\hosts.toml` on Windows, or wherever
@@ -188,9 +292,6 @@ usually right on the one host you are investigating rather than the whole
 fleet: only the cheap kernel counters run at that rate, while `nvidia-smi`,
 `df` and the process ranking keep their own slower cadence, because a
 monitoring tool has no business spending a watched machine's CPU.
-
-Authentication is delegated to the Windows OpenSSH agent or Pageant. Tuxtop
-never reads a private key, stores a credential, or prompts for a passphrase.
 
 **Updates are offered, never applied.** Once per launch the app asks GitHub
 whether a newer release exists. If one does you get a dismissable notice — and
