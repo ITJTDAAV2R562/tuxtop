@@ -130,8 +130,35 @@ Three details are load-bearing rather than incidental:
   machine we are only supposed to be watching is not monitoring.
 
 Cost on the watched host, measured:
-[docs/evidence/sampling-cost.md](docs/evidence/sampling-cost.md). Windows hosts
-have no `/proc`; what they are asked for instead is in
+[docs/evidence/sampling-cost.md](docs/evidence/sampling-cost.md).
+
+### On a Windows host
+
+There is no `/proc`, so the same loop reads CIM performance classes instead —
+still over SSH, still nothing installed, still every command a read:
+
+| read | gives |
+| --- | --- |
+| `Win32_PerfRawData_PerfOS_Processor` | per-core CPU |
+| `Win32_OperatingSystem` | memory, and uptime from `LastBootUpTime` |
+| `Win32_PerfRawData_Tcpip_NetworkInterface` | network rx/tx |
+| `Win32_PerfRawData_PerfDisk_PhysicalDisk` | disk read/write |
+| `Win32_PerfRawData_PerfProc_Process` | the process ranking |
+| `Win32_Service` | which service owns a pid — the cgroup unit's counterpart |
+| `Win32_Process` | the ancestor walk that finds the sshd session to watch |
+| `Win32_Processor`, `Win32_ComputerSystem` | CPU model, core count — read once |
+
+**The metric set is smaller: no temperatures, no GPU, no filesystem capacity.**
+Everything else is there.
+
+Two things are worth knowing rather than discovering.
+`Win32_PerfRawData_PerfOS_Processor.PercentProcessorTime` is an **inverse**
+counter — it accumulates *idle* ticks, and read the obvious way it reported 79%
+on a machine sitting at 11. And the loop has to watch its own sshd session to
+know when to stop, because on Windows killing the client leaves the far side
+running with both pipes intact
+([ADR-013](docs/DECISIONS.md#adr-013--a-windows-remote-loop-watches-its-sshd-session-not-its-pipes)).
+Both, and the three tempting APIs that are worse, are in
 [docs/specs/windows-hosts.md](docs/specs/windows-hosts.md).
 
 ---
@@ -239,6 +266,26 @@ before adding a host:
 Each of those surfaces as `AuthFailed` on the card, carrying ssh's own message,
 rather than as a host that is merely "down" — telling those apart is the
 difference between a thirty-second fix and an hour of guessing.
+
+### Give it an account of its own
+
+Not because it needs less privilege than you — **it needs none at all.** Every
+read in the table above is world-readable, and a fresh account with no groups
+and no sudo makes all of them; that was measured rather than assumed. A
+dedicated `tuxtop` user with its own key buys three other things: a credential
+you can revoke without touching your own account, a key you can narrow with
+`restrict,from=` in `authorized_keys` because it never needs a pty or any
+forwarding, and a line in the auth log that says what it was.
+
+On **Windows** the same account is more than hygiene. `sshd` ships configured to
+ignore `~/.ssh/authorized_keys` for anyone in the Administrators group — keys
+must go in a shared `administrators_authorized_keys` with exact ACLs, and it
+fails as a bare *Permission denied (publickey)* when they are wrong. A
+non-administrator monitoring user never meets that.
+
+Recipes for both, the key, the `~/.ssh/config.d` arrangement that keeps this
+away from your own keys, why a forced `command=` is a dead end here, and
+enabling OpenSSH Server on Windows: **[docs/ACCESS.md](docs/ACCESS.md)**.
 
 ---
 
@@ -376,7 +423,7 @@ src-tauri/            the Windows shell (Tauri 2). Not a workspace member.
 src/                  frontend: HTML/CSS/JS, no build step.
 tests/                JS unit tests, Playwright suite, the fleet harness.
 scripts/              the checkers, the local gate, the harness builder.
-docs/                 architecture, decisions, roadmap, CI, evidence.
+docs/                 architecture, decisions, access, roadmap, CI, evidence.
 ```
 
 Host names, addresses and tailnet names in this repository are invented. Your
