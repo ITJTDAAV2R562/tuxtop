@@ -3,7 +3,7 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert');
-const { bps, gb, fmtKb, fmtSpan, humanUptime, shortGpu } = require('../src/format.js');
+const { bps, gb, fmtKb, fmtSpan, humanUptime, shortGpu, rateLabel } = require('../src/format.js');
 
 test('bytes_are_whole_but_larger_units_keep_a_decimal', () => {
   // "1013.0 B/s" is false precision on a counter that moves in packets, while
@@ -69,4 +69,30 @@ test('an_unrecognisable_gpu_name_still_labels_the_chip', () => {
 
 test('gigabytes_keep_one_decimal', () => {
   assert.strictEqual(gb(31.04), '31.0');
+});
+
+test('a_sample_rate_reads_as_the_rate_it_actually_is', () => {
+  // The bug this replaces: the status line said "1 Hz" as a string literal,
+  // whatever the interval setting was. A fleet sampled every 30 s sat under a
+  // footer claiming 1 Hz - a confident number nobody had measured.
+  assert.strictEqual(rateLabel(250), '4 Hz');
+  assert.strictEqual(rateLabel(500), '2 Hz');
+  assert.strictEqual(rateLabel(1000), '1 s');
+  assert.strictEqual(rateLabel(2000), '2 s');
+  assert.strictEqual(rateLabel(30000), '30 s');
+  assert.strictEqual(rateLabel(60000), '60 s');
+});
+
+test('sub_second_reads_in_Hz_and_slower_reads_as_a_duration', () => {
+  // Both are offered in the settings dialog in those terms, and "0.033 Hz" is
+  // nobody's idea of thirty seconds.
+  assert.ok(rateLabel(250).endsWith('Hz'));
+  assert.ok(rateLabel(5000).endsWith('s'));
+});
+
+test('an_unusable_interval_says_so_rather_than_inventing_a_rate', () => {
+  // Guessing here would reintroduce exactly the bug above.
+  for (const bad of [0, -1, NaN, Infinity, null, undefined, '1000', {}]) {
+    assert.strictEqual(rateLabel(bad), '?', `${String(bad)} must not produce a rate`);
+  }
 });

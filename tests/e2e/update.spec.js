@@ -166,3 +166,36 @@ test('the setting reports what the last check found', async ({ page }) => {
   await expect(page.locator('#s-update')).toBeChecked();
   await expect(page.locator('#updStatus')).toContainText('0.6.0');
 });
+
+test('the release notes button asks for the version being offered', async ({ page }) => {
+  // Two bugs in one line, both found on the first real click rather than here:
+  // the button opened the releases *index*, and the installer's allowlist was
+  // scoped to `releases/*`, which does not match `releases`. So it failed with
+  // "Not allowed to open url". Asking for the specific tag is both the more
+  // useful page and the one the scope was actually written for.
+  await load(page, AVAILABLE);
+  await page.click('#updPage');
+  await expect
+    .poll(() => page.evaluate(() => window.__stubOpened))
+    .toBe('https://github.com/ITJTDAAV2R562/tuxtop/releases/tag/v0.6.0');
+});
+
+test('the status line names the running version and the real sample rate', async ({ page }) => {
+  // It used to read "live · 1 Hz over ssh" as a string literal, whatever the
+  // interval was, and never said which build you were running. A footer
+  // asserting a rate nobody read is this project's founding bug in miniature.
+  await load(page, null);
+  const note = page.locator('[data-mode-note]');
+  await expect(note).toContainText('0.0.0-test');
+  await expect(note).toContainText('1 s over ssh');
+});
+
+test('changing the sample rate updates the status line', async ({ page }) => {
+  // The half that makes it a reading rather than a claim: it has to stop being
+  // true and get fixed, not be written once at startup.
+  await loadSettled(page, null);
+  await page.click('#settingsBtn');
+  await page.selectOption('#s-interval', '250');
+  await page.click('#setForm button[value="save"]');
+  await expect(page.locator('[data-mode-note]')).toContainText('4 Hz over ssh');
+});

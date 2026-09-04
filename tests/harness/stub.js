@@ -131,6 +131,8 @@
   }
 
   window.__TAURI__ = {
+    /// The app module, as much of it as the status line uses.
+    app: { getVersion: async () => '0.0.0-test' },
     core: {
       /// Tauri's IPC channel, as much of it as the updater's progress
       /// reporting uses. Real one lives in @tauri-apps/api/core.

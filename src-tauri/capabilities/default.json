@@ -12,6 +12,9 @@
       "identifier": "opener:allow-open-url",
       "allow": [
         {
+          "url": "https://github.com/ITJTDAAV2R562/tuxtop/releases"
+        },
+        {
           "url": "https://github.com/ITJTDAAV2R562/tuxtop/releases/*"
         }
       ]

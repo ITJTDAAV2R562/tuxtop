@@ -10,7 +10,7 @@
   // Pure logic lives in modules beside this file so it can be tested; app.js
   // keeps the DOM. Bound here rather than referenced as TuxScale.band(...)
   // everywhere, so the call sites read the same as before the extraction.
-  const { bps, gb, fmtKb, fmtSpan, humanUptime, shortGpu } = TuxFormat;
+  const { bps, gb, fmtKb, fmtSpan, humanUptime, shortGpu, rateLabel } = TuxFormat;
   const { band, logWindow, normalise, sliderToSecs, niceCols } = TuxScale;
   const { fullestFs, fsPct, mountRows, sensorName, sensorMetric, hottestSensor,
           machine, machineLabel, stealIsMeaningful } = TuxPick;
@@ -2839,11 +2839,6 @@
   // watched host, and eighteen of nineteen never need it.
   const INTERVALS = [250, 500, 1000, 2000, 5000, 10000, 30000, 60000];
 
-  /// A rate as a person says it: "4 Hz" below a second, "30 s" above.
-  /// Mirrors `sampler::rate_label` in the backend.
-  const rateLabel = ms =>
-    ms < 1000 ? `${+(1000 / ms).toFixed(1)} Hz` : `${ms / 1000} s`;
-
   /// Bytes per second the fleet would cost at `iv`, from measured frame sizes.
   ///
   /// Arithmetic, not estimation: frame size tracks disk and interface count
@@ -3036,6 +3031,9 @@
         always_on_top: $('#s-ontop').checked,
         update_check: $('#s-update').checked,
       }});
+      // The status line quotes the interval, so it goes stale the moment this
+      // saves unless it is told.
+      await refreshModeNote();
     } catch (err) { showError(String(err)); }
   });
 
@@ -3149,8 +3147,10 @@
     // Windows draws the real titlebar (decorations: true), so the mockup's
     // painted one would be a second, fake title bar stacked under it.
     document.querySelector('.titlebar')?.remove();
-    const note = document.querySelector('[data-mode-note]');
-    if (note) note.textContent = 'live \u00b7 1 Hz over ssh';
+    // The status line used to read "live · 1 Hz over ssh" as a string literal,
+    // whatever the interval actually was, and never said which Tuxtop you were
+    // running. Both are now read from the app rather than asserted.
+    await refreshModeNote();
 
     const ensure = (name, nCores) => {
       let h = hosts.find(x => x.name === name);
@@ -3473,6 +3473,48 @@
     }
   }
 
+  /// The version this build reports, or null if it could not be read.
+  ///
+  /// Null rather than a guess: a status line that names the wrong version is
+  /// worse than one that names none, because it is the number somebody quotes
+  /// in a bug report.
+  let appVersion = null;
+
+  async function getAppVersion() {
+    if (appVersion !== null || !LIVE) return appVersion;
+    try {
+      appVersion = await TAURI.app.getVersion();
+    } catch (e) {
+      // Visible in the log rather than swallowed - if the ACL ever stops
+      // granting this, the footer quietly losing its version is the symptom
+      // and this is the explanation.
+      console.error('could not read the app version', e);
+    }
+    return appVersion;
+  }
+
+  /// Rewrite the status line under the grid: which build, sampling how often.
+  ///
+  /// Called at startup and again whenever the interval changes, because the
+  /// whole point is that it stops being a claim made once and never revisited.
+  async function refreshModeNote() {
+    const note = document.querySelector('[data-mode-note]');
+    if (!note || !LIVE) return;
+    const v = await getAppVersion();
+    let rate = '?';
+    try {
+      rate = rateLabel((await TAURI.core.invoke('get_settings')).interval_ms);
+    } catch (e) {
+      console.error('could not read the sample interval', e);
+    }
+    // Per-host overrides mean the global figure is not the whole story, and
+    // silently showing it as though it were is the same lie in miniature.
+    const overridden = hosts.filter(h => h.intervalOverride).length;
+    note.textContent =
+      `${v ? `Tuxtop ${v} \u00b7 ` : ''}live \u00b7 ${rate} over ssh` +
+      (overridden ? ` \u00b7 ${overridden} host${overridden === 1 ? '' : 's'} at its own rate` : '');
+  }
+
   /// What to say in Settings about the last check.
   ///
   /// This exists because the check is deliberately quiet: a failure raises no
@@ -3533,9 +3575,14 @@
 
   $('#updPage').addEventListener('click', async () => {
     if (!LIVE) return;
+    // The notes for the release being offered, not the index - that is what
+    // "Release notes" promises, and it is the page worth reading before
+    // deciding to install. Falls back to the index when no version is known,
+    // which is the Check-now-found-nothing case.
+    const url = updateMeta ? `${RELEASES}/tag/v${updateMeta.version}` : RELEASES;
     try {
-      await TAURI.core.invoke('plugin:opener|open_url', { url: RELEASES });
-    } catch (e) { showError(`Could not open ${RELEASES}: ${e}`); }
+      await TAURI.core.invoke('plugin:opener|open_url', { url });
+    } catch (e) { showError(`Could not open ${url}: ${e}`); }
   });
 
   $('#updInstall').addEventListener('click', async () => {

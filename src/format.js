@@ -73,5 +73,35 @@
       .trim() || 'GPU';
   }
 
-  return { bps, gb, fmtKb, fmtSpan, humanUptime, shortGpu };
+  /**
+   * How often we sample, as the status line says it.
+   *
+   * This exists because that line used to be the string "1 Hz", hardcoded,
+   * while the actual interval was a setting - so a fleet sampled every thirty
+   * seconds sat under a footer confidently claiming 1 Hz. A label that states
+   * a rate it did not read is the same class of thing as a load figure that
+   * was never measured, which is the failure this project is a reaction to.
+   *
+   * Mirrors `sampler::rate_label` in the backend, which formats the same value
+   * for the CLI - keep the two in step.
+   *
+   * Sub-second rates read as Hz because that is how they are offered and how
+   * people say them; a second and slower read as a duration, because "0.033 Hz"
+   * is nobody's idea of thirty seconds.
+   *
+   * @param {number} ms sample interval in milliseconds
+   * @returns {string} e.g. "4 Hz", "1 s", "30 s" - or "?" if ms is not a
+   *   usable number, since inventing a plausible rate is the bug above.
+   */
+  function rateLabel(ms) {
+    if (typeof ms !== 'number' || !isFinite(ms) || ms <= 0) return '?';
+    if (ms < 1000) {
+      const hz = 1000 / ms;
+      return `${Number.isInteger(hz) ? hz : hz.toFixed(1)} Hz`;
+    }
+    const s = ms / 1000;
+    return `${Number.isInteger(s) ? s : s.toFixed(1)} s`;
+  }
+
+  return { bps, gb, fmtKb, fmtSpan, humanUptime, shortGpu, rateLabel };
 });
