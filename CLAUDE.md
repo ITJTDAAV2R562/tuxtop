@@ -260,9 +260,12 @@ dark only is unverified.
 | `tuxtop-serve` | a headless server. Same service, reached over HTTP |
 
 `tuxtop-serve` binds **loopback only and has no authentication**, deliberately.
-Put `tailscale serve` in front of it for TLS and identity, which is how Beszel
-is already reached on this fleet — a monitoring tool inventing its own session
-handling acquires a login bug for no benefit.
+Put something in front of it that terminates TLS and establishes identity: an
+`ssh -L` tunnel, nginx or Caddy, a VPN, `tailscale serve`, Cloudflare Access.
+A monitoring tool inventing its own session handling acquires a login bug for
+no benefit. Authentication delegates completely and always has —
+[ADR-017](docs/DECISIONS.md#adr-017--one-sampler-many-viewers-the-endpoint-is-the-mode)
+records why authorization is the half that is refused.
 
 It is **read-only unless `--writable`**. Viewing is harmless; `add_host` makes
 the serving machine open an SSH connection with its own keys, which is not a

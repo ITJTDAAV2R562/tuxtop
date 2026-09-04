@@ -8,9 +8,11 @@
 //! ## What it does not do
 //!
 //! **It binds to loopback and grows no authentication.** Exposure is somebody
-//! else's job — `tailscale serve` in front of it gives TLS and identity, which
-//! is how Beszel is already reached on this fleet. A monitoring tool inventing
-//! its own session handling is a way to acquire a login bug for no benefit.
+//! else's job: put anything in front that terminates TLS and establishes
+//! identity — `ssh -L` needs nothing installed, and nginx, Caddy, a VPN,
+//! `tailscale serve` or Cloudflare Access all serve. A monitoring tool
+//! inventing its own session handling is a way to acquire a login bug for no
+//! benefit.
 //!
 //! **It is read-only by default.** Viewing is harmless; `add_host` causes an
 //! outbound SSH from *this* machine using *its* keys, which is not a capability
@@ -39,8 +41,9 @@ USAGE:
     --web       directory holding index.html (default ./src)
     --writable  allow requests that change configuration
 
-Binds to 127.0.0.1 only. Put `tailscale serve` in front of it for TLS and
-identity rather than expecting this to authenticate anybody.
+Binds to 127.0.0.1 only. Put a proxy in front for TLS and identity - an
+`ssh -L` tunnel, nginx, Caddy, a VPN, tailscale serve - rather than
+expecting this to authenticate anybody.
 ";
 
 pub struct AppState {

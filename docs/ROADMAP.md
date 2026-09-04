@@ -504,8 +504,9 @@ Work that arrived from design conversation rather than the plan:
   as predicted: `src/http.js` installs a `__TAURI__` implementation backed by
   fetch and EventSource, and only when nothing else has, so the frontend needed
   no changes at all. The security posture was taken as the deliberate decision
-  it deserved - loopback only with no authentication, fronted by
-  `tailscale serve`; read-only unless `--writable`, because `add_host` makes
+  it deserved - loopback only with no authentication, fronted by a proxy that
+  does TLS and identity (`tailscale serve` here, but an `ssh -L` tunnel, nginx,
+  Caddy or a VPN equally); read-only unless `--writable`, because `add_host` makes
   the serving machine open SSH with its own keys. See CLAUDE.md, "Two shells,
   one service".
 
@@ -604,3 +605,42 @@ What this cost, and what was learned:
 ### Not done, deliberately
 
 `tuxtop-serve` gets no updater. It is a tarball on a Linux box.
+
+---
+
+## Phase 14 — Remote mode: one sampler, many viewers — **not started**
+
+Decided in
+[ADR-017](DECISIONS.md#adr-017--one-sampler-many-viewers-the-endpoint-is-the-mode),
+which holds the reasoning, the four rules the implementation must not break,
+and the three non-goals. This is the sequence.
+
+Running Tuxtop on several boxes today duplicates the config, the keys, and —
+the part that matters — the sampling: each instance is another nineteen sshd
+sessions and nineteen shell loops on machines we promised only to observe. The
+fix is to fan in rather than out.
+
+1. **`--bind ADDR` on `tuxtop-serve`**, default `127.0.0.1`. IP only, no
+   shorthand for the wildcard, and `0.0.0.0` together with `--writable` is
+   refused. Tests named for both rules: the default when no flag is given, and
+   the refusal — the second is the one a mutant would quietly invert.
+   This lands with the doc sweep, because "binds to 127.0.0.1 only" is asserted
+   in six places and all six become false the same day.
+
+2. **Remote mode in the desktop app, read-only.** `server` in `[settings]`;
+   absent means sample locally. Native window, no local sampling, no local
+   keys. The mode and the age of the data are visible in the chrome, not in
+   Settings — a window that looks identical in both modes while showing stale
+   remote readings is this project's founding bug with a new coat.
+
+3. **Switching endpoints without a restart.** Needs `Supervisor::stop_all`,
+   which does not exist yet; the teardown belongs there rather than in the
+   caller that switches. History is discarded across a switch, never appended.
+
+4. **Saved endpoints**, so several fleets — or several customers — are one
+   selection rather than one edit.
+
+Worth doing on the way through: the `broadcast` buffer in
+`tuxtop-serve/src/api.rs` is 16, which is ~0.8 s of events at nineteen hosts.
+Skipping ahead is right for a live grid, but that is tight once several clients
+are the normal case.

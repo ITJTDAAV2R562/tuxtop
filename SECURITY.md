@@ -37,10 +37,12 @@ That removes most of the usual surface, and leaves these:
 ## What is out of scope, by design
 
 - **`tuxtop-serve` binds loopback and has no authentication.** This is
-  documented, deliberate and not a vulnerability report: put `tailscale serve`
-  or an SSH tunnel in front of it. A monitoring tool that invents its own
-  session handling acquires a login bug for no benefit. Binding it to a public
-  interface is a deployment choice this project advises against.
+  documented, deliberate and not a vulnerability report. Put something in front
+  of it that terminates TLS and establishes identity — an `ssh -L` tunnel needs
+  nothing installed, and nginx or Caddy, a VPN, `tailscale serve` and Cloudflare
+  Access all do it too. A monitoring tool that invents its own session handling
+  acquires a login bug for no benefit. Binding it to a public interface is a
+  deployment choice this project advises against.
 - **The installers are unsigned.** SmartScreen warns on first run and the
   release notes say so. `SHA256SUMS` is attached in place of a certificate. The
   reasoning, including the three signing routes that were priced and declined,

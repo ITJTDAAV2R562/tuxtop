@@ -1051,3 +1051,175 @@ The build and the config schema are checked on the development box; the
 *appearance* of both checkboxes is not, because that needs the installer run on
 Windows. Confirm on first install of the next release.
 
+
+---
+
+## ADR-017 — One sampler, many viewers; the endpoint is the mode
+
+**Date:** 2026-09-04 · **Status:** accepted · nothing built yet — this records
+the decision before the phases that implement it
+
+### Context
+
+Tuxtop currently samples wherever it runs. Running it on several boxes in a
+fleet therefore costs three things, and the third is the one that matters:
+
+- **The config is duplicated.** Every instance needs its own `hosts.toml`,
+  kept in step by hand.
+- **The keys are duplicated.** Every instance needs SSH access to every
+  monitored host, so the credential surface is instances × hosts.
+- **The sampling is duplicated.** Nineteen hosts at 1 Hz is 132 KB/s and
+  10.8 GB/day decompressed ([evidence](evidence/sampling-cost.md)); more to the
+  point, each extra instance is nineteen more sshd sessions and nineteen more
+  shell loops **on the machines we promised only to observe**. Two forgotten
+  instances double it silently.
+
+The obvious fix — a "Tuxtop proxy" that spreads traffic to the other instances
+— points the wrong way. Fanning *out* to instances leaves every instance
+sampling and adds an aggregator on top. What removes all three costs is fanning
+**in**: one sampler, many viewers.
+
+That already half-exists. `tuxtop-serve` is exactly a fan-in, its
+`broadcast` channel already serves any number of concurrent clients, and
+`src/http.js` already replaces the whole `__TAURI__` backend with fetch and
+SSE, so the frontend needed no changes to be served. Two things stop it being
+the answer: only a *browser* can be that client, and the server binds loopback
+only, which forces a reverse proxy onto the serving box specifically.
+
+Underneath sits a tension the README states without resolving. The pitch is
+**"not a browser tab"**, and the answer to scaling was *use a browser tab*.
+
+### Decision
+
+**A Tuxtop viewer points either at a fleet or at a server, and which one is not
+a mode flag — it is whether an endpoint is named.**
+
+```toml
+[settings]
+server = "https://tuxtop.example.ts.net"   # absent → sample locally
+```
+
+Four parts:
+
+1. **Local mode** is what exists: `hosts.toml`, local supervisor, local keys.
+2. **Remote mode** replaces the local data plane with a `tuxtop-serve`. The
+   desktop app keeps its native window and stops sampling; the browser already
+   works this way.
+3. **`tuxtop-serve` gains `--bind ADDR`**, default `127.0.0.1`.
+4. **Switching endpoints is a supported act**, including between servers —
+   different fleets, different customers — from Settings or the command line.
+
+**The mode is derived, never stored.** A `mode = "remote"` field can contradict
+the URL beside it, and then something has to decide which wins. Presence of an
+endpoint cannot contradict itself.
+
+**`--bind` takes an IP, v4 or v6, and there is no `--bind all` shorthand.** If
+you want the wildcard you type `0.0.0.0`, because the ugliness is the point. A
+hostname is refused: resolving at bind time is a surprise nobody wants.
+
+**`--bind` with a wildcard and `--writable` together is refused.** Not
+non-loopback generally — binding to one tailnet address is a deployment choice,
+and arguably tighter than loopback behind a proxy listening everywhere. But the
+wildcard plus write means anyone who reaches the port can make this machine
+open SSH to anywhere using its own keys. That consequence lands on *other*
+people's machines, which is where "never fail open on a security path" applies.
+A specific non-loopback address with `--writable` gets a loud startup line, not
+a refusal.
+
+### Why `--bind` belongs in this ADR and not its own
+
+On its own it reads as "let me open a port", which invites the answer "no". Its
+real justification is this: the single-sampler model requires the sampler to be
+*reachable*, and loopback-only mandates a proxy on that exact box even when
+there is already one elsewhere. It is the enabler, not a convenience, and it
+weakens the no-authentication position not at all — exposure remains somebody
+else's job.
+
+### This does not walk back ADR-004
+
+A `tuxtop-serve` box is **one machine you chose**, running a viewer. It is not
+an agent on each monitored host, and the monitored hosts still receive nothing:
+no install, no port, no firewall change, every command a read.
+[ADR-004](#adr-004--nothing-gets-installed-on-the-monitored-host) is untouched.
+Saying so here because "so you *do* install something now" is the obvious
+misreading.
+
+### Four rules the implementation must hold
+
+1. **The mode is visible on screen at all times, with freshness.** This is the
+   founding hazard in new clothes: in remote mode the numbers were taken by a
+   machine you are not on, at an interval it chose, possibly a while ago. A
+   window that looks identical in both modes while showing stale remote data
+   *is* the confident wrong number. Whose readings, and how old, belong in the
+   chrome — not in Settings.
+2. **History is discarded on a switch, never appended.** History is in-memory
+   per instance. Two fleets each with a host called `db1` would otherwise blend
+   charts, and one customer's spike on another's graph looks entirely fine.
+3. **Switching to remote tears down the local samplers**, and the teardown
+   lives in `Supervisor`, not in the caller that switches. `Supervisor` has
+   `stop(name)` and no `stop_all`; that is the gap. Putting the policy in a
+   caller is how the pause rule acquired five callers of which one forgot —
+   see [ADR-012](#adr-012--pause-is-a-third-host-state-and-it-lives-in-hoststoml).
+4. **`paused` becomes shared in remote mode.** It edits the server's
+   `hosts.toml` and blanks the card for everyone watching. That is correct and
+   surprising enough to state rather than let someone discover.
+
+The existing `capabilities` command covers the rest: a read-only server already
+hides the controls it would refuse, rather than drawing buttons that can only
+error.
+
+### Non-goals
+
+**Federation — several samplers unioned into one view.** It needs
+inter-instance identity, history merging and duplicate-host resolution, and
+switching between endpoints delivers most of the value for almost none of that.
+*Reopen when* no single box can reach the whole fleet. Currently several can,
+including the Windows host, so this is declined rather than deferred.
+
+**Serving from the Windows desktop.** It is capable of it and should not do it:
+a firewall prompt, no TLS, and a laptop that sleeps are not solved by capability.
+The server is a Linux fleet box; the Windows app is a viewer, and locally a
+sampler. *Reopen when* only the Windows box can reach some segment — which is
+the federation trigger again.
+
+**Authentication and permissions inside Tuxtop.** These separate, and only one
+of them is a swamp. *Authentication* — who are you — delegates completely:
+`oauth2-proxy` in front gives Google SSO at **zero lines of Tuxtop code**, and
+Tailscale or mTLS give identity the same way. That option stays open forever and
+costs nothing to keep open. *Authorization* — what may you do — is roles,
+per-host ACLs, and a permission check that fails open once and quietly shows
+somebody a fleet they should not see. Tuxtop's authorization model is
+`--writable`, a property of the **server**, not of a person.
+
+The trade that follows is the whole argument, and it is accepted deliberately:
+**per-user write access is precisely the permission system being refused.** So
+one server carries one policy. Given the fleet config changes rarely, that is a
+low price for never owning a login bug.
+
+**Do not work around it by running a read-only instance beside a writable one.**
+Two `tuxtop-serve` processes are two supervisors and therefore two full sets of
+SSH connections to every host — it silently undoes the entire reason for fanning
+in.
+
+### Consequences
+
+- One server, one policy, per above.
+- The broadcast buffer is 16 (`tuxtop-serve/src/api.rs`). At nineteen hosts and
+  1 Hz that is ~19 events a second, so a client stalled for a second lags and
+  skips ahead. Skipping is right for a live grid — you want the newest frame,
+  not a backlog — but 16 is tight once several clients are normal. Revisit with
+  the first multi-client phase.
+- "Binds to 127.0.0.1 only" is currently stated in `README.md`, `SECURITY.md`,
+  `CLAUDE.md`, `docs/ROADMAP.md` and `tuxtop-serve/src/main.rs` twice. All six
+  become false the day `--bind` ships and must move in that commit.
+- The pitch changes shape: from an app that also has a server, to **a viewer
+  whose data source is configuration**. Standalone Windows app with a local
+  fleet; or one server with the SSH keys, and any number of windows and tabs
+  pointed at it.
+
+### Revisit when
+
+Either federation trigger above fires, or someone wants per-user write access —
+at which point the honest answer is that they are asking for the permission
+system this ADR declines, and the decision is whether that has changed, not
+whether it can be avoided.

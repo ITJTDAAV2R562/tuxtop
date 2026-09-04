@@ -219,10 +219,24 @@ cd tuxtop-serve-<version>-linux-x86_64
 ```
 
 Same fleet, same views, in a browser. It binds **loopback only and has no
-authentication**, deliberately — put `tailscale serve` or an SSH tunnel in
-front of it. It is **read-only unless `--writable`**, because adding a host
-makes the serving machine open SSH with its own keys, which is not a capability
-a browser tab should have merely by reaching the port.
+authentication**, deliberately: something in front of it terminates TLS and
+establishes identity, and that is not a job a monitoring tool should invent for
+itself. Any of these does it —
+
+```sh
+ssh -L 8787:localhost:8787 server     # nothing to install; start here
+```
+
+- **nginx or Caddy** with TLS, plus whatever identity you already run — basic
+  auth, mTLS, or `oauth2-proxy` for OIDC.
+- **A VPN you already have** — WireGuard, or a corporate one. The server simply
+  is not on a routable address.
+- **`tailscale serve`**, or **Cloudflare Tunnel / Access**.
+
+What is *not* on the list is opening the port, which is the one people reach
+for. It is **read-only unless `--writable`**, because adding a host makes the
+serving machine open SSH with its own keys, which is not a capability a browser
+tab should have merely by reaching the port.
 
 ---
 
