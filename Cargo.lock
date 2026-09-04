@@ -584,7 +584,7 @@ dependencies = [
 
 [[package]]
 name = "tuxtop-core"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -594,7 +594,7 @@ dependencies = [
 
 [[package]]
 name = "tuxtop-serve"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "async-stream",
  "axum",
