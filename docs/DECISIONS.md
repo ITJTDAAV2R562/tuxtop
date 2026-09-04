@@ -988,3 +988,66 @@ mid-session is not a case worth a recurring outbound request.
 **Silent background updates.** Never considered seriously. The app exits
 partway through a Windows install, taking every ssh session with it. Deciding
 when that happens belongs to the person watching the fleet.
+
+---
+
+## ADR-016 — Shortcut choice comes from the stock NSIS template, not a fork of it
+
+**Date:** 2026-09-04 · **Status:** accepted
+
+### Context
+
+The installer created a Start Menu shortcut unconditionally and never asked.
+Wanting a choice about that looks like it needs installer work; mostly it did
+not, and finding that out was the whole job.
+
+Tauri's stock NSIS template already puts a **"Create desktop shortcut"** tick on
+the finish page — it repurposes MUI's *show readme* slot for it, which is why
+it is not obvious from the config schema. That box has been in every installer
+we have shipped, including v0.6.0.
+
+The Start Menu was different, and for a reason worth writing down: the template
+guards its Start Menu page on `STARTMENUFOLDER` being non-empty, and when it is
+empty the page is *skipped* while the shortcut is still created. So leaving the
+setting unset does not mean "no folder", it means "no choice".
+
+### Decision
+
+Set `bundle.windows.nsis.startMenuFolder`. That single value makes
+`MUI_PAGE_STARTMENU` appear, and because the template never defines
+`MUI_STARTMENUPAGE_NODISABLE`, MUI supplies its own **"Do not create
+shortcuts"** checkbox on that page. `MUI_STARTMENU_WRITE_BEGIN` honours it.
+
+Both checkboxes therefore come from the stock template. Nothing is vendored.
+
+**No custom `.nsi` template.** A fork would let us drop the folder nesting and
+default the desktop box to unticked, and would cost a 977-line file pinned to
+one Tauri version, re-checked on every upgrade. Two checkboxes are not worth
+owning an installer.
+
+**The `.msi` keeps installing shortcuts unconditionally.** Tauri exposes no
+equivalent for WiX, so matching it means a custom `.wxs` and the same
+maintenance trap. The `-setup.exe` is the primary installer — it is what the
+updater installs and what the README lists first — and the MSI exists for
+policy-driven deployment, where shortcut prompts are unwanted anyway. The
+asymmetry is documented rather than engineered away.
+
+### Consequences
+
+The Start Menu entry moves from `Programs\Tuxtop.lnk` to
+`Programs\Tuxtop\Tuxtop.lnk`. A folder holding one shortcut is mildly
+redundant, and it is the price of the page that carries the checkbox.
+
+Updates are unaffected. `CreateOrUpdateStartMenuShortcut` returns early when
+`$UpdateMode = 1`, so an update never recreates, duplicates or resurrects a
+shortcut the user declined — it only retargets an existing one if the binary
+name changed. This was checked in the template before the setting was changed,
+because an updater that quietly restores a shortcut somebody removed is exactly
+the kind of small betrayal nobody files a bug for.
+
+### Unverified here
+
+The build and the config schema are checked on the development box; the
+*appearance* of both checkboxes is not, because that needs the installer run on
+Windows. Confirm on first install of the next release.
+

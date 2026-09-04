@@ -111,6 +111,11 @@ severity comes from the worst member
 
 Download `tuxtop-<version>-x64-setup.exe` (or the `.msi`) and run it.
 
+The installer asks what shortcuts you want: a Start Menu page with a folder
+name and a *"Do not create shortcuts"* box, and a *"Create desktop shortcut"*
+tick on the last page. Both are offered by the `-setup.exe` only — the `.msi`
+has no such UI and installs its shortcuts unconditionally.
+
 The installers are **unsigned**, so SmartScreen shows "Windows protected your
 PC" on first run — *More info → Run anyway*. That is deliberate: this is an
 internal tool for one fleet, and signing it would buy a certificate for an
