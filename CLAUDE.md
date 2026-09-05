@@ -259,13 +259,25 @@ dark only is unverified.
 | `src-tauri` | the desktop window. Commands are one-line delegations; it owns the window and turns events into webview topics |
 | `tuxtop-serve` | a headless server. Same service, reached over HTTP |
 
-`tuxtop-serve` binds **loopback only and has no authentication**, deliberately.
-Put something in front of it that terminates TLS and establishes identity: an
-`ssh -L` tunnel, nginx or Caddy, a VPN, `tailscale serve`, Cloudflare Access.
-A monitoring tool inventing its own session handling acquires a login bug for
-no benefit. Authentication delegates completely and always has —
+`tuxtop-serve` binds **127.0.0.1 by default and has no authentication at any
+address**, deliberately. Put something in front of it that terminates TLS and
+establishes identity: an `ssh -L` tunnel, nginx or Caddy, a VPN,
+`tailscale serve`, Cloudflare Access. A monitoring tool inventing its own
+session handling acquires a login bug for no benefit. Authentication delegates
+completely and always has —
 [ADR-017](docs/DECISIONS.md#adr-017--one-sampler-many-viewers-the-endpoint-is-the-mode)
 records why authorization is the half that is refused.
+
+`--bind ADDR` exists so the proxy need not sit on the serving box — loopback-only
+mandated one there even when there was already one elsewhere. It takes an IP, v4
+or v6; a hostname is refused because resolving at bind time is a surprise, and
+there is no shorthand for the wildcard. **The wildcard with `--writable` is
+refused**, and only that pair: a named non-loopback address with `--writable` is
+a deployment choice and gets a loud startup line. The rule lives in
+`parse_args`, which was lifted out of `main` for the sole reason that a security
+check inside an `async fn main` that binds a socket on the way to it cannot be
+tested — `the_wildcard_with_writable_is_refused` asserts the error *variant*,
+because "returns some error" is what a typo elsewhere in the line does too.
 
 It is **read-only unless `--writable`**. Viewing is harmless; `add_host` makes
 the serving machine open an SSH connection with its own keys, which is not a

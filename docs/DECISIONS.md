@@ -1056,8 +1056,8 @@ Windows. Confirm on first install of the next release.
 
 ## ADR-017 — One sampler, many viewers; the endpoint is the mode
 
-**Date:** 2026-09-04 · **Status:** accepted · nothing built yet — this records
-the decision before the phases that implement it
+**Date:** 2026-09-04 · **Status:** accepted · part 3 (`--bind`) shipped
+2026-09-05; parts 1, 2 and 4 are Phase 14 steps 2–4 and not built yet
 
 ### Context
 
@@ -1209,9 +1209,11 @@ in.
   skips ahead. Skipping is right for a live grid — you want the newest frame,
   not a backlog — but 16 is tight once several clients are normal. Revisit with
   the first multi-client phase.
-- "Binds to 127.0.0.1 only" is currently stated in `README.md`, `SECURITY.md`,
+- "Binds to 127.0.0.1 only" was stated in `README.md`, `SECURITY.md`,
   `CLAUDE.md`, `docs/ROADMAP.md` and `tuxtop-serve/src/main.rs` twice. All six
-  become false the day `--bind` ships and must move in that commit.
+  became false the day `--bind` shipped and moved in that commit (2026-09-05).
+  What replaced them says the thing that did *not* change: no authentication at
+  any address.
 - The pitch changes shape: from an app that also has a server, to **a viewer
   whose data source is configuration**. Standalone Windows app with a local
   fleet; or one server with the SSH keys, and any number of windows and tabs

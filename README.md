@@ -218,10 +218,10 @@ cd tuxtop-serve-<version>-linux-x86_64
 ./tuxtop-serve --hosts hosts.toml --port 8787
 ```
 
-Same fleet, same views, in a browser. It binds **loopback only and has no
-authentication**, deliberately: something in front of it terminates TLS and
-establishes identity, and that is not a job a monitoring tool should invent for
-itself. Any of these does it —
+Same fleet, same views, in a browser. It binds **127.0.0.1 by default and has
+no authentication at any address**, deliberately: something in front of it
+terminates TLS and establishes identity, and that is not a job a monitoring tool
+should invent for itself. Any of these does it —
 
 ```sh
 ssh -L 8787:localhost:8787 server     # nothing to install; start here
@@ -237,6 +237,17 @@ What is *not* on the list is opening the port, which is the one people reach
 for. It is **read-only unless `--writable`**, because adding a host makes the
 serving machine open SSH with its own keys, which is not a capability a browser
 tab should have merely by reaching the port.
+
+`--bind ADDR` moves it off loopback when the proxy is somewhere else — a tailnet
+address, say, rather than a proxy forced onto this exact box. It takes an IP, v4
+or v6; a hostname is refused, because resolving one at bind time can hand you an
+address you did not ask for. There is no shorthand for the wildcard: if you want
+`0.0.0.0` you type it, and the ugliness is the point. **`0.0.0.0` (or `::`)
+together with `--writable` is refused outright** — anyone who reached the port
+could then make the serving machine open SSH to anywhere with its own keys, and
+that consequence lands on other people's machines. A *named* non-loopback
+address with `--writable` is a deployment choice and gets a loud startup line
+rather than a refusal.
 
 ---
 

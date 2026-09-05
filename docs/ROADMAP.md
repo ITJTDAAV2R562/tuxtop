@@ -504,10 +504,12 @@ Work that arrived from design conversation rather than the plan:
   as predicted: `src/http.js` installs a `__TAURI__` implementation backed by
   fetch and EventSource, and only when nothing else has, so the frontend needed
   no changes at all. The security posture was taken as the deliberate decision
-  it deserved - loopback only with no authentication, fronted by a proxy that
-  does TLS and identity (`tailscale serve` here, but an `ssh -L` tunnel, nginx,
-  Caddy or a VPN equally); read-only unless `--writable`, because `add_host` makes
-  the serving machine open SSH with its own keys. See CLAUDE.md, "Two shells,
+  it deserved - no authentication of its own, fronted by a proxy that does TLS
+  and identity (`tailscale serve` here, but an `ssh -L` tunnel, nginx, Caddy or a
+  VPN equally); read-only unless `--writable`, because `add_host` makes the
+  serving machine open SSH with its own keys. It bound loopback only until
+  Phase 14 added `--bind`, which changes where it listens and nothing about what
+  it authenticates. See CLAUDE.md, "Two shells,
   one service".
 
 - ~~**Distribution.**~~ **Shipped, 2026-08-25** - `v0.2.0`: a Windows `.msi`
@@ -608,7 +610,7 @@ What this cost, and what was learned:
 
 ---
 
-## Phase 14 — Remote mode: one sampler, many viewers — **not started**
+## Phase 14 — Remote mode: one sampler, many viewers — **step 1 of 4 done**
 
 Decided in
 [ADR-017](DECISIONS.md#adr-017--one-sampler-many-viewers-the-endpoint-is-the-mode),
@@ -620,20 +622,29 @@ the part that matters — the sampling: each instance is another nineteen sshd
 sessions and nineteen shell loops on machines we promised only to observe. The
 fix is to fan in rather than out.
 
-1. **`--bind ADDR` on `tuxtop-serve`**, default `127.0.0.1`. IP only, no
-   shorthand for the wildcard, and `0.0.0.0` together with `--writable` is
-   refused. Tests named for both rules: the default when no flag is given, and
-   the refusal — the second is the one a mutant would quietly invert.
-   This lands with the doc sweep, because "binds to 127.0.0.1 only" is asserted
-   in six places and all six become false the same day.
+1. ~~**`--bind ADDR` on `tuxtop-serve`**, default `127.0.0.1`.~~ **Done,
+   2026-09-05.** IP only — a hostname is refused rather than resolved at bind
+   time — no shorthand for the wildcard, and `0.0.0.0` or `::` together with
+   `--writable` is refused by `parse_args`, which is the only place the rule
+   lives. A *named* non-loopback address with `--writable` gets a loud startup
+   line instead, per ADR-017; the startup line now states who can reach the
+   server rather than only what it refuses.
 
-   **Neither test can be written against the current shape**, so extract first:
-   argument parsing is inline in `async fn main()` and `main.rs` holds zero
-   tests, all nine in the crate being in `api.rs`. Lift the parse and its
-   validation into a pure `fn` returning the config or an error, and test that.
-   Doing it the other way round means the awkward test is the refusal — which
-   is precisely the one `tuxtop-serve` cannot afford to skip, being the second
-   of its two security-shaped invariants and a single `!` away from inverting.
+   The extraction came first, as planned: parsing was inline in `async fn
+   main()` and `main.rs` held zero tests, so neither rule could be asserted at
+   all. `parse_args` is pure and returns `Parsed`/`ArgError`.
+   `the_wildcard_with_writable_is_refused` asserts the error **variant**, not
+   merely `is_err` — "returns some error" is also what a typo elsewhere in the
+   line does, which is the same way the first traversal test passed with the
+   guard removed. It further asserts that neither `--bind 0.0.0.0` alone nor
+   `--writable` alone is refused, so the combination is demonstrably the only
+   reason. Verified by hand-mutation: deleting the guard, widening it to all
+   non-loopback, and defaulting `bind` to the wildcard each fail the test named
+   for the rule they break.
+
+   The doc sweep landed in the same commit: "binds to 127.0.0.1 only" was
+   asserted in `README.md`, `SECURITY.md`, `CLAUDE.md`, this file and
+   `main.rs` twice, and all six became false the same day.
 
 2. **Remote mode in the desktop app, read-only.** `server` in `[settings]`;
    absent means sample locally. Native window, no local sampling, no local

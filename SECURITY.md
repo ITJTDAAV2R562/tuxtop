@@ -36,13 +36,18 @@ That removes most of the usual surface, and leaves these:
 
 ## What is out of scope, by design
 
-- **`tuxtop-serve` binds loopback and has no authentication.** This is
-  documented, deliberate and not a vulnerability report. Put something in front
-  of it that terminates TLS and establishes identity — an `ssh -L` tunnel needs
-  nothing installed, and nginx or Caddy, a VPN, `tailscale serve` and Cloudflare
-  Access all do it too. A monitoring tool that invents its own session handling
-  acquires a login bug for no benefit. Binding it to a public interface is a
-  deployment choice this project advises against.
+- **`tuxtop-serve` has no authentication, at whatever address it binds.** This
+  is documented, deliberate and not a vulnerability report. Put something in
+  front of it that terminates TLS and establishes identity — an `ssh -L` tunnel
+  needs nothing installed, and nginx or Caddy, a VPN, `tailscale serve` and
+  Cloudflare Access all do it too. A monitoring tool that invents its own
+  session handling acquires a login bug for no benefit. `--bind` defaults to
+  `127.0.0.1` and will take any IP you name, so that the proxy can live
+  somewhere other than the serving box; putting it on a public interface is a
+  deployment choice this project advises against. The one combination it refuses
+  is the wildcard (`0.0.0.0` or `::`) together with `--writable`, because that
+  pair lets anyone who reaches the port make the serving machine open SSH
+  connections using its own keys.
 - **The installers are unsigned.** SmartScreen warns on first run and the
   release notes say so. `SHA256SUMS` is attached in place of a certificate. The
   reasoning, including the three signing routes that were priced and declined,
