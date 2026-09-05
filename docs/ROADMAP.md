@@ -627,6 +627,14 @@ fix is to fan in rather than out.
    This lands with the doc sweep, because "binds to 127.0.0.1 only" is asserted
    in six places and all six become false the same day.
 
+   **Neither test can be written against the current shape**, so extract first:
+   argument parsing is inline in `async fn main()` and `main.rs` holds zero
+   tests, all nine in the crate being in `api.rs`. Lift the parse and its
+   validation into a pure `fn` returning the config or an error, and test that.
+   Doing it the other way round means the awkward test is the refusal — which
+   is precisely the one `tuxtop-serve` cannot afford to skip, being the second
+   of its two security-shaped invariants and a single `!` away from inverting.
+
 2. **Remote mode in the desktop app, read-only.** `server` in `[settings]`;
    absent means sample locally. Native window, no local sampling, no local
    keys. The mode and the age of the data are visible in the chrome, not in
