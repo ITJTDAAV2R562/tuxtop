@@ -154,6 +154,16 @@ Tauri pulls webkit2gtk on Linux, which is absent on the WSL dev box. Adding it
 to the workspace breaks `cargo test` on the machine where development happens.
 [ADR-006](docs/DECISIONS.md#adr-006--tuxtop-core-is-a-separate-crate-outside-the-tauri-workspace).
 
+The consequence to remember is its **second lockfile**. `src-tauri/Cargo.lock`
+is never touched by a workspace `cargo build`, so **any change to
+`tuxtop-core`'s dependencies leaves it stale** — and CI's Windows job builds
+with `--locked`, which does not update a lock, it refuses: *"cannot update the
+lock file … because --locked was passed"*. Releasing says this about version
+bumps; it is the same mechanism for adding or removing a dependency, and it has
+now caught both. Refresh it in the same commit:
+`cargo update -p tuxtop -p tuxtop-core --manifest-path src-tauri/Cargo.toml --offline`.
+Nothing on the dev box notices, because nothing here builds that crate.
+
 **No blocking I/O in async tasks.**
 One Tokio task per host. A host that hangs must degrade only its own card.
 
