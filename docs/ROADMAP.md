@@ -652,12 +652,115 @@ fix is to fan in rather than out.
    Settings — a window that looks identical in both modes while showing stale
    remote readings is this project's founding bug with a new coat.
 
+   The shape is settled in
+   [ADR-018](DECISIONS.md#adr-018--the-desktop-viewer-speaks-plain-http-at-the-event-seam):
+   the swap happens at the `supervisor::Event` seam, the client is hand-rolled
+   plain HTTP that refuses `https://`, and it splits — parser in core where it
+   is tested, socket in `src-tauri` where nothing ever compiles it here.
+
+   **Files.** New: `crates/tuxtop-core/src/remote.rs` (`split_sse_frames`,
+   event decoding, endpoint validation, freshness) and
+   `src-tauri/src/remote.rs` (connect, read loop, emit). Changed:
+   `hostlist.rs` (the settings split), `service.rs` (`start_all` starts nothing
+   when an endpoint is set; `capabilities`), `src-tauri/src/main.rs` (the
+   `capabilities` command, the remote loop in `setup`), `src/app.js`,
+   `src/index.html`, `src/styles.css`, and `tests/harness/stub.js` — the stub
+   needs every new command, and a gap there has twice presented as an
+   application bug.
+
+   **`Settings` splits in code and not on disk.** Fleet settings
+   (`interval_ms`, `history_cap_mb`) belong to whoever samples; viewer settings
+   (`server`, `always_on_top`, `update_check`) belong to the window. Keep one
+   `[settings]` table in the file via `#[serde(flatten)]` so an existing
+   `hosts.toml` loads unchanged. Phase 13 is the trap to re-read first:
+   `set_settings` rebuilt `Settings` field by field, so a new field came back
+   as serde's default and turned the update check *back on* for anyone who had
+   turned it off. Two structs mean two rebuild sites with that hazard.
+   `viewer_settings_survive_a_fleet_settings_save`.
+
+   **The mode is derived from whether `server` is set, never stored** — a
+   stored `mode` can contradict the URL beside it.
+   `remote_mode_is_derived_not_stored`.
+
+   **Assert the state after the call, not before it.** `start_all` must start
+   nothing in remote mode, and `Service::start_all` was once replaceable with
+   `Ok(Default::default())` while a test named for launch still passed, because
+   `add_host` had already started the hosts and the test asserted something
+   true before the call. `start_all_starts_nothing_when_an_endpoint_is_set`.
+
+   **Freshness is measured at arrival and judged against the server's own
+   interval.** `Sample` carries no timestamp (`model.rs`) and this step adds
+   none — arrival is honest here because the stream never replays. But the
+   threshold cannot be a constant: a server sampling at 5 s reads as
+   permanently stale against a 1 Hz expectation, so take `interval_ms` from the
+   server's `get_settings`.
+   `freshness_is_measured_against_the_servers_interval_not_a_constant`.
+
+   **Losing the server must not blank the grid.** This is the one failure local
+   mode has never had: a single dead link takes out all nineteen cards at once.
+   Keep the last grid, mark it stale, and say *no contact with `<endpoint>`
+   since HH:MM:SS*. Nineteen cards each saying "offline" reads as a dead fleet
+   rather than a dead link, which is the generic-offline failure the hard rules
+   already forbid. `losing_the_server_does_not_blank_the_grid`.
+
+   **`capabilities` becomes a Tauri command.** `app.js` currently catches its
+   absence and concludes *"the desktop app, which can do it all"* — false the
+   moment that app points at a read-only server, and the result is buttons that
+   can only return an error, which is the exact thing the command exists to
+   prevent. It reports *effective* capability, and the catch block dies with
+   it. The server also reports its version there, because a viewer one release
+   ahead reads a renamed field as absent and draws a plausible wrong number;
+   a mismatch is stated, not guessed. `a_version_mismatch_is_stated_not_guessed`.
+
+   **`split_sse_frames` inherits the rule its name points at.** An event split
+   across two reads that decodes as truncated JSON is the founding bug over a
+   new transport. Mirror `split_frames`: complete frames out, tail buffered.
+
+   **The chrome needs a layout decision, not a spare corner.** The tally was
+   ~70px from overflowing the toolbar at nineteen hosts. The endpoint and its
+   freshness get their own element, with a Playwright test at the harness's
+   nineteen hosts, in both themes.
+
 3. **Switching endpoints without a restart.** Needs `Supervisor::stop_all`,
    which does not exist yet; the teardown belongs there rather than in the
    caller that switches. History is discarded across a switch, never appended.
 
+   **`HistoryStore` has no `clear` either** — only `forget_host(name)` — and
+   discarding history needs one. Two fleets each with a host called `db1` would
+   otherwise blend charts, and one customer's spike on another's graph looks
+   entirely fine.
+
+   **One switch method: `Service::use_endpoint`.** Not a check in each caller.
+   Five callers already restart hosts as a side effect of something else
+   (`start_all`, `set_settings`, `set_host_interval`, `set_host_os`,
+   `add_host`), and the pause rule survives only because it lives in
+   `Supervisor::start` and nowhere else — ADR-012. Switching back to local
+   restarts the fleet, which makes it the sixth member of that family and the
+   one most likely to quietly resume a machine somebody took down.
+   `switching_back_to_local_does_not_resume_a_paused_host`.
+
+   `stop_all` is unconditional: stopping an already-stopped host is a no-op,
+   and pause is enforced on the way back, not on the way out.
+
 4. **Saved endpoints**, so several fleets — or several customers — are one
    selection rather than one edit.
+
+   **They live in the local `hosts.toml`**, which stays local in remote mode
+   along with the local host list — that list is precisely what you switch back
+   *to*. `[[endpoints]]` with a name and a URL, round-tripped by `Config` the
+   way `HostsFile` already is.
+
+   **Selecting a saved endpoint goes through the same `use_endpoint` as typing
+   one.** A second path is a second teardown to forget, which is the ADR-012
+   lesson wearing different clothes.
+   `a_saved_endpoint_switches_through_the_same_path_as_a_typed_one`.
+
+   **A new field needs a control on both paths.** Adding an endpoint and
+   editing one that already exists are two places, and the second is the one
+   that gets forgotten — host `os` shipped with a backend, a `hosts.toml` entry
+   and a documented example, reachable only from the Add host dialog and so
+   only for a host that did not exist yet.
+   `check-commands-reachable.py` covers commands and cannot cover fields.
 
 ~~Worth doing on the way through: the `broadcast` buffer is 16 and that is
 tight once several clients are normal.~~ **Checked 2026-09-07: there is nothing

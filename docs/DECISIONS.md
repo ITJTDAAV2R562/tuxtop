@@ -1163,6 +1163,10 @@ misreading.
 4. **`paused` becomes shared in remote mode.** It edits the server's
    `hosts.toml` and blanks the card for everyone watching. That is correct and
    surprising enough to state rather than let someone discover.
+   **Deferred out of Phase 14 (2026-09-07):** every step of that phase is
+   read-only, so nothing writes to a server within it. This rule binds the
+   follow-on phase that adds remote writes, and the viewer meanwhile hides the
+   controls a read-only server would refuse, via `capabilities`.
 
 The existing `capabilities` command covers the rest: a read-only server already
 hides the controls it would refuse, rather than drawing buttons that can only
@@ -1185,7 +1189,11 @@ the federation trigger again.
 **Authentication and permissions inside Tuxtop.** These separate, and only one
 of them is a swamp. *Authentication* — who are you — delegates completely:
 `oauth2-proxy` in front gives Google SSO at **zero lines of Tuxtop code**, and
-Tailscale or mTLS give identity the same way. That option stays open forever and
+Tailscale or mTLS give identity the same way. (For **browsers**. The desktop
+viewer speaks plain HTTP and reaches the server over `ssh -L` or a tailnet
+address instead — see
+[ADR-018](#adr-018--the-desktop-viewer-speaks-plain-http-at-the-event-seam),
+which narrows this list for that one client and records what would reopen it.) That option stays open forever and
 costs nothing to keep open. *Authorization* — what may you do — is roles,
 per-host ACLs, and a permission check that fails open once and quietly shows
 somebody a fleet they should not see. Tuxtop's authorization model is
@@ -1229,3 +1237,112 @@ Either federation trigger above fires, or someone wants per-user write access �
 at which point the honest answer is that they are asking for the permission
 system this ADR declines, and the decision is whether that has changed, not
 whether it can be avoided.
+
+---
+
+## ADR-018 — The desktop viewer speaks plain HTTP at the `Event` seam
+
+**Date:** 2026-09-07 · **Status:** accepted · implements part 2 of
+[ADR-017](#adr-017--one-sampler-many-viewers-the-endpoint-is-the-mode)
+
+### Context
+
+ADR-017 decided that a viewer points either at a fleet or at a server. It did
+not say **where in the stack** the swap happens, or **what speaks HTTP**. Both
+are load-bearing and neither has one obvious answer, so a session starting from
+the roadmap line alone would pick in the first ten minutes and could easily
+pick the expensive one.
+
+### Decision 1 — the swap happens at `supervisor::Event`
+
+`Event` is already the boundary both shells share. `src-tauri/src/main.rs` maps
+`Event` to webview topics; `tuxtop-serve`'s `api::encode_event` maps the *same*
+`Event` to SSE, under the same topic names, deliberately. So a remote data
+plane that merely **produces `Event`s** leaves `app.js`, `src/http.js`, every
+topic name and the desktop CSP untouched. The window cannot tell where its
+events came from, which is the property that makes remote mode a data-plane
+change rather than a second frontend.
+
+**Rejected: point `src/http.js` at the server from inside the desktop
+webview.** It looks free — the shim exists and already replaces the whole
+backend for browsers — and it is not. `http.js` opens with
+`if (globalThis.__TAURI__) return;` because under the desktop app Tauri has
+already installed the real one; that early return is the correct behaviour, not
+an obstacle to route around. And `tauri.conf.json` sets
+`default-src 'self'; img-src 'self' data:` with no `connect-src`, so `fetch` and
+`EventSource` to any other origin are refused. Taking this route means widening
+the desktop shell's CSP to a hostname a user typed into a settings field. That
+trades a dependency for a hole in the one surface `SECURITY.md` names as in
+scope, which is the wrong direction.
+
+### Decision 2 — the client is hand-rolled, plain HTTP, and refuses `https://`
+
+Two requests against a server in this repository: `POST /api/:command` and
+`GET /api/events`. SSE framing is `data: …\n\n`. That is the base64 argument
+again — a fully specified format, a few dozen lines, and no dependency. The
+distinction that matters is direction: hand-rolling an HTTP *server* parser
+faces the network and is how a monitoring tool acquires its first remote code
+execution; a client parses what our own server sent it.
+
+**No TLS.** The server already delegates TLS to something in front of it; the
+viewer delegates it to the transport. `ssh -L` gives loopback, and a tailnet or
+VPN address is encrypted by WireGuard at a layer below this one. `--bind`
+(ADR-017 part 3) is what makes that deployment possible, so the two decisions
+are one decision seen from two ends.
+
+**Measured, because this project prefers a measurement to an estimate.**
+`tuxtop-core` is 25 crates today and `tuxtop-serve` 65. A probe crate with
+`reqwest --no-default-features --features rustls,stream` came to 82 — putting
+it in core roughly triples core and leaves it heavier than the crate CLAUDE.md
+calls "the one heavyweight dependency", in the crate the Windows shell links.
+`ureq` measured 27. Hand-rolled is 0.
+
+### Decision 3 — the parser lives in core, the socket in `src-tauri`
+
+`src-tauri` is outside the workspace (ADR-006), so `cargo test` never compiles
+it and neither does CI's `core` job; only the `windows` job does, and that is a
+`cargo build`. A hand-rolled frame parser placed there would be a parser **no
+test ever runs**, in the one project whose stated thesis is that the tests are
+the memory it does not otherwise have. That is not a trade worth making for
+tidiness.
+
+So it splits exactly the way the frontend already splits — pure logic in a
+module that is tested, DOM (here, sockets) outside it:
+
+| lives in | what |
+| --- | --- |
+| `tuxtop-core::remote` | `split_sse_frames`, event decoding, endpoint validation, freshness |
+| `src-tauri/src/remote.rs` | the TCP connect, the read loop, emitting to the window |
+
+**A parser is not a client**, which is why this does not undermine the reason
+the *client* stays out of core: a `tuxtop-serve` that could view another
+`tuxtop-serve` is federation, an ADR-017 non-goal, and building its mechanism
+in core while relying on nobody calling it is how a non-goal ships by accident.
+Core gains the ability to *read* a frame, not to fetch one.
+
+`split_sse_frames` inherits the hard rule its name points at: **never let the
+parser see a partial frame.** An SSE event split across two reads that decodes
+as a truncated JSON object is this project's founding bug arriving over a new
+transport.
+
+### Consequences
+
+- **The viewer refuses `https://`, loudly**, with an error naming the fix — not
+  a silent failure, and not a connection attempt that dies obscurely.
+- **ADR-017's proxy list narrows for one of its two clients.** `tailscale
+  serve`, nginx, Caddy, Cloudflare Access and `oauth2-proxy` front the server
+  for **browsers**. The **desktop viewer** reaches it over `ssh -L` to loopback,
+  or over a tailnet/VPN address the server was `--bind`ed to. This is worth
+  stating plainly because the deployment here is `tailscale serve`, which
+  terminates TLS — the desktop viewer talks to the tailnet address directly
+  instead, and `tailscale serve` stays for browser tabs.
+- Core gains no dependency and stays at 25 crates.
+
+### Revisit when
+
+Someone needs an https-terminating proxy in front of a **desktop** viewer —
+`oauth2-proxy` for SSO, or a server that must sit behind Cloudflare Access.
+Then `ureq` (measured 27 crates) in `src-tauri`, with the SSE read loop on its
+own thread rather than a Tokio task, because `ureq` blocks and blocking I/O in
+an async task is banned. The seam does not move, so this is a contained change:
+`tuxtop-core::remote` keeps parsing, and only the fetching is replaced.
