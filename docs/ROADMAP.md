@@ -716,10 +716,26 @@ fix is to fan in rather than out.
    across two reads that decodes as truncated JSON is the founding bug over a
    new transport. Mirror `split_frames`: complete frames out, tail buffered.
 
-   **The chrome needs a layout decision, not a spare corner.** The tally was
-   ~70px from overflowing the toolbar at nineteen hosts. The endpoint and its
-   freshness get their own element, with a Playwright test at the harness's
-   nineteen hosts, in both themes.
+   **The browser is already a remote viewer, and has been since
+   `tuxtop-serve` shipped.** A tab served by a server is pointed at a server by
+   definition: its numbers were taken by a machine it is not on, at an interval
+   it did not choose, and it says nothing about either. `app.js` takes
+   `globalThis.__TAURI__` and never asks which implementation it got, so the
+   distinction does not currently exist in the frontend at all. ADR-017 rule 1
+   binds that tab exactly as it binds the desktop window, so the chrome is
+   **shared frontend work driven by data both backends supply** — endpoint
+   identity, age of the last event, the server's interval — and not a
+   desktop-only path.
+
+   That is also what makes it *testable*. `src-tauri` is outside the workspace
+   and is never compiled here, so a chrome built only for the desktop window
+   could be verified only by building on Windows. Built for both, the whole of
+   it is reachable from the Playwright harness.
+
+   **It needs a layout decision, not a spare corner.** The tally was ~70px from
+   overflowing the toolbar at nineteen hosts. The endpoint and its freshness
+   get their own element, with a Playwright test at the harness's nineteen
+   hosts, in both themes.
 
 3. **Switching endpoints without a restart.** Needs `Supervisor::stop_all`,
    which does not exist yet; the teardown belongs there rather than in the

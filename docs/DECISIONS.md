@@ -1152,6 +1152,10 @@ misreading.
    window that looks identical in both modes while showing stale remote data
    *is* the confident wrong number. Whose readings, and how old, belong in the
    chrome — not in Settings.
+   **This binds the browser too (noted 2026-09-07).** A tab served by
+   `tuxtop-serve` is pointed at a server by definition, so it has been a remote
+   viewer with no freshness on screen since that shipped. The rule is about
+   viewers, not about the desktop shell.
 2. **History is discarded on a switch, never appended.** History is in-memory
    per instance. Two fleets each with a host called `db1` would otherwise blend
    charts, and one customer's spike on another's graph looks entirely fine.
