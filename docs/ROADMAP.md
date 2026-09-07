@@ -887,9 +887,26 @@ in the mechanism.** Confirm a live session survives well past the cap *first*,
 then that the remote dies after the client is killed. Checking only the second
 half is how the original broken design got as far as it did.
 
+### Landed so far
+
+Both code changes are in; **the phase is not done**, because none of what
+matters about them has been observed on a Windows host yet.
+
+- The lifetime cap is unconditional and renamed `REMOTE_LOOP_MAX_MS`. The new
+  test `the_lifetime_cap_bounds_a_watched_loop_too` asserts the cap is *not*
+  nested under the session watch, and was checked by reverting the hoist: it
+  fails against the old arrangement. The older test beside it, which asserts
+  only that the cap is present, passes either way — which is exactly how the
+  bug survived.
+- `transport::win_job` puts every `ssh` child into a job object with
+  `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`. `windows-sys` was already in core's
+  Windows tree via tokio, so this cost **no new crates**: 24 before, 24 after.
+
 ### Exit criteria
 
 - `bash scripts/verify.sh` green, including the Windows build and smoke test.
+  Note that a green smoke test is *not* evidence the job object works — it
+  cannot distinguish the new mechanism from the incidental pipe-close one.
 - On a real Windows host: `taskkill /F` the app, and no `ssh.exe` orphan
   survives — and no `cmd.exe`/`powershell.exe` sampler loop survives on the
   monitored host either. The second half is the one that matters and the one

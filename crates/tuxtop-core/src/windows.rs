@@ -30,14 +30,23 @@ use serde::{Deserialize, Serialize};
 
 use crate::facts::HostFacts;
 
-/// How long a loop that could not find its session runs before giving up.
+/// How long any remote loop runs before giving up — watched or not.
 ///
-/// Only reachable when the ancestor walk in [`watchdog_preamble`] finds no
-/// `sshd.exe` — which should not happen, since these scripts are only ever
-/// started over SSH. It exists so that "a remote loop never runs forever" is
-/// unconditional rather than dependent on that walk succeeding. The client
-/// reconnects on its own, so the cost of being wrong is one reconnect.
-pub const UNWATCHED_MAX_MS: u32 = 1_800_000;
+/// Checked on every pass of [`watchdog_sleep`], unconditionally, which is what
+/// makes *"a remote loop never runs forever"* a guarantee rather than a hope.
+///
+/// It used to be the `else` arm beside the session watch, so it applied only
+/// when the ancestor walk *failed* — the exact inverse of what its own comment
+/// claimed. The walk normally succeeds, so the normal path was the unbounded
+/// one, and an abandoned client (`taskkill /F` runs no destructor, so `ssh`
+/// is orphaned with its session still alive) left the loop polling forever.
+/// Fifteen were found on one Windows host, spanning days.
+///
+/// Thirty minutes, and deliberately not longer. A cap nobody can soak-test in
+/// one sitting ships unverified, and unverified is the entire failure mode
+/// here. The cost of firing on a healthy connection is one reconnect, which
+/// the client does by itself.
+pub const REMOTE_LOOP_MAX_MS: u32 = 1_800_000;
 
 /// PowerShell that finds the SSH session this loop belongs to. Runs once.
 ///
@@ -67,8 +76,9 @@ pub const UNWATCHED_MAX_MS: u32 = 1_800_000;
 /// reliably dies, so the loop finds it on the way up at startup and watches it.
 ///
 /// `$wdi` is left at 0 if no `sshd.exe` ancestor is found, which disables the
-/// watchdog rather than killing a session that might be legitimate — see
-/// [`UNWATCHED_MAX_MS`] for the backstop that then applies.
+/// session watch rather than killing a session that might be legitimate. The
+/// lifetime cap in [`REMOTE_LOOP_MAX_MS`] still applies — it applies to every
+/// loop, not only to this fallback, which is the correction Phase 15 made.
 fn watchdog_preamble() -> String {
     "$wdi=0\n\
      $wdp=Get-CimInstance Win32_Process -Filter \"ProcessId=$PID\"\n\
@@ -89,6 +99,12 @@ fn watchdog_preamble() -> String {
 /// is. Checking once per cycle instead would leave a host sampled hourly
 /// holding its orphan for the rest of the hour.
 ///
+/// Two independent exits, checked in this order: the lifetime cap, which binds
+/// every loop, and the session watch, which binds one that found its `sshd`.
+/// The cap is first and unconditional on purpose — as the `else` arm of the
+/// watch it bounded only the loops that never found a session, which is the
+/// rarer case and not the one that leaked.
+///
 /// `GetProcessById` throws when the PID is gone, which is the signal; it is a
 /// handle open, not a WMI query, so it is cheap enough to run every second.
 ///
@@ -100,15 +116,16 @@ fn watchdog_sleep(ms: u32) -> String {
     format!(
         "$slept=0\n\
          while($slept -lt {ms}){{\n\
+           if($wds.ElapsedMilliseconds -gt {cap}){{ [System.Environment]::Exit(0) }}\n\
            if($wdi -ne 0){{\n\
              try {{ $null=[System.Diagnostics.Process]::GetProcessById($wdi) }}\n\
              catch {{ [System.Environment]::Exit(0) }}\n\
-           }} elseif($wds.ElapsedMilliseconds -gt {cap}){{ [System.Environment]::Exit(0) }}\n\
+           }}\n\
            $step=[Math]::Min(1000,{ms}-$slept)\n\
            Start-Sleep -Milliseconds $step\n\
            $slept+=$step\n\
          }}\n",
-        cap = UNWATCHED_MAX_MS,
+        cap = REMOTE_LOOP_MAX_MS,
     )
 }
 
@@ -682,15 +699,41 @@ TXWP|9100|0|4194304|explorer|
 
     #[test]
     fn a_loop_that_cannot_find_its_session_still_gives_up_eventually() {
-        // The ancestor walk failing should not resurrect the original bug. It
-        // disables the watchdog rather than killing a session that might be
-        // legitimate, so something else has to bound the lifetime - otherwise
-        // "never runs forever" holds only when the walk succeeds, which is
-        // exactly the case nobody would notice breaking.
+        // The ancestor walk failing must not resurrect the original bug: it
+        // disables the session watch rather than killing something that might
+        // be legitimate, so the lifetime cap is all that bounds such a loop.
         let script = decode_command(&win_sampler_command(5_000));
         assert!(
-            script.contains(&format!("$wds.ElapsedMilliseconds -gt {UNWATCHED_MAX_MS}")),
+            script.contains(&format!(
+                "$wds.ElapsedMilliseconds -gt {REMOTE_LOOP_MAX_MS}"
+            )),
             "an unwatched loop runs forever: {script}"
+        );
+    }
+
+    #[test]
+    fn the_lifetime_cap_bounds_a_watched_loop_too() {
+        // The cap was the `elseif` arm of the session watch, so it bounded
+        // only loops that failed to find their sshd - the inverse of the
+        // guarantee the constant's own comment claimed. The walk normally
+        // succeeds, so the normal path had no bound at all, and an abandoned
+        // client left loops polling a Windows host for days.
+        //
+        // Note what the test above could not do: it asserts the cap is
+        // *present*, and the cap was present throughout - it passed for every
+        // one of those days. Presence was never the invariant. Not being
+        // nested under the watch is.
+        let script = decode_command(&win_sampler_command(5_000));
+        assert!(
+            !script.contains("elseif($wds.ElapsedMilliseconds"),
+            "the cap is the else arm of the session watch, so it bounds only a \
+             loop that never found its session: {script}"
+        );
+        assert!(
+            script.contains(&format!(
+                "if($wds.ElapsedMilliseconds -gt {REMOTE_LOOP_MAX_MS})"
+            )),
+            "the cap is not checked unconditionally: {script}"
         );
     }
 

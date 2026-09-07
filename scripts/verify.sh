@@ -184,9 +184,17 @@ else
     #
     # This does *not* verify kill_on_drop, whatever the comment here used to
     # claim. `taskkill /F` gives the process no chance to run a destructor, so
-    # kill_on_drop cannot fire; the orphaned ssh processes exit on their own
-    # when their pipes close. What is actually being checked is that they do
-    # not survive the app indefinitely - a weaker claim, and the true one.
+    # kill_on_drop cannot fire. Since Phase 15 the job object in
+    # transport::win_job is what kills them, and the kernel is what closes the
+    # handle - which is the whole point, being the one thing a hard kill cannot
+    # skip. Before that they exited incidentally, on the next write to a pipe
+    # nobody was reading.
+    #
+    # Note what this check still cannot tell apart: both mechanisms end with
+    # the processes gone, so a pass here is not evidence the job object works.
+    # That needs the case neither covers - a client *abandoned* rather than
+    # killed - and it has to be checked on a real Windows host, watching the
+    # remote powershell loop rather than the local ssh client.
     #
     # It was a single sample after 3 seconds, which is a coin flip: measured
     # five times across two commits, "still alive after 3s" came out 2, 11, 2,

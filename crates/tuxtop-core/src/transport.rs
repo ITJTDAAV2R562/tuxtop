@@ -48,6 +48,99 @@ fn ssh_command(args: &[String]) -> Command {
     cmd
 }
 
+/// Bind every `ssh` child to the lifetime of this process, however it ends.
+///
+/// `kill_on_drop` covers a clean shutdown and nothing else. `taskkill /F`, a
+/// crash, a dev-loop rebuild or the OS reclaiming the app runs no destructor,
+/// so the child is orphaned with both pipes intact. `verify.sh`'s smoke test
+/// observes those orphans exiting anyway, on the next write to a closed pipe -
+/// but that is incidental rather than designed, and it has at least one hole:
+/// fifteen abandoned clients were found on one Windows host, each holding a
+/// per-connection `sshd` alive and with it a remote sampler loop polling WMI,
+/// the oldest for five days. That breaks
+/// [ADR-004](../../../docs/DECISIONS.md): the monitored host was left running
+/// something we started, long after we were gone.
+///
+/// A job object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` is the only
+/// mechanism that survives a hard parent death, because the kernel is what
+/// closes the handle. When the last one goes - however this process died -
+/// every process in the job is terminated.
+///
+/// Two details that decide whether it works at all:
+/// - The handle must **not** be inheritable, or each child holds the job open
+///   itself and the last handle never closes. `CreateJobObjectW` with null
+///   attributes gives a non-inheritable handle, which is why they are null.
+/// - The handle is deliberately **never closed**. It is process-wide and lives
+///   until the process does; closing it early is precisely the event that
+///   kills every sampler.
+///
+/// Failure is logged and tolerated rather than propagated. This is a backstop:
+/// refusing to sample because a backstop could not be armed fails in the
+/// dangerous direction, and the remote loop's own `REMOTE_LOOP_MAX_MS` cap
+/// still bounds the damage. It is not swallowed - a missing backstop that
+/// nobody is told about is how this bug lasted five days.
+#[cfg(windows)]
+mod win_job {
+    use std::sync::OnceLock;
+
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+
+    /// The job, as a `usize` so it can live in a `static` without a raw
+    /// pointer's `Send`/`Sync` problem. Only ever handed back to the API.
+    static JOB: OnceLock<Option<usize>> = OnceLock::new();
+
+    fn job() -> Option<usize> {
+        *JOB.get_or_init(|| unsafe {
+            let h = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+            if h.is_null() {
+                eprintln!(
+                    "tuxtop: could not create the job object that kills ssh \
+                     children if this process dies hard; orphaned remote \
+                     samplers will be bounded only by their own lifetime cap"
+                );
+                return None;
+            }
+            let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            if SetInformationJobObject(
+                h,
+                JobObjectExtendedLimitInformation,
+                std::ptr::from_ref(&info).cast(),
+                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            ) == 0
+            {
+                eprintln!(
+                    "tuxtop: could not set kill-on-close on the ssh job \
+                     object; orphaned remote samplers will be bounded only by \
+                     their own lifetime cap"
+                );
+                return None;
+            }
+            Some(h as usize)
+        })
+    }
+
+    /// Put one freshly spawned child into the job.
+    pub fn adopt(child: &tokio::process::Child) {
+        let (Some(j), Some(p)) = (job(), child.raw_handle()) else {
+            return;
+        };
+        // SAFETY: both handles come from the OS - the job from
+        // `CreateJobObjectW` above, the process from the child we just
+        // spawned and still own.
+        if unsafe { AssignProcessToJobObject(j as *mut _, p) } == 0 {
+            eprintln!(
+                "tuxtop: could not put an ssh child into the job object; if \
+                 this process is killed hard that child may outlive it"
+            );
+        }
+    }
+}
+
 pub fn ssh_args(host: &HostConfig, remote_cmd: &str) -> Vec<String> {
     let mut args: Vec<String> = [
         // Fail fast instead of hanging on an unreachable host: the UI wants a
@@ -145,6 +238,10 @@ impl SshSampler {
             .stderr(Stdio::piped())
             .kill_on_drop(true)
             .spawn()?;
+        // `kill_on_drop` above is the clean-shutdown half. This is the other
+        // half, and the one that was missing - see `win_job`.
+        #[cfg(windows)]
+        win_job::adopt(&child);
 
         let stdout = child.stdout.take().expect("stdout was piped");
         let stderr = child.stderr.take().expect("stderr was piped");
