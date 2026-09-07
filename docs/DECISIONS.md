@@ -766,6 +766,20 @@ because the dangerous error is killing a live session, not keeping a dead one.
 A 30-minute lifetime cap then applies, so *"a remote loop never runs forever"*
 holds unconditionally instead of only when the ancestor walk succeeds.
 
+**That last sentence was false when written — found 2026-09-07, fixed in Phase
+15.** The cap is the `elseif` arm of `if($wdi -ne 0){…}` (`windows.rs`), so it
+is reachable *only when the walk fails* — the exact inverse of the claim, which
+contradicts its own conditional in the same breath. The case this ADR did not
+consider is the client that is **abandoned rather than killed**: `kill_on_drop`
+runs no destructor under `taskkill /F` or a crash, so `ssh.exe` is orphaned and
+still answering keepalives, its per-connection `sshd` therefore stays alive,
+`GetProcessById($wdi)` keeps succeeding, and the loop runs forever. Fifteen of
+them were found on a Windows host spanning three days, at roughly five of
+sixteen cores. The mechanism this ADR chose is right for the case it targets —
+client killed, session exits, loop notices. This is its complement, and the
+prose asserting otherwise is another instance of the rule that a comment does
+not fail.
+
 ### Rejected
 
 **Noticing a broken stdout.** The obvious approach, and it does not work:

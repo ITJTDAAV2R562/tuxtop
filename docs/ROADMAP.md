@@ -786,3 +786,101 @@ The `16` is `api.rs:315`, inside `mod tests`: a fixture, added later by the test
 commit `2019bb2`, and read here as though it were the server. Left as a
 correction rather than deleted, because the next reader will otherwise
 rediscover the `16`, and the only edit it invites is to a test helper.
+
+
+---
+
+## Phase 15 — Nothing we start outlives us — **not started; goes before Phase 14 step 2**
+
+**Goal:** however Tuxtop dies — cleanly, crashed, or `taskkill /F` — nothing it
+started is still running on a monitored host a minute later.
+
+This is filed as a broken promise rather than a resource leak, which is what
+earns it a slot ahead of feature work.
+[ADR-004](DECISIONS.md#adr-004--nothing-gets-installed-on-the-monitored-host)
+and
+[ADR-010](DECISIONS.md#adr-010--tuxtop-only-observes-it-never-changes-a-monitored-host)
+say the monitored host receives nothing and is changed in no way, every command
+a read. A PowerShell sampler loop polling WMI every two seconds, outliving the
+application that started it by five days, is something we left running on a
+machine we promised only to observe.
+
+**The evidence.** Fifteen orphaned `ssh.exe` clients on one Windows host,
+dead parents, command lines carrying our own `--=TUXTOP=--` delimiter, spanning
+three days — one per instance that died over that window. The host sat at
+55–62% idle; killing the orphans took it to 5–7%, with `WmiPrvSE` falling from
+355% of a core to 3.6%. Roughly five of sixteen cores, invisible, for five days.
+
+**Two mechanisms, and neither is the one ADR-013 reasoned about.**
+
+- `transport.rs` sets `.kill_on_drop(true)`, which fires on drop and only on
+  drop. `taskkill /F`, a crash, a dev-loop rebuild or the OS killing the app
+  runs no destructor, so the child is orphaned, still connected, still
+  answering keepalives. CLAUDE.md already concedes the premise in the
+  smoke-test note — *"`taskkill /F` leaves no chance to run a destructor"* — and
+  nobody followed it to the far side.
+- `windows.rs` puts the lifetime cap in the `elseif` arm of
+  `if($wdi -ne 0){…}`, so it applies **only when the ancestor walk failed**.
+  Walk succeeds and client abandoned: the per-connection `sshd` is still alive
+  because the client is, `GetProcessById($wdi)` keeps succeeding, and nothing
+  bounds the loop. See the dated correction in
+  [ADR-013](DECISIONS.md#adr-013--a-windows-remote-loop-watches-its-sshd-session-not-its-pipes).
+
+### Why this goes before Phase 14 step 2
+
+Not merely "fix bugs first". Step 2's fourth commit is verified by building on
+Windows, launching, killing and repeating — which **is** the repro, so doing it
+first manufactures orphans at exactly the rate you iterate. Worse, those
+orphans burn cores on the hosts step 2 exists to display: debugging a remote
+viewer's numbers against a host whose load is your own leak is this project's
+founding trap with extra steps, and the leak is invisible from the app.
+
+### The fix
+
+**Primary — a Windows Job Object**, created at startup with
+`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, each `ssh` child assigned to it right
+after spawn in `transport.rs`'s `ssh_command`, which already reaches for
+`creation_flags` and is the natural seat for the `#[cfg(windows)]` block. When
+the last handle closes — including under `TerminateProcess` and on a crash —
+the kernel kills everything in the job. It is the only mechanism that survives
+a hard parent death. Keep the handle non-inheritable so children do not hold
+the job open. `CREATE_SUSPENDED` + assign + `ResumeThread` closes the
+spawn/assign race; for `ssh` that window is negligible and the simple form is
+enough. `win32job` wraps the calls if hand-rolling the winapi is not wanted.
+
+**Secondary — make the cap unconditional**, so the sentence in ADR-013 becomes
+true. Rename it: `UNWATCHED_MAX_MS` is wrong the moment it also bounds a
+watched loop.
+
+**Keep the cap at 30 minutes; do not lengthen it.** A multi-hour cap for the
+watched path is tempting and is a cap nobody will ever soak, so it ships
+unverified — and unverified is the entire failure mode here. Thirty minutes is
+soak-testable in one sitting, and the cost of it firing on a healthy connection
+is one reconnect, which the existing comment already accepts as the trade.
+
+**Optional — reap on startup.** Sweep for `ssh.exe` whose command line carries
+the sampler marker and whose parent is gone. It helps only machines that
+already have orphans, which is every machine anyone has killed this on.
+
+### The trap, restated because it has already caught this exact code once
+
+**Unit tests cannot check any of it.** They assert on the script text we
+generate, and the whole failure mode is the far side behaving differently from
+what the text implies — a heartbeat design passed every unit test and would
+have dropped every Windows host in the fleet 30 s in. A test named for the cap
+already exists and asserts the string is present; it passed throughout.
+
+So: **verify against a real Windows host, and soak for longer than any timeout
+in the mechanism.** Confirm a live session survives well past the cap *first*,
+then that the remote dies after the client is killed. Checking only the second
+half is how the original broken design got as far as it did.
+
+### Exit criteria
+
+- `bash scripts/verify.sh` green, including the Windows build and smoke test.
+- On a real Windows host: `taskkill /F` the app, and no `ssh.exe` orphan
+  survives — and no `cmd.exe`/`powershell.exe` sampler loop survives on the
+  monitored host either. The second half is the one that matters and the one
+  every existing gate misses.
+- A session soaked past 30 minutes with no false kill.
+- The count of `sshd.exe` on the monitored host returns to its listener.
