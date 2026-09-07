@@ -659,7 +659,11 @@ fix is to fan in rather than out.
 4. **Saved endpoints**, so several fleets — or several customers — are one
    selection rather than one edit.
 
-Worth doing on the way through: the `broadcast` buffer in
-`tuxtop-serve/src/api.rs` is 16, which is ~0.8 s of events at nineteen hosts.
-Skipping ahead is right for a live grid, but that is tight once several clients
-are the normal case.
+~~Worth doing on the way through: the `broadcast` buffer is 16 and that is
+tight once several clients are normal.~~ **Checked 2026-09-07: there is nothing
+to do.** The buffer is `1024` and has been since the crate was written
+(`main.rs`, `4ab9b65`) — ~54 s of events at nineteen hosts and 1 Hz, not 0.8 s.
+The `16` is `api.rs:315`, inside `mod tests`: a fixture, added later by the test
+commit `2019bb2`, and read here as though it were the server. Left as a
+correction rather than deleted, because the next reader will otherwise
+rediscover the `16`, and the only edit it invites is to a test helper.

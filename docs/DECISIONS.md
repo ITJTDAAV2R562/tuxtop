@@ -1204,11 +1204,15 @@ in.
 ### Consequences
 
 - One server, one policy, per above.
-- The broadcast buffer is 16 (`tuxtop-serve/src/api.rs`). At nineteen hosts and
-  1 Hz that is ~19 events a second, so a client stalled for a second lags and
-  skips ahead. Skipping is right for a live grid — you want the newest frame,
-  not a backlog — but 16 is tight once several clients are normal. Revisit with
-  the first multi-client phase.
+- ~~The broadcast buffer is 16 (`tuxtop-serve/src/api.rs`) … tight once several
+  clients are normal.~~ **Wrong when written; corrected 2026-09-07.** The
+  server's buffer is `1024` (`main.rs`), and has been since `4ab9b65` — ~54 s of
+  events at nineteen hosts and 1 Hz. The `16` is a test fixture at
+  `api.rs:315`, introduced *after* this ADR by `2019bb2`. The reasoning stands
+  and the conclusion was already true: skipping ahead is right for a live grid,
+  and the depth is not tight. Nothing to revisit at the first multi-client
+  phase. Kept rather than deleted because an ADR that quietly loses a claim
+  teaches nobody that it was checked.
 - "Binds to 127.0.0.1 only" was stated in `README.md`, `SECURITY.md`,
   `CLAUDE.md`, `docs/ROADMAP.md` and `tuxtop-serve/src/main.rs` twice. All six
   became false the day `--bind` shipped and moved in that commit (2026-09-05).
