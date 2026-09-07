@@ -805,11 +805,23 @@ a read. A PowerShell sampler loop polling WMI every two seconds, outliving the
 application that started it by five days, is something we left running on a
 machine we promised only to observe.
 
-**The evidence.** Fifteen orphaned `ssh.exe` clients on one Windows host,
-dead parents, command lines carrying our own `--=TUXTOP=--` delimiter, spanning
-three days — one per instance that died over that window. The host sat at
-55–62% idle; killing the orphans took it to 5–7%, with `WmiPrvSE` falling from
-355% of a core to 3.6%. Roughly five of sixteen cores, invisible, for five days.
+**The evidence, and the line between what was measured and what was
+inferred.** Measured: fifteen orphaned `ssh.exe` clients on one Windows host in
+the fleet, all with dead parents, all carrying our own `--=TUXTOP=--` delimiter,
+with creation times spanning about three days. The host sat at 55–62% idle;
+killing the orphans took it to 5–7%, `WmiPrvSE` falling from 355% of a core to
+3.6%, and `sshd` back to the listener alone. Roughly five of sixteen cores,
+invisible, for five days.
+
+**Inferred, not measured: that it is one orphan per Tuxtop instance that died.**
+It is the natural reading of the timestamps and it was never confirmed — the
+parent processes were long gone by the time anyone looked, so nothing
+established that each dead parent was Tuxtop rather than something else
+spawning through the same path. Recorded as inference because the count is the
+kind of plausible, well-shaped number this project exists to distrust, and
+because of what it would otherwise do to the implementer: **a repro that
+produces a different number of orphans is not a failure to reproduce.** The
+mechanism below is what to verify against, not the count.
 
 **Two mechanisms, and neither is the one ADR-013 reasoned about.**
 
