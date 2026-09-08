@@ -1185,6 +1185,11 @@ misreading.
    read-only, so nothing writes to a server within it. This rule binds the
    follow-on phase that adds remote writes, and the viewer meanwhile hides the
    controls a read-only server would refuse, via `capabilities`.
+   **Sharpened 2026-09-08:** hiding is not the whole of it. A hidden control is
+   a fact about a stylesheet, and the command behind it stays reachable — so a
+   remote viewer *refuses* a write as well, in `Service`, with a reason. See
+   [ADR-018 decision 4](#decision-4--three-command-classes-added-2026-09-08),
+   which also records why that refusal is what splits `Settings` in two.
 
 The existing `capabilities` command covers the rest: a read-only server already
 hides the controls it would refuse, rather than drawing buttons that can only
@@ -1343,6 +1348,74 @@ parser see a partial frame.** An SSE event split across two reads that decodes
 as a truncated JSON object is this project's founding bug arriving over a new
 transport.
 
+### Decision 4 — three command classes, added 2026-09-08
+
+Decisions 1–3 answered where the *events* come from and said nothing about the
+seventeen commands beside them. Re-specifying Phase 14 step 2 made the omission
+concrete: a window whose grid is the server's while `list_hosts` and
+`get_settings` still answer out of the local `hosts.toml` is nineteen cards
+captioned with another machine's configuration — and a `set_host_paused`
+drawn beside them that appears to succeed and edits a different `dove`. That
+is ADR-010's aiming argument arriving through a door nobody had opened.
+
+Every command falls in exactly one class.
+
+- **Fleet reads** — `list_hosts`, `get_settings`, `capabilities`,
+  `process_list`, `cgroup_list`, `traffic_stats` — are **proxied**. They
+  describe the fleet, and in remote mode the fleet is the server's.
+- **History reads** — `query_history`, `query_history_many`,
+  `query_history_fleet`, `history_usage` — are **not**, deliberately. ADR-017
+  rule 2 makes history in-memory per instance and discarded on a switch;
+  fetching the server's would make that rule meaningless and blend two fleets'
+  `db1` the moment endpoints can be switched. The read loop records arriving
+  samples into the local store instead, so a remote viewer's charts honestly
+  mean *what this window has seen since it connected*.
+- **Writes** — `add_host`, `remove_host`, `reorder_hosts`, `set_host_*`, and
+  the fleet half of `set_settings` — are **refused**, in `Service`, with a
+  reason. `capabilities.writable` is false in remote mode so the controls are
+  not drawn, but a hidden control is a fact about a stylesheet and the command
+  behind it stays reachable. Remote writes are ADR-017 rule 4's follow-on
+  phase; until then the refusal is the behaviour, not the absence of a caller.
+
+**The exception is what forces `Settings` to split.** `always_on_top` is a
+property of *this window*. A remote viewer that cannot be pinned, because
+pinning is a "setting" and settings belong to the server, is absurd — and it is
+what one undivided struct forces. So the fleet half (`interval_ms`,
+`history_cap_mb`) is the server's and refused; the viewer half (`server`,
+`always_on_top`, `update_check`) is this machine's and still saves. The split
+is load-bearing rather than tidiness, which is worth writing down because the
+next reader will otherwise fold it back.
+
+**One dispatch point, not seventeen branches.** ADR-012's lesson is that a rule
+living in the callers acquires a caller that forgets; `main.rs` gets one helper
+that every command goes through, and it is the only place in the process that
+knows a server exists.
+
+### The wire, captured rather than assumed (2026-09-08)
+
+Decision 2 said "SSE framing is `data: …\n\n`. That is the base64 argument
+again — a fully specified format, a few dozen lines." Read off a running
+`tuxtop-serve`, it is that plus two things the sentence hides:
+
+```text
+HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n
+cache-control: no-cache\r\ntransfer-encoding: chunked\r\n\r\n
+97\r\ndata: {"event":"tuxtop://fault","payload":{…}}\n\n\r\n
+3\r\n:\n\n\r\n
+```
+
+**It is chunked**, so a client reading `data:` lines straight off the socket
+parses chunk-length lines as content, and a chunk boundary lands mid-frame by
+construction. **A quiet fleet sends `:\n\n`** — axum's keep-alive, a complete
+SSE frame with a comment and no `data:` line, on every idle connection as the
+normal case. Both belong to decision 3's half: they are parsing, so they live
+in core where a test runs them, and the fixture is the response above rather
+than one written to match the parser.
+
+Neither changes the decision. Both would have been discovered by whoever
+implemented it, in `src-tauri`, on Windows, which is the most expensive place
+in this project to discover anything.
+
 ### Consequences
 
 - **The viewer refuses `https://`, loudly**, with an error naming the fix — not
@@ -1355,6 +1428,16 @@ transport.
   terminates TLS — the desktop viewer talks to the tailnet address directly
   instead, and `tailscale serve` stays for browser tabs.
 - Core gains no dependency and stays at 25 crates.
+- **The read loop is cancellable from the first commit**, though nothing
+  cancels it until endpoints can be switched. Retrofitting cancellation onto a
+  running loop is how a switch ends up with two readers feeding one window, and
+  the shell is where the `JoinHandle` has to live because the socket does.
+- **`capabilities` is re-read, not read once.** Switching endpoints changes
+  every field of it. The frontend re-invokes it on `tuxtop://settings-changed`,
+  which costs a line now and saves the switching phase a frontend change.
+- **The proxy's request path blocks, so it does not run on the async runtime.**
+  The revisit note below says a blocking client belongs on its own thread; that
+  applies to the hand-rolled `POST` before it applies to `ureq`.
 
 ### Revisit when
 

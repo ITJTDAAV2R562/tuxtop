@@ -658,24 +658,74 @@ fix is to fan in rather than out.
    plain HTTP that refuses `https://`, and it splits — parser in core where it
    is tested, socket in `src-tauri` where nothing ever compiles it here.
 
-   **Files.** New: `crates/tuxtop-core/src/remote.rs` (`split_sse_frames`,
-   event decoding, endpoint validation, freshness) and
-   `src-tauri/src/remote.rs` (connect, read loop, emit). Changed:
-   `hostlist.rs` (the settings split), `service.rs` (`start_all` starts nothing
-   when an endpoint is set; `capabilities`), `src-tauri/src/main.rs` (the
-   `capabilities` command, the remote loop in `setup`), `src/app.js`,
-   `src/index.html`, `src/styles.css`, and `tests/harness/stub.js` — the stub
-   needs every new command, and a gap there has twice presented as an
-   application bug.
+   **Re-specced 2026-09-08, before a line of it was written.** The first
+   version listed the files and named eight tests and had no answer for the
+   *command* plane at all. It moved the event stream and left `list_hosts`,
+   `get_settings`, `process_list`, `cgroup_list` and `traffic_stats` answering
+   out of the local service — which in remote mode is the fleet you switched
+   away from, or nothing. That is not a missing feature. It is nineteen cards
+   captioned with a different machine's configuration, a Processes view that
+   is empty rather than absent, and a settings dialog quoting an interval
+   nothing is sampling at. Worse, `set_host_paused` is drawn beside those
+   cards, appears to succeed, and edits a `dove` that is not the `dove` on
+   screen — ADR-010's aiming argument, arriving through a door nobody had
+   opened yet. What follows replaces the file list.
 
-   **`Settings` splits in code and not on disk.** Fleet settings
-   (`interval_ms`, `history_cap_mb`) belong to whoever samples; viewer settings
-   (`server`, `always_on_top`, `update_check`) belong to the window. Keep one
-   `[settings]` table in the file via `#[serde(flatten)]` so an existing
-   `hosts.toml` loads unchanged. Phase 13 is the trap to re-read first:
-   `set_settings` rebuilt `Settings` field by field, so a new field came back
-   as serde's default and turned the update check *back on* for anyone who had
-   turned it off. Two structs mean two rebuild sites with that hazard.
+   ### The three command classes
+
+   Every command falls in exactly one. Which one is a decision rather than an
+   implementation detail, so it is recorded as ADR-018 decision 4.
+
+   | class | commands | in remote mode |
+   | --- | --- | --- |
+   | events | the SSE stream | from the server — this is the read loop |
+   | fleet reads | `list_hosts`, `get_settings`, `capabilities`, `process_list`, `cgroup_list`, `traffic_stats` | **proxied** |
+   | history reads | `query_history`, `query_history_many`, `query_history_fleet`, `history_usage` | answered **locally**, deliberately |
+   | writes | `add_host`, `remove_host`, `reorder_hosts`, `set_host_*`, the fleet half of `set_settings` | **refused**, with a reason |
+
+   **History is not proxied, and that is a decision rather than a shortcut.**
+   ADR-017 rule 2 says history is in-memory per instance and discarded on a
+   switch. Pulling the server's history would make that rule meaningless and
+   would blend two fleets' `db1` the moment step 3 lands. So the read loop
+   records every arriving `Sample` into the local `HistoryStore`, exactly as
+   `Supervisor` does when sampling, and a remote viewer's charts honestly mean
+   *what this window has seen since it connected*.
+   `remote_samples_are_recorded_in_the_local_history_store`.
+
+   **Writes are refused in the service, not merely hidden in the frontend.**
+   `capabilities.writable` is false in remote mode so the controls are not
+   drawn — but a hidden control is a fact about a stylesheet, and the command
+   behind it stays reachable. The refusal lives in `Service`, one choke point,
+   for the reason ADR-012 gives about five callers of which one forgets.
+   `a_remote_viewer_refuses_to_write_to_its_local_hosts_toml`.
+
+   ### Why `Settings` splits, beyond tidiness
+
+   `always_on_top` is a property of **this window**. A remote viewer that
+   could not be pinned, because pinning is a "setting" and settings belong to
+   the server, is absurd — and it is exactly what one undivided `Settings`
+   struct forces. The split is therefore load-bearing rather than cosmetic: in
+   remote mode the **fleet** half (`interval_ms`, `history_cap_mb`) is the
+   server's and is refused, while the **viewer** half (`server`,
+   `always_on_top`, `update_check`) is this machine's and still saves.
+   `pinning_the_window_still_works_when_the_fleet_is_someone_elses`.
+
+   **One `[settings]` table on disk, via `#[serde(flatten)]`,** so an existing
+   `hosts.toml` loads unchanged. Measured rather than assumed (2026-09-08):
+   flatten round-trips through `toml` 0.8 in both directions, and a per-field
+   `#[serde(default = "…")]` still applies to a key missing from a table that
+   is present. A table absent *entirely* falls to `HostsFile`'s own
+   `#[serde(default)]` instead, so `Settings` keeps its hand-written
+   `impl Default` — a derived one would read every pre-settings file as
+   `interval_ms = 0`.
+
+   **The save hazard is confirmed, not hypothetical.** `app.js:3032` builds
+   the `set_settings` payload from four named fields and does not carry
+   `server`; the `#s-ontop` handler at `app.js:3010` spreads the existing
+   object and would. Two save paths, one of which drops the endpoint — the
+   Phase 13 shape, already present. So `set_settings` takes `server` from disk
+   and never from the request: switching endpoints is step 3's `use_endpoint`
+   and has no second door.
    `viewer_settings_survive_a_fleet_settings_save`.
 
    **The mode is derived from whether `server` is set, never stored** — a
@@ -684,37 +734,92 @@ fix is to fan in rather than out.
 
    **Assert the state after the call, not before it.** `start_all` must start
    nothing in remote mode, and `Service::start_all` was once replaceable with
-   `Ok(Default::default())` while a test named for launch still passed, because
-   `add_host` had already started the hosts and the test asserted something
-   true before the call. `start_all_starts_nothing_when_an_endpoint_is_set`.
+   `Ok(Default::default())` while a test named for launch still passed,
+   because `add_host` had already started the hosts and the test asserted
+   something true before the call. Use a fresh supervisor.
+   `start_all_starts_nothing_when_an_endpoint_is_set`.
 
-   **Freshness is measured at arrival and judged against the server's own
-   interval.** `Sample` carries no timestamp (`model.rs`) and this step adds
-   none — arrival is honest here because the stream never replays. But the
-   threshold cannot be a constant: a server sampling at 5 s reads as
-   permanently stale against a 1 Hz expectation, so take `interval_ms` from the
-   server's `get_settings`.
+   ### The wire, captured off the socket
+
+   Taken from a running `tuxtop-serve` on 2026-09-08 rather than reasoned
+   about, because every assumption below was wrong in at least one way:
+
+   ```text
+   HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n
+   cache-control: no-cache\r\ntransfer-encoding: chunked\r\n\r\n
+   97\r\ndata: {"event":"tuxtop://fault","payload":{…}}\n\n\r\n
+   3\r\n:\n\n\r\n
+   ```
+
+   Three things follow.
+
+   **It is chunked.** The desktop client cannot read `data:` lines off a TCP
+   stream; it has to de-chunk first, and a chunk boundary lands mid-frame by
+   construction. A de-chunker is a parser, so it lives in core beside
+   `split_sse_frames` — ADR-018 decision 3's reason exactly: a parser
+   `src-tauri` owns is a parser no test here ever runs.
+
+   **A quiet fleet sends `:\n\n`.** That is axum's keep-alive: a complete SSE
+   frame carrying a comment and no `data:` line, on every idle connection, as
+   the *normal* case rather than an edge one. Decoding it as a truncated event
+   is the founding bug wearing a new transport.
+   `a_keepalive_comment_is_not_an_event`.
+
+   **One event happened to be one chunk here, and nothing guarantees it.**
+   `split_sse_frames` inherits the rule its name points at — mirror
+   `split_frames` in `transport.rs`: complete frames out, tail buffered, never
+   a partial frame handed to the parser.
+   `split_sse_frames_returns_only_complete_frames`.
+
+   The bytes above become a fixture, the way `real_host.rs` holds a captured
+   `/proc/stat`: the parser is tested against a response a server actually
+   sent, fed one byte at a time, not against one we wrote to match the parser.
+
+   ### Freshness
+
+   **Measured at arrival and judged against the server's own interval.**
+   `Sample` carries no timestamp (`model.rs`) and this step adds none —
+   arrival is honest here because the stream never replays. But the threshold
+   cannot be a constant: a server sampling at 5 s reads as permanently stale
+   against a 1 Hz expectation. The **rule** lives in core, and the number it
+   yields travels in `capabilities` as `stale_after_ms`, so the browser — which
+   has no core — carries no second copy of it to drift.
    `freshness_is_measured_against_the_servers_interval_not_a_constant`.
 
-   **Losing the server must not blank the grid.** This is the one failure local
-   mode has never had: a single dead link takes out all nineteen cards at once.
-   Keep the last grid, mark it stale, and say *no contact with `<endpoint>`
-   since HH:MM:SS*. Nineteen cards each saying "offline" reads as a dead fleet
-   rather than a dead link, which is the generic-offline failure the hard rules
-   already forbid. `losing_the_server_does_not_blank_the_grid`.
+   **Losing the server must not blank the grid.** This is the one failure
+   local mode has never had: a single dead link takes out all nineteen cards
+   at once. Keep the last grid, mark it stale, and say *no contact with
+   `<endpoint>` since HH:MM:SS*. Nineteen cards each saying "offline" reads as
+   a dead fleet rather than a dead link, which is the generic-offline failure
+   the hard rules already forbid.
+   `losing_the_server_does_not_blank_the_grid`.
 
-   **`capabilities` becomes a Tauri command.** `app.js` currently catches its
-   absence and concludes *"the desktop app, which can do it all"* — false the
-   moment that app points at a read-only server, and the result is buttons that
-   can only return an error, which is the exact thing the command exists to
-   prevent. It reports *effective* capability, and the catch block dies with
-   it. The server also reports its version there, because a viewer one release
-   ahead reads a renamed field as absent and draws a plausible wrong number;
-   a mismatch is stated, not guessed. `a_version_mismatch_is_stated_not_guessed`.
+   ### `capabilities`
 
-   **`split_sse_frames` inherits the rule its name points at.** An event split
-   across two reads that decodes as truncated JSON is the founding bug over a
-   new transport. Mirror `split_frames`: complete frames out, tail buffered.
+   **It becomes a Tauri command.** `app.js` currently catches its absence and
+   concludes *"the desktop app, which can do it all"* — false the moment that
+   app points at a read-only server, and the result is buttons that can only
+   return an error, which is the exact thing the command exists to prevent. It
+   reports *effective* capability, and the catch block dies with it. It also
+   carries the endpoint, `stale_after_ms`, and the version of whatever
+   produced the events, because a viewer one release ahead reads a renamed
+   field as absent and draws a plausible wrong number; a mismatch is stated,
+   not guessed. `a_version_mismatch_is_stated_not_guessed`.
+
+   **It has to be re-read, not read once.** Step 3 switches endpoints at
+   runtime, at which point every field of it changes. The frontend re-invokes
+   `capabilities` on `tuxtop://settings-changed` — one line here, and step 3
+   then needs no frontend change at all.
+
+   **A read-only server already draws three controls that can only fail.**
+   Noticed while specifying this, and true today, before remote mode exists:
+   `data-readonly` hides Add host, Remove, Pause and the drag grip and
+   disables the per-host table, but the Settings dialog's own interval,
+   history-limit and update-check fields stay live and Save returns 403. Fixed
+   here rather than filed, because this step is what first points the desktop
+   app at that path.
+
+   ### The chrome
 
    **The browser is already a remote viewer, and has been since
    `tuxtop-serve` shipped.** A tab served by a server is pointed at a server by
@@ -737,6 +842,66 @@ fix is to fan in rather than out.
    get their own element, with a Playwright test at the harness's nineteen
    hosts, in both themes.
 
+   **`#tbsub` is a mockup string that shipped.** The titlebar subtitle reads
+   `— dove.example.ts.net` in `index.html`, and no code has ever written to
+   it: a hardcoded hostname belonging to nobody's fleet, in the chrome of
+   every released build, for fourteen phases. It is also precisely the element
+   this step needs. It becomes the endpoint identity — *sampling locally*, or
+   the server's origin — with freshness beside it.
+
+   Its strings are pure and go in `src/remote.js` with the other modules, not
+   into `app.js`; the frontend went 2,792 lines with zero coverage that way.
+
+   ### Files
+
+   **New**
+   - `crates/tuxtop-core/src/remote.rs` — endpoint parsing, request building,
+     response-head parsing, de-chunking, `split_sse_frames`, `decode_event`,
+     freshness, `Capabilities`.
+   - `crates/tuxtop-core/tests/sse_capture.rs` + the captured response above.
+   - `src-tauri/src/remote.rs` — connect, read loop, emit, record, and the
+     blocking `POST` the proxy uses.
+   - `src/remote.js` and `tests/remote.test.js` — the chrome's strings.
+   - `tests/e2e/remote.spec.js`.
+
+   **Changed**
+   - `hostlist.rs` — the settings split.
+   - `service.rs` — `start_all`, `capabilities`, the write refusal.
+   - `lib.rs` — the new module.
+   - `src-tauri/src/main.rs` — the `capabilities` command, the read loop in
+     `setup`, and one dispatch point every command goes through.
+   - `crates/tuxtop-serve/src/api.rs` — `capabilities` grows fields; the
+     server answers the same shape the desktop does.
+   - `src/app.js`, `src/index.html`, `src/styles.css`.
+   - `tests/harness/stub.js` — the stub needs every new command, and a gap
+     there has twice presented as an application bug.
+
+   ### The dispatch point
+
+   Seventeen commands cannot each carry an `if remote` — that is the shape
+   ADR-012 warns about, with five callers of which one forgets. One helper in
+   `main.rs` takes the command name, the arguments and a closure producing the
+   local answer, and is the only place in the process that knows a server
+   exists. `check-commands-reachable.py` goes on counting them.
+
+   The proxy's I/O blocks, so it does not run on the async runtime: ADR-018's
+   revisit note already says a blocking client belongs on its own thread, and
+   that applies to the request path before it applies to `ureq`.
+
+   ### Commits
+
+   1. core: the wire — `remote.rs` and the captured-response fixture.
+   2. core: the settings split, `start_all`, `capabilities`, the write refusal.
+   3. `src-tauri`: the read loop, the dispatch point, the `capabilities`
+      command.
+   4. frontend: the chrome, the stub, the Playwright spec, and the settings
+      fields a read-only server should never have offered.
+
+   Commit 3 is the one nothing here compiles. Build it through
+   `scripts/verify.sh`, which drives the Windows toolchain at `/mnt/c` — and
+   remember a green build is not a launch. Two startup panics have shipped
+   past one; the smoke test is what catches a `setup` that panics.
+
 3. **Switching endpoints without a restart.** Needs `Supervisor::stop_all`,
    which does not exist yet; the teardown belongs there rather than in the
    caller that switches. History is discarded across a switch, never appended.
@@ -758,6 +923,21 @@ fix is to fan in rather than out.
    `stop_all` is unconditional: stopping an already-stopped host is a no-op,
    and pause is enforced on the way back, not on the way out.
 
+   **`use_endpoint` cannot own the whole switch, and the seam has to be named
+   here rather than discovered.** The socket lives in `src-tauri` (ADR-018
+   decision 3), so core cannot reach the read loop. Split it: `use_endpoint`
+   stops the samplers, clears the history, persists the endpoint and announces
+   `SettingsChanged`; the shell owns an abortable read loop and restarts it on
+   that announcement. So the loop must be **cancellable from the start** — a
+   `JoinHandle` the shell keeps, not a `spawn` and forget. Step 2 builds it
+   that way even though step 2 never cancels it, because retrofitting
+   cancellation onto a running loop is how a switch leaves two loops feeding
+   one window.
+   `switching_endpoints_leaves_exactly_one_reader`.
+
+   Nothing in the frontend changes: step 2 already re-reads `capabilities` on
+   `tuxtop://settings-changed`.
+
 4. **Saved endpoints**, so several fleets — or several customers — are one
    selection rather than one edit.
 
@@ -765,6 +945,14 @@ fix is to fan in rather than out.
    along with the local host list — that list is precisely what you switch back
    *to*. `[[endpoints]]` with a name and a URL, round-tripped by `Config` the
    way `HostsFile` already is.
+
+   **TOML field order is load-bearing for the third time.** Plain tables must
+   precede arrays-of-tables, so `HostsFile` reads `[settings]`, then
+   `[[endpoints]]`, then `[[host]]` — and a struct that declares them in any
+   other order serialises fine and fails to parse.
+   `settings_are_written_before_the_host_array` already asserts half of this;
+   extend it rather than adding a second test that checks the same rule from a
+   different angle.
 
    **Selecting a saved endpoint goes through the same `use_endpoint` as typing
    one.** A second path is a second teardown to forget, which is the ADR-012
