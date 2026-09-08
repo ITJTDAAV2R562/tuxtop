@@ -36,6 +36,7 @@ step "theme tokens"         python3 scripts/check-theme-tokens.py
 step "aggregation rules"    python3 scripts/check-agg-declared.py
 step "command reachability" python3 scripts/check-commands-reachable.py
 step "version agreement"    python3 scripts/check-version.py
+step "lockfiles current"    python3 scripts/check-locks.py
 
 # The scanners. Each is a gate in .github/workflows/security.yml; here they run
 # only if the tool happens to be installed, and say so plainly when it is not.

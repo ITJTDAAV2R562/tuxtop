@@ -14,21 +14,25 @@ updates:
     commit-message:
       prefix: "chore"
 
-  # Two Cargo trees. src-tauri is outside the workspace (ADR-006) and carries
-  # its own lockfile, so it needs its own entry or it is never updated — the
-  # same reason scripts/check-version.py has to check both.
+  # Two Cargo trees, updated together in one pull request rather than two.
+  #
+  # src-tauri is outside the workspace (ADR-006) and carries its own lockfile,
+  # which a workspace resolve never touches. As two separate entries this
+  # produced two PRs, and the workspace one bumped a dependency of
+  # `tuxtop-core` while leaving `src-tauri/Cargo.lock` still recording the old
+  # version — so the windows job, which builds `--locked`, refused it. That is
+  # not an occasional flake: *every* update to a dependency the two trees share
+  # failed that way, which is how a permanently red check teaches people to
+  # ignore a red check.
+  #
+  # `directories` (plural) puts both in one update, so the two locks move in
+  # the same commit. If a PR still arrives with them out of step,
+  # scripts/check-locks.py says so in a second and names the one command that
+  # fixes it — the belt to this braces.
   - package-ecosystem: cargo
-    directory: /
-    schedule:
-      interval: weekly
-    commit-message:
-      prefix: "chore"
-    groups:
-      cargo:
-        patterns: ["*"]
-
-  - package-ecosystem: cargo
-    directory: /src-tauri
+    directories:
+      - /
+      - /src-tauri
     schedule:
       interval: weekly
     commit-message:

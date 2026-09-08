@@ -83,6 +83,10 @@ jobs:
       # Six files carry the version. Catching drift on push is cheaper than
       # discovering it when a tag fails the release guard.
       - run: python3 scripts/check-version.py
+      # Catches a stale src-tauri/Cargo.lock here, in a second, instead of in
+      # the windows job a minute later with a message naming neither cause nor
+      # fix. See scripts/check-locks.py.
+      - run: python3 scripts/check-locks.py
 
   browser:
     name: browser — layout and load order
