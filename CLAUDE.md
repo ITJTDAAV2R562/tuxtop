@@ -59,6 +59,21 @@ instead and exits when it goes — [ADR-013](docs/DECISIONS.md#adr-013--a-window
 Linux is unaffected (SIGHUP), which is why nothing on the dev box reproduces
 any of this.
 
+Since Phase 15 that is **three** mechanisms, not one, because the session watch
+covers only a client that was *killed*. A client that is **abandoned** —
+`taskkill /F` or a crash runs no destructor, so `kill_on_drop` never fires —
+leaves `ssh` alive, its sshd session alive with it, and the loop running
+forever: fifteen were found on one host, and a later one was measured at 4.1%
+of a core for 19 hours. So every `ssh` child now joins a **job object** with
+`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` (`transport::win_job`), the only thing
+that survives a hard parent death because the kernel is what closes the handle;
+and the **lifetime cap is unconditional** (`REMOTE_LOOP_MAX_MS`, 30 min), where
+it used to be the `else` arm of the session watch and so bounded only the case
+that never leaked. Every Windows host therefore recycles its loop every 30
+minutes — measured at a five-second gap, no fault card, by design. Do not
+lengthen the cap to avoid it: a cap nobody can soak in one sitting ships
+unverified, which is the failure this phase was about.
+
 Two things follow. **Unit tests cannot check it** — they assert on the script
 text we generate, and the whole failure mode is that the far side behaves
 differently than the text implies. A heartbeat design passed every unit test

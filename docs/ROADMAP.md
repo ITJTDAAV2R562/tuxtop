@@ -790,7 +790,7 @@ rediscover the `16`, and the only edit it invites is to a test helper.
 
 ---
 
-## Phase 15 — Nothing we start outlives us — **not started; goes before Phase 14 step 2**
+## Phase 15 — Nothing we start outlives us — **done, verified 2026-09-08**
 
 **Goal:** however Tuxtop dies — cleanly, crashed, or `taskkill /F` — nothing it
 started is still running on a monitored host a minute later.
@@ -887,10 +887,48 @@ in the mechanism.** Confirm a live session survives well past the cap *first*,
 then that the remote dies after the client is killed. Checking only the second
 half is how the original broken design got as far as it did.
 
-### Landed so far
+### Verified on a Windows host, 2026-09-08
 
-Both code changes are in; **the phase is not done**, because none of what
-matters about them has been observed on a Windows host yet.
+A **live pre-fix orphan was still running** when this was checked, which made
+the verification far better than it would otherwise have been: it is a control
+that could not be faked. `ssh.exe` with a dead parent, the whole chain intact —
+`ssh → sshd → sshd → cmd → powershell` — created 21:05:31 the previous evening
+by one of our own smoke-test runs, still alive 19.3 hours later, its sampler
+loop having burned 2,817 s of CPU: **4.1% of a core, continuously, on a machine
+nothing was monitoring**. The fix was committed at 21:36 and the binary built
+at 21:46, so the orphan predates both by half an hour.
+
+**The mechanism was checked directly rather than by its outcome**, which
+matters, because outcome alone proves very little here: across roughly a
+hundred pre-fix sessions since that host last booted, exactly *one* orphan
+exists. At that rate a clean run of sixteen would happen about a third of the
+time with no fix at all. So `IsProcessInJob` was asked instead:
+
+```
+tuxtop.exe        -> not-in-job    (correct: it creates the job, it does not join it)
+ssh (pre-fix)     -> not-in-job    (the 9/7 orphan, sitting there as the control)
+ssh x16 (fixed)   -> IN-JOB        (every child of the fixed build)
+```
+
+- **Hard kill.** `taskkill /F`, no destructor: `ssh` 17 → 1 and `sshd` 5 → 3
+  within 8 s, the remote sampler loop gone with them. The only survivors were
+  the pre-fix orphan and its loop.
+- **Soak, 30 min 2 s.** The loop started 16:48:43 and was still alive at
+  17:18:45 across thirty consecutive one-minute samples — no false kill. The
+  cap then fired and a replacement loop appeared at 17:18:48, **five seconds
+  later**, with the app up and `ssh=16` at every sample including the
+  transition. So the recycle is not visible as an outage.
+- **No fault card on the recycle**, by code: `closing_fault(got_data, reported)`
+  returns `None` when data arrived, and `backoff_secs(0)` is 1 s.
+
+**What is still not known**, and is worth writing down rather than losing in a
+green result: *why* the incidental pipe-close teardown let that one session
+through on 9/7. The mechanism has never been named. The job object closes the
+hole regardless of the answer, since the kernel does the killing however the
+process died — that is the argument for it — but "closes it regardless" is
+reasoning, and the one observed failure remains unexplained.
+
+### Landed
 
 - The lifetime cap is unconditional and renamed `REMOTE_LOOP_MAX_MS`. The new
   test `the_lifetime_cap_bounds_a_watched_loop_too` asserts the cap is *not*
@@ -902,14 +940,16 @@ matters about them has been observed on a Windows host yet.
   `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`. `windows-sys` was already in core's
   Windows tree via tokio, so this cost **no new crates**: 24 before, 24 after.
 
-### Exit criteria
+### Exit criteria — all met
 
-- `bash scripts/verify.sh` green, including the Windows build and smoke test.
-  Note that a green smoke test is *not* evidence the job object works — it
-  cannot distinguish the new mechanism from the incidental pipe-close one.
-- On a real Windows host: `taskkill /F` the app, and no `ssh.exe` orphan
-  survives — and no `cmd.exe`/`powershell.exe` sampler loop survives on the
-  monitored host either. The second half is the one that matters and the one
-  every existing gate misses.
-- A session soaked past 30 minutes with no false kill.
-- The count of `sshd.exe` on the monitored host returns to its listener.
+- [x] `bash scripts/verify.sh` green, including the Windows build and smoke
+      test. Note that a green smoke test is *not* evidence the job object
+      works — it cannot distinguish the new mechanism from the incidental
+      pipe-close one, which is why `IsProcessInJob` was asked directly.
+- [x] On a real Windows host: `taskkill /F` the app, and no `ssh.exe` orphan
+      survives — and no `cmd.exe`/`powershell.exe` sampler loop survives on the
+      monitored host either. The second half is the one that matters and the
+      one every existing gate misses.
+- [x] A session soaked past 30 minutes with no false kill — 30 min 2 s, then a
+      replacement five seconds after the cap.
+- [x] The count of `sshd.exe` on the monitored host returns to its listener.
