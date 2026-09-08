@@ -34,14 +34,22 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 
 # manifest -> the command that refreshes its lock, for the error message.
+#
+# A plain resolve, deliberately, rather than the `cargo update -p tuxtop
+# -p tuxtop-core` form that CLAUDE.md documents under Releasing. That form is
+# right for a *version bump*, where nothing else can move. For a *dependency*
+# change it re-resolves more widely: refreshing this lock for a `toml` bump
+# with it moved `windows-sys` across three unrelated packages — eleven lines
+# instead of one, none of them reviewed, in a commit whose stated purpose was
+# to fix a lock. `cargo metadata` resolves and writes the lock without
+# compiling, and changes only what actually had to change.
 TREES = {
-    ROOT
-    / "Cargo.toml": "cargo update -p tuxtop-core -p tuxtop-serve --offline",
+    ROOT / "Cargo.toml": "cargo metadata --format-version 1 >/dev/null",
     ROOT
     / "src-tauri"
     / "Cargo.toml": (
-        "cargo update -p tuxtop -p tuxtop-core "
-        "--manifest-path src-tauri/Cargo.toml --offline"
+        "cargo metadata --manifest-path src-tauri/Cargo.toml "
+        "--format-version 1 >/dev/null"
     ),
 }
 

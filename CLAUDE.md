@@ -175,9 +175,17 @@ is never touched by a workspace `cargo build`, so **any change to
 with `--locked`, which does not update a lock, it refuses: *"cannot update the
 lock file … because --locked was passed"*. Releasing says this about version
 bumps; it is the same mechanism for adding or removing a dependency, and it has
-now caught both. Refresh it in the same commit:
-`cargo update -p tuxtop -p tuxtop-core --manifest-path src-tauri/Cargo.toml --offline`.
-Nothing on the dev box notices, because nothing here builds that crate.
+now caught both, plus every Dependabot cargo PR. Refresh it in the same commit,
+and mind which command: for a **version bump** `cargo update -p tuxtop -p
+tuxtop-core --manifest-path src-tauri/Cargo.toml --offline` is right, because
+nothing else can move. For a **dependency change** it re-resolves too widely —
+doing it for a `toml` bump moved `windows-sys` across three unrelated packages,
+eleven unreviewed lines in a commit meant to fix a lock. Use a plain resolve
+there: `cargo metadata --manifest-path src-tauri/Cargo.toml --format-version 1
+>/dev/null`, which writes the lock without compiling and changes only what had
+to change. `scripts/check-locks.py` catches the stale state either way, on
+Linux, in about a second. Nothing else on the dev box notices, because nothing
+here builds that crate.
 
 **No blocking I/O in async tasks.**
 One Tokio task per host. A host that hangs must degrade only its own card.
