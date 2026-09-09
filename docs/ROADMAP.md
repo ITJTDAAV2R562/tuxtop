@@ -767,8 +767,9 @@ fix is to fan in rather than out.
 
    **One event happened to be one chunk here, and nothing guarantees it.**
    `split_sse_frames` inherits the rule its name points at — mirror
-   `split_frames` in `transport.rs`: complete frames out, tail buffered, never
-   a partial frame handed to the parser.
+   `split_frames`, which is in `sampler.rs` and re-exported from `lib.rs`, not
+   in `transport.rs` where this line said to look until 2026-09-09: complete
+   frames out, tail buffered, never a partial frame handed to the parser.
    `split_sse_frames_returns_only_complete_frames`.
 
    The bytes above become a fixture, the way `real_host.rs` holds a captured
@@ -793,6 +794,46 @@ fix is to fan in rather than out.
    a dead fleet rather than a dead link, which is the generic-offline failure
    the hard rules already forbid.
    `losing_the_server_does_not_blank_the_grid`.
+
+   ### Reconnecting
+
+   **Specced 2026-09-09, because it was the one thing here nobody had
+   decided.** The step said what a lost server looks like on screen and never
+   said what the loop does about it, which leaves the implementer inventing a
+   policy in their first ten minutes — the situation ADR-018 exists to
+   prevent. Four rules:
+
+   **It retries forever, and it does not back off.** A viewer left open
+   overnight against a server that restarts must come back on its own; a
+   window that has to be relaunched to reconnect is a window nobody trusts to
+   be showing the present. Exponential backoff exists to protect a shared
+   service from many clients, and this is one client against one machine the
+   user named — what backoff buys instead is a delay grown to minutes, so the
+   server returns and the grid does not, which reads as the app being broken
+   at exactly the moment it was fixed.
+
+   **The delay is a pure function in core, not a constant in the loop.** The
+   read loop lives in `src-tauri`, which nothing here compiles (ADR-018
+   decision 3), so a number written inline there is a number no test ever
+   sees. `remote::reconnect_delay(attempt) -> Duration` is pure, lives beside
+   the parser, and the socket loop only calls it.
+   `reconnect_delay_is_bounded_so_a_returning_server_is_noticed_promptly`
+   asserts the ceiling, which is the property that fails if somebody later
+   "improves" it into a backoff.
+
+   **The first connect after a switch reports its error; later drops do
+   not.** They are different events and collapsing them costs a real thing: a
+   typo'd endpoint that silently retries forever looks exactly like a server
+   that is down, and the user has no way to tell that nothing was ever
+   reachable. So the connect `use_endpoint` triggers surfaces its failure —
+   step 3's path, but step 2 builds the loop that tells them apart — while a
+   drop from an established connection goes quietly to the stale chrome above.
+   `a_typo_in_an_endpoint_is_reported_rather_than_retried_in_silence`.
+
+   **A refused endpoint is never retried at all.** `https://` and an
+   unparseable URL are refused at parse time (ADR-018 decision 2), which is a
+   verdict rather than a failure — retrying it every few seconds would be a
+   loop that cannot ever succeed.
 
    ### `capabilities`
 
@@ -871,7 +912,10 @@ fix is to fan in rather than out.
    - `src-tauri/src/main.rs` — the `capabilities` command, the read loop in
      `setup`, and one dispatch point every command goes through.
    - `crates/tuxtop-serve/src/api.rs` — `capabilities` grows fields; the
-     server answers the same shape the desktop does.
+     server answers the same shape the desktop does. Its own test,
+     `capabilities_tells_the_truth_about_which_server_this_is`, asserts
+     today's `{writable}` and changes with it — extend that test rather than
+     adding a second one alongside it.
    - `src/app.js`, `src/index.html`, `src/styles.css`.
    - `tests/harness/stub.js` — the stub needs every new command, and a gap
      there has twice presented as an application bug.
@@ -881,8 +925,25 @@ fix is to fan in rather than out.
    Seventeen commands cannot each carry an `if remote` — that is the shape
    ADR-012 warns about, with five callers of which one forgets. One helper in
    `main.rs` takes the command name, the arguments and a closure producing the
-   local answer, and is the only place in the process that knows a server
-   exists. `check-commands-reachable.py` goes on counting them.
+   local answer, and is the only place that *proxies*.
+   `check-commands-reachable.py` goes on counting them.
+
+   **Two things know a server exists, and they know different verbs.** An
+   earlier draft of this line called the helper "the only place in the process
+   that knows a server exists", which cannot be true beside a write refusal
+   that lives in `Service` — core has to know the mode in order to refuse.
+   Read literally it argues for hoisting the refusal out of core, which is the
+   wrong direction: a refusal in the shell is a refusal the workspace never
+   compiles and no test here ever runs. So, precisely:
+
+   - **core knows to *refuse*** — `Service` holds the write refusal and the
+     derived mode, and is the choke point ADR-012 asks for.
+   - **the shell knows to *proxy*** — the `main.rs` helper owns the socket,
+     and is the only place turning a local command into an HTTP request.
+
+   A viewer that reached the writes through the proxy rather than the local
+   service would still be refused, by the server, for the same reason —
+   `tuxtop-serve` is read-only unless `--writable`.
 
    The proxy's I/O blocks, so it does not run on the async runtime: ADR-018's
    revisit note already says a blocking client belongs on its own thread, and
