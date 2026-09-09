@@ -23,6 +23,7 @@ pub mod hostlist;
 pub mod model;
 pub mod proc;
 pub mod procs;
+pub mod remote;
 pub mod sampler;
 pub mod service;
 pub mod supervisor;
@@ -36,6 +37,10 @@ pub use hostlist::{
 };
 pub use model::{GpuSample, HostConfig, HostFault, HostStatus, Sample};
 pub use proc::{busy_pct, core_pcts, parse_meminfo, parse_stat, CpuTimes, MemInfo, StatSnapshot};
+pub use remote::{
+    dechunk, decode_event, parse_endpoint, reconnect_delay, split_sse_frames, stale_after_ms,
+    Capabilities, Decoded, Endpoint, EndpointError,
+};
 pub use sampler::{
     parse_frame, sampler_command, split_frames, Frame, FrameKind, RateTracker, Rates,
 };

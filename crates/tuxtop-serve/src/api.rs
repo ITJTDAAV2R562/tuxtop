@@ -498,6 +498,54 @@ mod tests {
         let _ = std::fs::remove_dir_all(base);
     }
 
+    #[test]
+    fn every_event_the_encoder_writes_the_viewer_can_read() {
+        // The two halves of the wire, checked against each other. `encode_event`
+        // above and `tuxtop_core::remote::decode_event` are inverses under the
+        // same topic names, and nothing but this says so: a renamed topic, a
+        // payload that grew a wrapper, or a variant added to `Event` and
+        // forgotten here all present as a desktop viewer that connects to a
+        // server and then silently never updates.
+        let events = [
+            Event::Sample(Box::new(tuxtop_core::Sample {
+                host: "dove".into(),
+                cpu: 42.0,
+                cores: vec![1.0, 2.0],
+                mem_total_kb: 32,
+                mem_used_kb: 8,
+                ..Default::default()
+            })),
+            Event::Fault {
+                host: "wader".into(),
+                fault: tuxtop_core::HostFault::Stalled { since_secs: 9 },
+            },
+            Event::Processes("heron".into()),
+            Event::HostsChanged(vec![tuxtop_core::HostConfig {
+                name: "coot".into(),
+                addr: "coot".into(),
+                ..Default::default()
+            }]),
+            Event::SettingsChanged(tuxtop_core::hostlist::Settings::default()),
+        ];
+
+        for ev in events {
+            let line = encode_event(&ev).expect("every event encodes");
+            // What actually crosses the wire is an SSE frame, not the bare
+            // JSON - so the frame is what is handed back.
+            let frame = format!("data: {line}");
+            match tuxtop_core::remote::decode_event(frame.as_bytes()) {
+                Ok(tuxtop_core::remote::Decoded::Event(back)) => {
+                    assert_eq!(
+                        format!("{back:?}"),
+                        format!("{ev:?}"),
+                        "{ev:?} did not survive the round trip"
+                    );
+                }
+                other => panic!("{ev:?} decoded as {other:?}"),
+            }
+        }
+    }
+
     #[tokio::test]
     async fn events_reach_the_browser_under_the_names_the_desktop_app_uses() {
         // The browser shim and the Tauri app subscribe to the same topics. An

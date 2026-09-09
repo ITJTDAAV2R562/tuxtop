@@ -8,6 +8,12 @@ repository = "https://github.com/ITJTDAAV2R562/tuxtop"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
+# The remote viewer reads events off a `tuxtop-serve` (ADR-018), and those are
+# JSON. Not a widening of ADR-018's "core gains no dependency": that was about
+# an HTTP *client*, which is still absent — this is the deserializer for a
+# payload our own server serialised, and it was already in this crate's
+# dev-dependencies and in both lockfiles.
+serde_json = "1"
 toml = "0.8"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "io-util", "sync", "time"] }
 

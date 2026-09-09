@@ -1427,7 +1427,19 @@ in this project to discover anything.
   stating plainly because the deployment here is `tailscale serve`, which
   terminates TLS — the desktop viewer talks to the tailnet address directly
   instead, and `tailscale serve` stays for browser tabs.
-- Core gains no dependency and stays at 25 crates.
+- ~~Core gains no dependency and stays at 25 crates.~~ **Half true, and
+  corrected 2026-09-09 when the parser was actually built.** The *client* is
+  still absent, which is what decision 2 was about: no `reqwest`, no `ureq`,
+  nothing in core that opens a socket. But the payloads our own server
+  serialises are JSON, and reading one back needs a JSON deserialiser, so
+  `serde_json` moved from core's dev-dependencies into its dependencies —
+  **25 crates to 29** (`serde_json`, `itoa`, `memchr`, `ryu`). It costs neither
+  shell a byte it was not already carrying: `tuxtop-serve` and `src-tauri` both
+  depend on it directly and it was already in both lockfiles. Recorded rather
+  than quietly amended, because "no dependency" was a measured claim this
+  decision was argued on, and the next reader will otherwise re-derive the
+  alternative — hand-rolling a JSON parser. Forty fully-specified lines is the
+  base64 argument's threshold; JSON is not forty lines.
 - **The read loop is cancellable from the first commit**, though nothing
   cancels it until endpoints can be switched. Retrofitting cancellation onto a
   running loop is how a switch ends up with two readers feeding one window, and

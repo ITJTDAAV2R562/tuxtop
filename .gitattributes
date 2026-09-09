@@ -11,6 +11,9 @@
 *.png binary
 *.ico binary
 *.exe binary
+# A response captured off a socket, CRLFs and all. `text=auto eol=lf` above
+# would rewrite its line endings and it would stop being what the server sent.
+*.bin binary
 
 # Shell scripts run on Linux hosts; CRLF would break the shebang.
 *.sh text eol=lf

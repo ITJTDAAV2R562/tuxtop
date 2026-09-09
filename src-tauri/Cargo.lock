@@ -4385,6 +4385,7 @@ name = "tuxtop-core"
 version = "0.7.0"
 dependencies = [
  "serde",
+ "serde_json",
  "tokio",
  "toml 0.8.23",
  "windows-sys 0.61.2",

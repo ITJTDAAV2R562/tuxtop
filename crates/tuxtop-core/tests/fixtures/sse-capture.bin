@@ -1,0 +1,54 @@
+HTTP/1.1 200 OK
+content-type: text/event-stream
+cache-control: no-cache
+transfer-encoding: chunked
+date: Wed, 09 Sep 2026 19:43:57 GMT
+
+97
+data: {"event":"tuxtop://fault","payload":{"detail":"ssh: connect to host 127.0.0.1 port 9: Connection refused","host":"wader","kind":"unreachable"}}
+
+
+97
+data: {"event":"tuxtop://fault","payload":{"detail":"ssh: connect to host 127.0.0.1 port 9: Connection refused","host":"wader","kind":"unreachable"}}
+
+
+97
+data: {"event":"tuxtop://fault","payload":{"detail":"ssh: connect to host 127.0.0.1 port 9: Connection refused","host":"wader","kind":"unreachable"}}
+
+
+97
+data: {"event":"tuxtop://fault","payload":{"detail":"ssh: connect to host 127.0.0.1 port 9: Connection refused","host":"wader","kind":"unreachable"}}
+
+
+4B9
+data: {"event":"tuxtop://sample","payload":{"cores":[6.259027004241943,1.2431626319885254,3.304957628250122,0.4006009101867676,4.631474018096924,0.8999999761581421,1.5022534132003784,0.15037594735622406,1.3013012409210205,1.151727557182312,1.9548872709274292,0.649675190448761,1.553884744644165,0.5002501606941223,2.299999952316284,2.6513257026672363],"cpu":1.9209779500961304,"cpu_breakdown":{"idle":98.0665512084961,"iowait":0.012473883107304573,"steal":0.0,"system":0.7421960234642029,"user":1.1787819862365723},"disk_read_bps":21890,"disk_write_bps":30687,"filesystems":[{"mount":"/usr/lib/wsl/drivers","source":"drivers","total_kb":497257468,"used_kb":444174948},{"mount":"/","source":"/dev/sdd","total_kb":263112772,"used_kb":53782512},{"mount":"/init","source":"rootfs","total_kb":16372932,"used_kb":2772},{"mount":"/mnt/c","source":"C:\\","total_kb":497257468,"used_kb":444174948},{"mount":"/mnt/e","source":"E:\\","total_kb":1953512444,"used_kb":733668996}],"host":"dove","load":[1.159999966621399,2.569999933242798,1.4700000286102295],"mem_total_kb":32757380,"mem_used_kb":2928468,"net_rx_bps":4469,"net_tx_bps":27401,"swap_total_kb":8388608,"swap_used_kb":3658048,"temps":[],"uptime_secs":28189}}
+
+
+37
+data: {"event":"tuxtop://processes","payload":"dove"}
+
+
+3
+:
+
+
+97
+data: {"event":"tuxtop://fault","payload":{"detail":"ssh: connect to host 127.0.0.1 port 9: Connection refused","host":"wader","kind":"unreachable"}}
+
+
+4B6
+data: {"event":"tuxtop://sample","payload":{"cores":[7.27525520324707,2.385496139526367,2.17391300201416,0.8687258958816528,4.213075160980225,0.8180943131446838,2.846116781234741,1.4911015033721924,3.1791906356811523,0.48146364092826843,1.6908211708068848,1.3969172239303589,2.123552083969116,0.8180943131446838,1.884057879447937,4.343629360198975],"cpu":2.3767313957214355,"cpu_breakdown":{"idle":97.5811996459961,"iowait":0.042066045105457306,"steal":0.0,"system":1.0426369905471802,"user":1.334094524383545},"disk_read_bps":213355,"disk_write_bps":37986,"filesystems":[{"mount":"/usr/lib/wsl/drivers","source":"drivers","total_kb":497257468,"used_kb":444174948},{"mount":"/","source":"/dev/sdd","total_kb":263112772,"used_kb":53782512},{"mount":"/init","source":"rootfs","total_kb":16372932,"used_kb":2772},{"mount":"/mnt/c","source":"C:\\","total_kb":497257468,"used_kb":444174948},{"mount":"/mnt/e","source":"E:\\","total_kb":1953512444,"used_kb":733668996}],"host":"dove","load":[0.8999999761581421,2.4200000762939453,1.440000057220459],"mem_total_kb":32757380,"mem_used_kb":2921860,"net_rx_bps":4523,"net_tx_bps":5589,"swap_total_kb":8388608,"swap_used_kb":3657496,"temps":[],"uptime_secs":28210}}
+
+
+3
+:
+
+
+4B8
+data: {"event":"tuxtop://sample","payload":{"cores":[4.182879447937012,1.29288911819458,3.384768486022949,2.202202081680298,1.4021031856536865,0.8999999761581421,1.3006503582000732,1.2475049495697021,2.555110216140747,0.7984032034873962,1.553884744644165,0.45045045018196106,1.8537074327468872,1.0505253076553345,1.903807520866394,0.30000001192092896],"cpu":1.653253436088562,"cpu_breakdown":{"idle":98.32491302490234,"iowait":0.02183542400598526,"steal":0.0,"system":0.6768981218338013,"user":0.9763553738594055},"disk_read_bps":15956,"disk_write_bps":50733,"filesystems":[{"mount":"/usr/lib/wsl/drivers","source":"drivers","total_kb":497257468,"used_kb":444174692},{"mount":"/","source":"/dev/sdd","total_kb":263112772,"used_kb":53782512},{"mount":"/init","source":"rootfs","total_kb":16372932,"used_kb":2772},{"mount":"/mnt/c","source":"C:\\","total_kb":497257468,"used_kb":444174692},{"mount":"/mnt/e","source":"E:\\","total_kb":1953512444,"used_kb":733668996}],"host":"dove","load":[0.7900000214576721,2.299999952316284,1.4199999570846558],"mem_total_kb":32757380,"mem_used_kb":2923964,"net_rx_bps":3433,"net_tx_bps":5921,"swap_total_kb":8388608,"swap_used_kb":3657292,"temps":[],"uptime_secs":28230}}
+
+
+37
+data: {"event":"tuxtop://processes","payload":"dove"}
+
+
