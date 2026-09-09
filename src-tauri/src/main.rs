@@ -77,7 +77,7 @@ fn get_settings(svc: Svc<'_>) -> Result<Settings, String> {
 #[tauri::command]
 fn set_settings(app: AppHandle, svc: Svc<'_>, settings: Settings) -> Result<Settings, String> {
     let saved = svc.set_settings(settings)?;
-    apply_always_on_top(&app, saved.always_on_top);
+    apply_always_on_top(&app, saved.viewer.always_on_top);
     Ok(saved)
 }
 
@@ -246,7 +246,7 @@ fn main() {
             // should open and explain itself, not fail to start over a stray
             // comma.
             match svc.start_all() {
-                Ok(settings) => apply_always_on_top(&handle, settings.always_on_top),
+                Ok(settings) => apply_always_on_top(&handle, settings.viewer.always_on_top),
                 Err(e) => {
                     eprintln!("could not load hosts: {e}");
                     let _ = handle.emit(EVENT_FAULT, e);

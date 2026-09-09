@@ -131,11 +131,23 @@ async fn command(
 
     let svc = &st.svc;
     let out: Result<Value, String> = match cmd.as_str() {
-        // What this server will let the caller do. Asked once at startup so
+        // What this server will let the caller do, and whose readings these
+        // are. Asked at startup and again on `tuxtop://settings-changed`, so
         // controls that can only fail are never drawn - a button that always
         // returns an error is worse than an absent one, because it looks like
         // a capability.
-        "capabilities" => Ok(json!({ "writable": st.writable })),
+        //
+        // The shape is `Service::capabilities`, so the desktop app and this
+        // server answer the same thing (ADR-018 decision 4). `--writable` can
+        // only narrow it: a read-only server is not writable whatever the
+        // service thinks, and a service that already refuses writes is not made
+        // writable by a flag on the process in front of it.
+        "capabilities" => svc.capabilities().map(|c| {
+            json!(tuxtop_core::remote::Capabilities {
+                writable: c.writable && st.writable,
+                ..c
+            })
+        }),
         "list_hosts" => svc.list_hosts().map(|v| json!(v)),
         "add_host" => serde_json::from_value(arg("cfg"))
             .map_err(|e| e.to_string())
@@ -494,6 +506,26 @@ mod tests {
             let r = command(State(st), Path("capabilities".to_string()), String::new()).await;
             let v: Value = serde_json::from_str(&body_of(r).await).unwrap();
             assert_eq!(v["writable"], json!(writable));
+
+            // It grew three fields with remote mode, and each of them is a
+            // number or a string the chrome states rather than computes. A
+            // missing one reads as absent in JavaScript, which is how a viewer
+            // draws a plausible wrong number about how old its data is.
+            assert_eq!(
+                v["stale_after_ms"],
+                json!(tuxtop_core::remote::stale_after_ms(
+                    tuxtop_core::hostlist::DEFAULT_INTERVAL_MS
+                )),
+                "the freshness threshold has to travel, or the browser needs \
+                 its own copy of the rule to drift from: {v}"
+            );
+            assert!(
+                v["version"].as_str().is_some_and(|s| !s.is_empty()),
+                "the source of the events must say which build it is: {v}"
+            );
+            // This server samples locally; a tab talking to it knows its own
+            // origin. Absent, not a guess.
+            assert_eq!(v["endpoint"], json!(null), "{v}");
         }
         let _ = std::fs::remove_dir_all(base);
     }

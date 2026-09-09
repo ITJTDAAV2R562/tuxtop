@@ -14,8 +14,12 @@ use tokio::sync::mpsc;
 use crate::config::Config;
 use crate::history::Point;
 use crate::history_store::{now_secs, HistoryStore, HistoryUsage};
-use crate::hostlist::{self, effective_interval_ms, Settings, MAX_INTERVAL_MS, MIN_INTERVAL_MS};
+use crate::hostlist::{
+    self, effective_interval_ms, FleetSettings, HostsFile, Settings, ViewerSettings,
+    MAX_INTERVAL_MS, MIN_INTERVAL_MS,
+};
 use crate::procs::ProcInfo;
+use crate::remote::{stale_after_ms, Capabilities};
 use crate::supervisor::{Event, HostCgroup, HostTraffic, Supervisor};
 use crate::HostConfig;
 
@@ -61,14 +65,94 @@ impl Service {
     ///
     /// The cap is applied before any sampling begins, so the store is never
     /// briefly uncapped on a fleet large enough to need it.
+    ///
+    /// Starts nothing when an endpoint is set: remote mode replaces the local
+    /// data plane entirely, and a viewer that sampled as well would be exactly
+    /// the duplication ADR-017 exists to remove — nineteen more sshd sessions
+    /// on machines we promised only to observe. The read loop in the shell
+    /// produces the events instead.
     pub fn start_all(&self) -> Result<Settings, String> {
         let f = self.config.load_file()?;
-        self.history.set_cap_mb(f.settings.history_cap_mb);
-        for cfg in f.hosts {
-            let iv = effective_interval_ms(&cfg, &f.settings);
-            self.sup.start(cfg, iv);
+        // Applied in both modes: the local store holds arriving remote samples
+        // too, so its ceiling is not something remote mode gets to skip.
+        self.history.set_cap_mb(f.settings.fleet.history_cap_mb);
+        if f.settings.viewer.server.is_none() {
+            for cfg in f.hosts {
+                let iv = effective_interval_ms(&cfg, &f.settings.fleet);
+                self.sup.start(cfg, iv);
+            }
         }
         Ok(f.settings)
+    }
+
+    /// The server this window is watching, or `None` when it samples locally.
+    ///
+    /// **Derived, never stored.** A `mode = "remote"` field can contradict the
+    /// URL beside it, and then something has to decide which wins; the presence
+    /// of an endpoint cannot contradict itself (ADR-017).
+    pub fn endpoint(&self) -> Result<Option<String>, String> {
+        Ok(self.config.load_settings()?.viewer.server)
+    }
+
+    /// What this window can actually do, and whose readings it is showing.
+    ///
+    /// Re-read rather than read once: switching endpoints changes every field
+    /// of it. `writable` is *effective* capability — a viewer in remote mode
+    /// reports false, because its local `hosts.toml` is not the fleet on
+    /// screen, and `tuxtop-serve` narrows it further with its own `--writable`.
+    ///
+    /// `endpoint` absent means *this process* is sampling. A browser tab served
+    /// by `tuxtop-serve` is still a remote viewer (ADR-017 rule 1) and takes
+    /// its endpoint from its own origin, which the server cannot know.
+    pub fn capabilities(&self) -> Result<Capabilities, String> {
+        let s = self.config.load_settings()?;
+        Ok(Capabilities {
+            writable: s.viewer.server.is_none(),
+            endpoint: s.viewer.server,
+            stale_after_ms: stale_after_ms(s.fleet.interval_ms),
+            // All six version sites are held equal by `scripts/check-version.py`,
+            // so core's is the one that cannot drift from the build around it.
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            // Locally the viewer and the source of its events are the same
+            // process. The shell fills this in when it proxies.
+            version_note: None,
+        })
+    }
+
+    /// Refuse a write when this window is watching somebody else's fleet.
+    ///
+    /// **One choke point, not a check in each of seven methods.** ADR-012's
+    /// lesson is that a rule living in the callers acquires a caller that
+    /// forgets — the pause rule survives only because it lives in
+    /// `Supervisor::start` and nowhere else.
+    ///
+    /// It lives here rather than in the frontend because `capabilities.writable`
+    /// hides the controls, and a hidden control is a fact about a stylesheet:
+    /// the command behind it stays reachable. In remote mode the fleet on screen
+    /// is the server's, so `set_host_paused` drawn beside those cards would
+    /// appear to succeed and edit a different `dove` — ADR-010's aiming
+    /// argument, arriving through a door nobody had opened.
+    fn refuse_if_remote(&self, what: &str) -> Result<(), String> {
+        let Some(server) = self.config.load_settings()?.viewer.server else {
+            return Ok(());
+        };
+        Err(format!(
+            "{what} would edit this machine's hosts.toml, and this window is \
+             watching {server}. The fleet on screen is that server's, so the \
+             change would land on a different machine of the same name."
+        ))
+    }
+
+    /// Persist a new host list. Goes through the refusal above.
+    fn save_hosts(&self, what: &str, hosts: &[HostConfig]) -> Result<(), String> {
+        self.refuse_if_remote(what)?;
+        self.config.save(hosts)
+    }
+
+    /// Persist a change to the whole file. Goes through the refusal above.
+    fn save_fleet(&self, what: &str, f: &HostsFile) -> Result<(), String> {
+        self.refuse_if_remote(what)?;
+        self.config.save_file(f)
     }
 
     fn announce_hosts(&self, hosts: &[HostConfig]) {
@@ -84,7 +168,7 @@ impl Service {
     pub fn add_host(&self, cfg: HostConfig) -> Result<Vec<HostConfig>, String> {
         let mut all = self.config.load()?;
         hostlist::add(&mut all, cfg).map_err(|e| e.to_string())?;
-        self.config.save(&all)?;
+        self.save_hosts("adding a host", &all)?;
 
         // Start with the trimmed copy the list actually stored, not the raw
         // input: a trailing space in a dialog field would otherwise be watched
@@ -93,7 +177,7 @@ impl Service {
         let settings = self.config.load_settings()?;
         self.sup.start(
             stored,
-            effective_interval_ms(all.last().unwrap(), &settings),
+            effective_interval_ms(all.last().unwrap(), &settings.fleet),
         );
         self.announce_hosts(&all);
         Ok(all)
@@ -102,7 +186,7 @@ impl Service {
     pub fn remove_host(&self, name: &str) -> Result<Vec<HostConfig>, String> {
         let mut all = self.config.load()?;
         hostlist::remove(&mut all, name);
-        self.config.save(&all)?;
+        self.save_hosts("removing a host", &all)?;
 
         self.sup.stop(name);
         self.sup.forget(name);
@@ -114,7 +198,7 @@ impl Service {
     pub fn reorder_hosts(&self, names: &[String]) -> Result<Vec<HostConfig>, String> {
         let mut all = self.config.load()?;
         hostlist::reorder(&mut all, names);
-        self.config.save(&all)?;
+        self.save_hosts("reordering the fleet", &all)?;
         self.announce_hosts(&all);
         Ok(all)
     }
@@ -126,26 +210,64 @@ impl Service {
     /// Replace settings, restarting only the hosts whose effective interval
     /// changed. Changing the global rate when most hosts carry an override
     /// should not tear down connections already sampling correctly.
+    ///
+    /// **The two halves are treated differently, and that is the whole reason
+    /// `Settings` splits.** The fleet half describes the machine doing the
+    /// sampling, so in remote mode a change to it is refused like any other
+    /// write. The viewer half is this window's and saves in both modes —
+    /// `always_on_top` is a property of *this* window, and a remote viewer that
+    /// could not be pinned because pinning is a "setting" would be absurd
+    /// (ADR-018 decision 4).
+    ///
+    /// This is the one write that does not go through `save_fleet`, because it
+    /// is the one write that is *partly* allowed. `refuse_if_remote` is still
+    /// the only place the refusal lives.
     pub fn set_settings(&self, settings: Settings) -> Result<Settings, String> {
         let mut f = self.config.load_file()?;
-        let before = f.settings;
-        f.settings = Settings {
-            interval_ms: settings.interval_ms.clamp(MIN_INTERVAL_MS, MAX_INTERVAL_MS),
+        let before = f.settings.clone();
+
+        // Bounds from the settings UI, applied here so a request that did not
+        // come from that UI cannot exceed them.
+        let fleet = FleetSettings {
+            interval_ms: settings
+                .fleet
+                .interval_ms
+                .clamp(MIN_INTERVAL_MS, MAX_INTERVAL_MS),
             interval_secs: None,
-            history_cap_mb: settings.history_cap_mb.clamp(MIN_CAP_MB, MAX_CAP_MB),
-            always_on_top: settings.always_on_top,
-            update_check: settings.update_check,
+            history_cap_mb: settings.fleet.history_cap_mb.clamp(MIN_CAP_MB, MAX_CAP_MB),
+        };
+        // Compared after clamping, so a request the UI already bounded reads as
+        // unchanged rather than as an attempted edit. A viewer saving only its
+        // own half sends the fleet half back untouched, and must not be refused
+        // for it.
+        if fleet != before.fleet {
+            self.refuse_if_remote("changing the sample interval or the history limit")?;
+            f.settings.fleet = fleet;
+        }
+        f.settings.viewer = ViewerSettings {
+            // From disk, never from the request. `app.js` has two save paths
+            // and one of them rebuilds the payload from four named fields
+            // without carrying `server`; honouring the request here would let
+            // an unrelated settings save switch this window back to local.
+            // Switching endpoints is `use_endpoint`, and it has no second door.
+            server: before.viewer.server.clone(),
+            always_on_top: settings.viewer.always_on_top,
+            update_check: settings.viewer.update_check,
         };
         self.config.save_file(&f)?;
-        self.history.set_cap_mb(f.settings.history_cap_mb);
+        self.history.set_cap_mb(f.settings.fleet.history_cap_mb);
 
         for h in &f.hosts {
-            if effective_interval_ms(h, &before) != effective_interval_ms(h, &f.settings) {
+            if effective_interval_ms(h, &before.fleet)
+                != effective_interval_ms(h, &f.settings.fleet)
+            {
                 self.sup
-                    .start(h.clone(), effective_interval_ms(h, &f.settings));
+                    .start(h.clone(), effective_interval_ms(h, &f.settings.fleet));
             }
         }
-        let _ = self.events.try_send(Event::SettingsChanged(f.settings));
+        let _ = self
+            .events
+            .try_send(Event::SettingsChanged(f.settings.clone()));
         Ok(f.settings)
     }
 
@@ -160,11 +282,11 @@ impl Service {
         };
         h.interval_ms = interval_ms.map(|v| v.clamp(MIN_INTERVAL_MS, MAX_INTERVAL_MS));
         let updated = h.clone();
-        self.config.save_file(&f)?;
+        self.save_fleet("changing a host's interval", &f)?;
 
         self.sup.start(
             updated.clone(),
-            effective_interval_ms(&updated, &f.settings),
+            effective_interval_ms(&updated, &f.settings.fleet),
         );
         self.announce_hosts(&f.hosts);
         Ok(f.hosts)
@@ -181,7 +303,7 @@ impl Service {
         if !hostlist::set_group(&mut f.hosts, name, group) {
             return Err(format!("no host named {name}"));
         }
-        self.config.save_file(&f)?;
+        self.save_fleet("changing a host's group", &f)?;
         self.announce_hosts(&f.hosts);
         Ok(f.hosts)
     }
@@ -201,11 +323,11 @@ impl Service {
             String::new()
         };
         let updated = h.clone();
-        self.config.save_file(&f)?;
+        self.save_fleet("changing a host's OS", &f)?;
 
         self.sup.start(
             updated.clone(),
-            effective_interval_ms(&updated, &f.settings),
+            effective_interval_ms(&updated, &f.settings.fleet),
         );
         self.announce_hosts(&f.hosts);
         Ok(f.hosts)
@@ -230,14 +352,14 @@ impl Service {
         };
         h.paused = paused;
         let updated = h.clone();
-        self.config.save_file(&f)?;
+        self.save_fleet("pausing or resuming a host", &f)?;
 
         // One call, one connection: the process plane rides the same ssh
         // process, so pause is enforced in exactly one place - `start` - and
         // there is no second sampler for a caller to forget.
         self.sup.start(
             updated.clone(),
-            effective_interval_ms(&updated, &f.settings),
+            effective_interval_ms(&updated, &f.settings.fleet),
         );
         self.announce_hosts(&f.hosts);
         Ok(f.hosts)
@@ -448,13 +570,16 @@ mod tests {
         let (s, _rx, p) = svc("clamp");
         let out = s
             .set_settings(Settings {
-                interval_ms: 99_999_999,
-                history_cap_mb: 1,
+                fleet: FleetSettings {
+                    interval_ms: 99_999_999,
+                    history_cap_mb: 1,
+                    ..FleetSettings::default()
+                },
                 ..Settings::default()
             })
             .unwrap();
-        assert_eq!(out.interval_ms, MAX_INTERVAL_MS);
-        assert_eq!(out.history_cap_mb, MIN_CAP_MB);
+        assert_eq!(out.fleet.interval_ms, MAX_INTERVAL_MS);
+        assert_eq!(out.fleet.history_cap_mb, MIN_CAP_MB);
         let _ = std::fs::remove_file(p);
     }
 
@@ -467,13 +592,16 @@ mod tests {
         let (s, _rx, p) = svc("update-check");
         let out = s
             .set_settings(Settings {
-                update_check: false,
+                viewer: ViewerSettings {
+                    update_check: false,
+                    ..ViewerSettings::default()
+                },
                 ..Settings::default()
             })
             .unwrap();
-        assert!(!out.update_check, "the value returned to the caller");
+        assert!(!out.viewer.update_check, "the value returned to the caller");
         assert!(
-            !s.get_settings().unwrap().update_check,
+            !s.get_settings().unwrap().viewer.update_check,
             "and the value read back from disk"
         );
         let _ = std::fs::remove_file(p);
@@ -524,7 +652,10 @@ mod tests {
         s.set_host_paused("dove", true).unwrap();
 
         s.set_settings(Settings {
-            interval_ms: 5_000,
+            fleet: FleetSettings {
+                interval_ms: 5_000,
+                ..FleetSettings::default()
+            },
             ..Settings::default()
         })
         .unwrap();
@@ -631,6 +762,273 @@ mod tests {
     async fn pausing_a_host_that_does_not_exist_says_so() {
         let (s, _rx, p) = svc("pause-ghost");
         assert!(s.set_host_paused("ghost", true).is_err());
+        let _ = std::fs::remove_file(p);
+    }
+
+    /// Point an existing config at a server, the way a hand-edited
+    /// `hosts.toml` or (from step 3) `use_endpoint` would.
+    fn point_at(path: &std::path::Path, server: &str) {
+        let c = Config::new(path);
+        let mut f = c.load_file().unwrap();
+        f.settings.viewer.server = Some(server.into());
+        c.save_file(&f).unwrap();
+    }
+
+    #[tokio::test]
+    async fn remote_mode_is_derived_not_stored() {
+        // A stored `mode = "remote"` can contradict the URL beside it, and then
+        // something has to decide which wins. Setting the endpoint is the whole
+        // of switching modes, and clearing it is the whole of switching back.
+        let (s, _rx, p) = svc("mode");
+        s.add_host(host("dove")).unwrap();
+        assert_eq!(s.endpoint().unwrap(), None, "no endpoint is local mode");
+        assert!(s.capabilities().unwrap().writable);
+
+        point_at(&p, "http://dove:8787");
+        assert_eq!(s.endpoint().unwrap().as_deref(), Some("http://dove:8787"));
+        assert!(
+            !s.capabilities().unwrap().writable,
+            "a viewer of someone else's fleet cannot write its own host list"
+        );
+
+        // Nothing on disk names a mode, so nothing on disk can disagree with
+        // the endpoint. This is the half that fails if somebody later adds a
+        // `mode` field "for clarity".
+        let text = std::fs::read_to_string(&p).unwrap();
+        assert!(
+            !text.contains("mode"),
+            "the mode was stored as well as derived:\n{text}"
+        );
+
+        let c = Config::new(&p);
+        let mut f = c.load_file().unwrap();
+        f.settings.viewer.server = None;
+        c.save_file(&f).unwrap();
+        assert_eq!(
+            s.endpoint().unwrap(),
+            None,
+            "clearing it goes back to local"
+        );
+        let _ = std::fs::remove_file(p);
+    }
+
+    #[tokio::test]
+    async fn start_all_starts_nothing_when_an_endpoint_is_set() {
+        // Remote mode replaces the local data plane. A viewer that also sampled
+        // would be the duplication ADR-017 exists to remove - nineteen more
+        // sshd sessions on machines we promised only to observe - and it would
+        // do it invisibly, because the grid would look right either way.
+        //
+        // Against a *fresh* supervisor, for the reason
+        // `start_all_skips_a_paused_host_on_launch` records: `add_host` has
+        // already started these, so a service that has been running asserts a
+        // state that was true before the call.
+        let (s, _rx, p) = svc("remote-launch");
+        s.add_host(host("dove")).unwrap();
+        s.add_host(host("heron")).unwrap();
+        point_at(&p, "http://elsewhere:8787");
+
+        let (fresh, _rx2) = relaunch(&p);
+        assert!(
+            !fresh.sup.is_watching("dove"),
+            "a fresh supervisor watches nothing"
+        );
+        fresh.start_all().unwrap();
+        assert!(
+            !fresh.sup.is_watching("dove") && !fresh.sup.is_watching("heron"),
+            "a remote viewer opened ssh connections of its own"
+        );
+
+        // And the local list is still there, because it is what you switch
+        // back *to* - not started, not forgotten.
+        assert_eq!(fresh.list_hosts().unwrap().len(), 2);
+
+        // The control: the same file without the endpoint starts both.
+        let c = Config::new(&p);
+        let mut f = c.load_file().unwrap();
+        f.settings.viewer.server = None;
+        c.save_file(&f).unwrap();
+        let (local, _rx3) = relaunch(&p);
+        local.start_all().unwrap();
+        assert!(
+            local.sup.is_watching("dove") && local.sup.is_watching("heron"),
+            "the endpoint was not the only reason nothing started"
+        );
+        let _ = std::fs::remove_file(p);
+    }
+
+    #[tokio::test]
+    async fn a_remote_viewer_refuses_to_write_to_its_local_hosts_toml() {
+        // `capabilities.writable` is false so the controls are not drawn - but
+        // a hidden control is a fact about a stylesheet, and the command behind
+        // it stays reachable. In remote mode the fleet on screen is the
+        // server's, so `set_host_paused` here appears to succeed and edits a
+        // different `dove`: ADR-010's aiming argument through a door nobody had
+        // opened.
+        //
+        // Every write is walked rather than one example, so a write added later
+        // is covered by a test that already exists.
+        let (s, _rx, p) = svc("remote-ro");
+        s.add_host(host("dove")).unwrap();
+        point_at(&p, "http://elsewhere:8787");
+        let before = std::fs::read_to_string(&p).unwrap();
+
+        type Attempt<'a> = (&'a str, Box<dyn Fn() -> Result<(), String> + 'a>);
+        let attempts: Vec<Attempt> = vec![
+            (
+                "add_host",
+                Box::new(|| s.add_host(host("heron")).map(|_| ())),
+            ),
+            (
+                "remove_host",
+                Box::new(|| s.remove_host("dove").map(|_| ())),
+            ),
+            (
+                "reorder_hosts",
+                Box::new(|| s.reorder_hosts(&["dove".to_string()]).map(|_| ())),
+            ),
+            (
+                "set_host_interval",
+                Box::new(|| s.set_host_interval("dove", Some(2_000)).map(|_| ())),
+            ),
+            (
+                "set_host_group",
+                Box::new(|| s.set_host_group("dove", Some("x")).map(|_| ())),
+            ),
+            (
+                "set_host_os",
+                Box::new(|| s.set_host_os("dove", "windows").map(|_| ())),
+            ),
+            (
+                "set_host_paused",
+                Box::new(|| s.set_host_paused("dove", true).map(|_| ())),
+            ),
+            (
+                "set_settings (fleet half)",
+                Box::new(|| {
+                    s.set_settings(Settings {
+                        fleet: FleetSettings {
+                            interval_ms: 5_000,
+                            ..FleetSettings::default()
+                        },
+                        ..Settings::default()
+                    })
+                    .map(|_| ())
+                }),
+            ),
+        ];
+
+        for (name, attempt) in attempts {
+            let err = attempt().expect_err(&format!("{name} was allowed in remote mode"));
+            assert!(
+                err.contains("elsewhere"),
+                "{name} refused without naming the server being watched: {err}"
+            );
+        }
+        assert_eq!(
+            std::fs::read_to_string(&p).unwrap(),
+            before,
+            "a refused write reached the file anyway"
+        );
+        let _ = std::fs::remove_file(p);
+    }
+
+    #[tokio::test]
+    async fn pinning_the_window_still_works_when_the_fleet_is_someone_elses() {
+        // The exception that forces `Settings` to split. `always_on_top` is a
+        // property of *this* window; a remote viewer that could not be pinned,
+        // because pinning is a "setting" and settings belong to the server,
+        // would be absurd - and is what one undivided struct forces.
+        let (s, _rx, p) = svc("remote-pin");
+        s.add_host(host("dove")).unwrap();
+        point_at(&p, "http://elsewhere:8787");
+
+        let out = s
+            .set_settings(Settings {
+                // The fleet half sent back unchanged, which is what the
+                // frontend's `{...s, always_on_top}` spread actually sends.
+                fleet: s.get_settings().unwrap().fleet,
+                viewer: ViewerSettings {
+                    always_on_top: true,
+                    update_check: false,
+                    server: None,
+                },
+            })
+            .expect("the viewer half saves in remote mode");
+
+        assert!(out.viewer.always_on_top, "the window would not pin");
+        assert!(!out.viewer.update_check, "and the other viewer field too");
+        assert!(
+            s.get_settings().unwrap().viewer.always_on_top,
+            "and it must be on disk, or it lasts one session"
+        );
+        let _ = std::fs::remove_file(p);
+    }
+
+    #[tokio::test]
+    async fn viewer_settings_survive_a_fleet_settings_save() {
+        // `app.js` has two save paths and one of them rebuilds the payload from
+        // four named fields without carrying `server`. Taking `server` from the
+        // request would let a save of the interval switch this window back to
+        // local - silently, and noticed only as a fleet that changed.
+        let (s, _rx, p) = svc("viewer-survives");
+        point_at(&p, "http://elsewhere:8787");
+
+        // The exact shape of that payload: no `server` in it at all.
+        let sent: Settings = serde_json::from_str(
+            r#"{"interval_ms":1000,"history_cap_mb":256,"always_on_top":true,"update_check":true}"#,
+        )
+        .unwrap();
+        assert_eq!(sent.viewer.server, None, "the payload really omits it");
+
+        let out = s
+            .set_settings(sent)
+            .expect("saving the viewer half is allowed");
+        assert_eq!(
+            out.viewer.server.as_deref(),
+            Some("http://elsewhere:8787"),
+            "a settings save switched the window back to local"
+        );
+        assert_eq!(
+            s.get_settings().unwrap().viewer.server.as_deref(),
+            Some("http://elsewhere:8787"),
+            "and on disk too"
+        );
+        let _ = std::fs::remove_file(p);
+    }
+
+    #[tokio::test]
+    async fn capabilities_carries_the_freshness_rule_rather_than_the_browser() {
+        // The threshold cannot be a constant - a server sampling at 5 s reads
+        // as permanently stale against a 1 Hz expectation - and the browser has
+        // no core, so it must not carry a second copy of the rule to drift.
+        let (s, _rx, p) = svc("caps");
+        let c = s.capabilities().unwrap();
+        assert_eq!(
+            c.stale_after_ms,
+            crate::remote::stale_after_ms(crate::hostlist::DEFAULT_INTERVAL_MS)
+        );
+        assert!(
+            !c.version.is_empty(),
+            "the source of the events must say which build it is"
+        );
+        assert_eq!(
+            c.version_note, None,
+            "locally there is nothing to disagree with"
+        );
+
+        s.set_settings(Settings {
+            fleet: FleetSettings {
+                interval_ms: 5_000,
+                ..FleetSettings::default()
+            },
+            ..Settings::default()
+        })
+        .unwrap();
+        assert!(
+            s.capabilities().unwrap().stale_after_ms > c.stale_after_ms,
+            "the threshold did not follow the interval it is measured against"
+        );
         let _ = std::fs::remove_file(p);
     }
 

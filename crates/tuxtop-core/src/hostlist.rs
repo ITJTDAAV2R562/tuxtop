@@ -148,8 +148,33 @@ mod tests {
 }
 
 /// Global settings, stored alongside the host list.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+///
+/// **Two halves, one `[settings]` table.** They are separate structs because
+/// they answer to different machines, not for tidiness: in remote mode the
+/// *fleet* half describes the server's fleet and a write to it is refused,
+/// while the *viewer* half is this window's and still saves. `always_on_top`
+/// is what makes that load-bearing — a remote viewer that could not be pinned,
+/// because pinning is a "setting" and settings belong to the server, is absurd,
+/// and is what one undivided struct forces
+/// ([ADR-018 decision 4](../../../docs/DECISIONS.md)).
+///
+/// `#[serde(flatten)]` keeps them one table on disk and one object on the
+/// wire, so every existing `hosts.toml` loads unchanged and `app.js` needs no
+/// change at all.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Settings {
+    #[serde(flatten)]
+    pub fleet: FleetSettings,
+    #[serde(flatten)]
+    pub viewer: ViewerSettings,
+}
+
+/// What is being sampled, and how much of it is kept.
+///
+/// The server's, in remote mode: `Service` refuses a change to either of these
+/// from a viewer watching someone else's fleet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct FleetSettings {
     /// Default sample interval in **milliseconds**, overridable per host.
     ///
     /// Milliseconds rather than seconds because 4 Hz and 2 Hz are now offered
@@ -170,6 +195,27 @@ pub struct Settings {
     /// it earns its place around 100 hosts.
     #[serde(default = "default_history_mb")]
     pub history_cap_mb: u32,
+}
+
+/// What this window does, wherever its readings come from.
+///
+/// Saves in both modes. Nothing here describes a fleet.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ViewerSettings {
+    /// A `tuxtop-serve` to watch instead of sampling locally. Absent means
+    /// sample locally.
+    ///
+    /// **The mode is this field and nothing else.** A stored `mode = "remote"`
+    /// can contradict the URL beside it, and then something has to decide which
+    /// wins; the presence of an endpoint cannot contradict itself (ADR-017).
+    ///
+    /// A local `hosts.toml` carries no `server` key at all, which matters
+    /// because that file is hand-edited: nobody should meet a feature they are
+    /// not using. That comes from `toml` omitting a `None` rather than from an
+    /// attribute here — unlike `paused`, where a `false` *would* be written and
+    /// `skip_serializing_if` is doing real work.
+    #[serde(default)]
+    pub server: Option<String>,
     /// Keep the window above others.
     ///
     /// Task Manager has the same option, for the same reason: monitoring is
@@ -210,14 +256,38 @@ fn default_update_check() -> bool {
     true
 }
 
+/// Written by hand, all three of them, and that is load-bearing.
+///
+/// A `[settings]` table absent *entirely* falls to `HostsFile`'s own
+/// `#[serde(default)]` rather than to the per-field defaults, so a derived
+/// `Default` here would read every file written before settings existed as
+/// `interval_ms = 0` — a fleet sampling as fast as `sh` can fork, from a file
+/// nobody edited.
 impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            fleet: FleetSettings::default(),
+            viewer: ViewerSettings::default(),
+        }
+    }
+}
+
+impl Default for FleetSettings {
     fn default() -> Self {
         Self {
             interval_ms: default_interval_ms(),
             interval_secs: None,
             history_cap_mb: default_history_mb(),
-            update_check: default_update_check(),
+        }
+    }
+}
+
+impl Default for ViewerSettings {
+    fn default() -> Self {
+        Self {
+            server: None,
             always_on_top: false,
+            update_check: default_update_check(),
         }
     }
 }
@@ -244,8 +314,8 @@ impl HostsFile {
     /// the default - a settings change nobody asked for, visible only as a
     /// host sampling ten times faster than it was told to.
     pub fn migrate(&mut self) {
-        if let Some(secs) = self.settings.interval_secs.take() {
-            self.settings.interval_ms = secs.saturating_mul(1000);
+        if let Some(secs) = self.settings.fleet.interval_secs.take() {
+            self.settings.fleet.interval_ms = secs.saturating_mul(1000);
         }
         for h in &mut self.hosts {
             if let Some(secs) = h.interval_secs.take() {
@@ -267,7 +337,7 @@ pub const MAX_INTERVAL_MS: u32 = 3_600_000;
 /// The interval that applies to `host`, in milliseconds, given the global
 /// default. A per-host value always wins - the whole point of the override is
 /// watching one box closely without paying for the other eighteen.
-pub fn effective_interval_ms(host: &HostConfig, settings: &Settings) -> u32 {
+pub fn effective_interval_ms(host: &HostConfig, settings: &FleetSettings) -> u32 {
     host.interval_ms
         .unwrap_or(settings.interval_ms)
         .clamp(MIN_INTERVAL_MS, MAX_INTERVAL_MS)
@@ -567,34 +637,89 @@ mod settings_tests {
         // Every existing hosts.toml predates settings; none of them may break.
         let f = parse_file("[[host]]\nname = \"dove\"\naddr = \"dove\"\n").unwrap();
         assert_eq!(f.hosts.len(), 1);
-        assert_eq!(f.settings.interval_ms, DEFAULT_INTERVAL_MS);
-        assert_eq!(f.settings.history_cap_mb, 256);
-        assert!(!f.settings.always_on_top, "off unless asked for");
+        assert_eq!(f.settings.fleet.interval_ms, DEFAULT_INTERVAL_MS);
+        assert_eq!(f.settings.fleet.history_cap_mb, 256);
+        assert!(!f.settings.viewer.always_on_top, "off unless asked for");
+        assert_eq!(f.settings.viewer.server, None, "no endpoint is local mode");
+    }
+
+    #[test]
+    fn viewer_and_fleet_settings_share_one_settings_table() {
+        // The split is two Rust structs and one table on disk, via
+        // `#[serde(flatten)]`. A file written by a build that predates the
+        // split has to load unchanged, and a file this build writes has to
+        // stay one `[settings]` table rather than growing `[settings.fleet]`
+        // - which would serialise fine, parse fine, and be a config nobody
+        // could hand-edit against the documented example.
+        let existing = "[settings]\ninterval_ms = 4000\nalways_on_top = true\n\n                        [[host]]\nname = \"dove\"\naddr = \"dove\"\n";
+        let f = parse_file(existing).expect("a pre-split file must load");
+        assert_eq!(f.settings.fleet.interval_ms, 4_000);
+        assert!(f.settings.viewer.always_on_top);
+        // A key missing from a table that is *present* still gets its own
+        // default, which is the half of flatten's behaviour worth pinning.
+        assert_eq!(f.settings.fleet.history_cap_mb, 256);
+        assert!(f.settings.viewer.update_check);
+
+        let text = render_file(&f).unwrap();
+        assert!(text.contains("[settings]"), "wrote:\n{text}");
+        assert!(
+            !text.contains("[settings.fleet]") && !text.contains("[settings.viewer]"),
+            "the split leaked onto disk:\n{text}"
+        );
+        assert_eq!(parse_file(&text).unwrap().settings, f.settings);
+    }
+
+    #[test]
+    fn a_local_hosts_toml_carries_no_server_key() {
+        // hosts.toml is hand-edited, so a local install must leave no trace of
+        // a feature it is not using. This pins the *outcome*: `toml` omits a
+        // `None` by itself, so no attribute here is what makes it true, and a
+        // future `server: String` defaulting to `""` is the change it catches.
+        let text = render_file(&HostsFile::default()).unwrap();
+        assert!(!text.contains("server"), "wrote:\n{text}");
+
+        let mut f = HostsFile::default();
+        f.settings.viewer.server = Some("http://dove:8787".into());
+        let text = render_file(&f).unwrap();
+        assert!(text.contains("http://dove:8787"), "wrote:\n{text}");
+        assert_eq!(
+            parse_file(&text).unwrap().settings.viewer.server.as_deref(),
+            Some("http://dove:8787"),
+            "an endpoint must survive a restart, or remote mode lasts one \
+             session"
+        );
     }
 
     #[test]
     fn settings_round_trip_with_hosts() {
         let f = HostsFile {
             settings: Settings {
-                interval_ms: 5_000,
-                interval_secs: None,
-                history_cap_mb: 512,
-                always_on_top: true,
-                // Non-default on purpose: a setting that does not survive the
-                // round trip is one the user turns off and finds back on.
-                update_check: false,
+                fleet: FleetSettings {
+                    interval_ms: 5_000,
+                    interval_secs: None,
+                    history_cap_mb: 512,
+                },
+                viewer: ViewerSettings {
+                    server: None,
+                    always_on_top: true,
+                    // Non-default on purpose: a setting that does not survive
+                    // the round trip is one the user turns off and finds back
+                    // on.
+                    update_check: false,
+                },
             },
             hosts: vec![host("dove", None), host("heron", Some(30))],
         };
         let text = render_file(&f).unwrap();
         let back = parse_file(&text).unwrap();
 
-        assert_eq!(back.settings.interval_ms, 5_000, "wrote:\n{text}");
-        assert_eq!(back.settings.history_cap_mb, 512);
+        assert_eq!(back.settings.fleet.interval_ms, 5_000, "wrote:\n{text}");
+        assert_eq!(back.settings.fleet.history_cap_mb, 512);
         assert!(
-            back.settings.always_on_top,
+            back.settings.viewer.always_on_top,
             "the toggle must survive a restart"
         );
+        assert!(!back.settings.viewer.update_check);
         assert_eq!(
             back.hosts.len(),
             2,
@@ -620,18 +745,18 @@ mod settings_tests {
 
     #[test]
     fn a_host_without_an_override_follows_the_global_interval() {
-        let s = Settings {
+        let s = FleetSettings {
             interval_ms: 10000,
-            ..Settings::default()
+            ..FleetSettings::default()
         };
         assert_eq!(effective_interval_ms(&host("dove", None), &s), 10_000);
     }
 
     #[test]
     fn a_per_host_override_wins() {
-        let s = Settings {
+        let s = FleetSettings {
             interval_ms: 10000,
-            ..Settings::default()
+            ..FleetSettings::default()
         };
         assert_eq!(effective_interval_ms(&host("dove", Some(1_000)), &s), 1_000);
     }
@@ -639,9 +764,9 @@ mod settings_tests {
     #[test]
     fn absurd_intervals_are_clamped_not_obeyed() {
         // Zero would spin the remote loop as fast as sh can fork.
-        let s = Settings {
+        let s = FleetSettings {
             interval_ms: 1000,
-            ..Settings::default()
+            ..FleetSettings::default()
         };
         assert_eq!(
             effective_interval_ms(&host("dove", Some(0)), &s),

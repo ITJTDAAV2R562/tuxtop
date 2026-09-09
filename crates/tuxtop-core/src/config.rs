@@ -110,7 +110,7 @@ mod tests {
         let p = temp("merge");
         let c = Config::new(&p);
         let mut f = HostsFile::default();
-        f.settings.interval_ms = 30_000;
+        f.settings.fleet.interval_ms = 30_000;
         c.save_file(&f).unwrap();
 
         c.save(&[HostConfig {
@@ -122,7 +122,10 @@ mod tests {
         .unwrap();
 
         let back = c.load_file().unwrap();
-        assert_eq!(back.settings.interval_ms, 30_000, "setting was clobbered");
+        assert_eq!(
+            back.settings.fleet.interval_ms, 30_000,
+            "setting was clobbered"
+        );
         assert_eq!(back.hosts.len(), 1);
         let _ = std::fs::remove_file(p);
     }
@@ -179,9 +182,15 @@ mod migration_tests {
         .unwrap();
 
         let f = Config::new(&p).load_file().unwrap();
-        assert_eq!(f.settings.interval_ms, 30_000, "global setting survives");
+        assert_eq!(
+            f.settings.fleet.interval_ms, 30_000,
+            "global setting survives"
+        );
         assert_eq!(f.hosts[0].interval_ms, Some(5_000), "override survives");
-        assert_eq!(f.settings.interval_secs, None, "and is not read twice");
+        assert_eq!(
+            f.settings.fleet.interval_secs, None,
+            "and is not read twice"
+        );
 
         // Written back, the old key is gone rather than left to contradict.
         let text = hostlist::render_file(&f).unwrap();
@@ -196,7 +205,7 @@ mod migration_tests {
         p.push(format!("tuxtop-migrate-new-{}.toml", std::process::id()));
         std::fs::write(&p, "[settings]\ninterval_ms = 250\n").unwrap();
         let f = Config::new(&p).load_file().unwrap();
-        assert_eq!(f.settings.interval_ms, 250);
+        assert_eq!(f.settings.fleet.interval_ms, 250);
         let _ = std::fs::remove_file(p);
     }
 }

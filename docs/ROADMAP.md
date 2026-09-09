@@ -963,6 +963,22 @@ fix is to fan in rather than out.
    remember a green build is not a launch. Two startup panics have shipped
    past one; the smoke test is what catches a `setup` that panics.
 
+   **Commits 1 and 2 landed 2026-09-09.** Three things a later session needs
+   that the spec above does not say:
+
+   - **`serde_json` is now one of core's dependencies**, 25 crates to 29.
+     Reading back a payload our own server serialised needs a JSON
+     deserialiser, and hand-rolling one is not the base64 argument. The
+     ADR-018 consequence line claiming core gains no dependency is corrected
+     in place rather than amended away.
+   - **`effective_interval_ms` takes `&FleetSettings`**, not `&Settings` — the
+     signature follows the split, since it only ever read `interval_ms`.
+   - **`set_settings` compares the fleet half *after* clamping** and refuses
+     only if it actually changed. A viewer saving its own half sends the fleet
+     half back untouched (that is what `{...s, always_on_top}` does in
+     `app.js`), and refusing it would be a window that cannot be pinned — the
+     thing the split exists to prevent.
+
 3. **Switching endpoints without a restart.** Needs `Supervisor::stop_all`,
    which does not exist yet; the teardown belongs there rather than in the
    caller that switches. History is discarded across a switch, never appended.

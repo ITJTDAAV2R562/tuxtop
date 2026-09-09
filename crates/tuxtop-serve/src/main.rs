@@ -240,7 +240,7 @@ async fn main() -> std::process::ExitCode {
     eprintln!(
         "watching {n} hosts from {} at {}",
         args.hosts.display(),
-        tuxtop_core::sampler::rate_label(settings.interval_ms),
+        tuxtop_core::sampler::rate_label(settings.fleet.interval_ms),
     );
 
     // Fan the supervisor's single channel out to however many browsers are
