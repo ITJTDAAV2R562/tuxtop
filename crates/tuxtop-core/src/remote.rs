@@ -562,6 +562,41 @@ pub fn reconnect_delay(attempt: usize) -> Duration {
     Duration::from_millis(RECONNECT_MS[attempt.min(RECONNECT_MS.len() - 1)])
 }
 
+/// What a read loop does about a connection that has ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Next {
+    /// Say so, and stop. The endpoint was refused at parse time — `https://`
+    /// or something unparseable — which is a *verdict* rather than a failure,
+    /// and retrying it every few seconds is a loop that cannot ever succeed.
+    Refuse,
+    /// Say so, and try again. Nothing has been reached yet, so this may be a
+    /// typo rather than an outage, and only the user can tell which.
+    Report,
+    /// Try again without saying anything. An established connection dropped;
+    /// the chrome already states that the readings are stale and names the
+    /// endpoint, and a message per reconnect on a viewer left open overnight
+    /// is noise that teaches people to ignore the window.
+    Quiet,
+}
+
+/// Decide what to do after a connection ends, and whether to say anything.
+///
+/// **The first connect and a later drop are different events, and collapsing
+/// them costs a real thing:** a typo'd endpoint that silently retries forever
+/// looks exactly like a server that is down, and the user has no way to tell
+/// that nothing was ever reachable. That distinction is the whole of this
+/// function, and it is here rather than in the loop because the loop lives in
+/// `src-tauri`, where no test in this workspace ever runs (ADR-018 decision 3).
+pub fn next_after_failure(refused: bool, ever_connected: bool) -> Next {
+    if refused {
+        Next::Refuse
+    } else if ever_connected {
+        Next::Quiet
+    } else {
+        Next::Report
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Capabilities
 // ---------------------------------------------------------------------------
@@ -974,6 +1009,44 @@ mod tests {
         // And the first retry is prompt, so a restarted server is picked up in
         // well under a second.
         assert!(reconnect_delay(0) < Duration::from_millis(500));
+    }
+
+    #[test]
+    fn a_typo_in_an_endpoint_is_reported_rather_than_retried_in_silence() {
+        // Three rules in one place, because the loop needs all three and the
+        // interesting part is that they are *different*.
+        //
+        // A refused endpoint is never retried at all: `https://` cannot start
+        // working, so a loop around it burns forever and says nothing.
+        assert_eq!(next_after_failure(true, false), Next::Refuse);
+        assert_eq!(
+            next_after_failure(true, true),
+            Next::Refuse,
+            "a refusal is a verdict about the address, not about the link - \
+             having once connected does not make an unparseable URL retryable"
+        );
+
+        // Nothing reached yet: reported, because a typo and an outage look
+        // identical from here and only the person who typed it can tell.
+        assert_eq!(next_after_failure(false, false), Next::Report);
+
+        // An established connection dropped: retried quietly. The chrome
+        // already says the readings are stale and names the endpoint.
+        assert_eq!(next_after_failure(false, true), Next::Quiet);
+
+        // And the three are genuinely three: a function that collapsed any two
+        // of them would satisfy an `is_err`-shaped assertion and lose the
+        // distinction this exists for.
+        let all = [
+            next_after_failure(true, false),
+            next_after_failure(false, false),
+            next_after_failure(false, true),
+        ];
+        for (i, a) in all.iter().enumerate() {
+            for b in &all[i + 1..] {
+                assert_ne!(a, b, "two of the three outcomes are the same value");
+            }
+        }
     }
 
     // -- capabilities -------------------------------------------------------

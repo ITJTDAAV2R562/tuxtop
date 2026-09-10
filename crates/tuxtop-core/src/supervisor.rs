@@ -251,7 +251,11 @@ impl Supervisor {
 }
 
 /// One cgroup, tagged with the host it lives on.
-#[derive(Debug, Clone, serde::Serialize)]
+///
+/// `Deserialize` because this is a *fleet read*: in remote mode the desktop
+/// proxies `cgroup_list` to the server and has to read the answer back
+/// (ADR-018 decision 4).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct HostCgroup {
     pub host: String,
     /// `NRestarts` as systemd reports it — no recency at all.
@@ -263,7 +267,10 @@ pub struct HostCgroup {
 }
 
 /// One host's measured cost, for the settings meter.
-#[derive(Debug, Clone, serde::Serialize)]
+///
+/// `Deserialize` for the reason `HostCgroup` is: the settings meter's numbers
+/// come from the server in remote mode.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct HostTraffic {
     pub host: String,
     pub interval_secs: u32,

@@ -789,11 +789,29 @@ fix is to fan in rather than out.
 
    **Losing the server must not blank the grid.** This is the one failure
    local mode has never had: a single dead link takes out all nineteen cards
-   at once. Keep the last grid, mark it stale, and say *no contact with
-   `<endpoint>` since HH:MM:SS*. Nineteen cards each saying "offline" reads as
+   at once. Keep the last grid, mark it stale, and name the **endpoint** as the
+   subject rather than the hosts. Nineteen cards each saying "offline" reads as
    a dead fleet rather than a dead link, which is the generic-offline failure
    the hard rules already forbid.
    `losing_the_server_does_not_blank_the_grid`.
+
+   ~~and say *no contact with `<endpoint>` since HH:MM:SS*~~ — **corrected
+   2026-09-10 to *no readings from `<endpoint>` since HH:MM:SS*.** "No contact"
+   is a claim about the link, and **neither viewer can observe the link.** A
+   server's SSE keep-alive is a comment; a comment dispatches no event, so the
+   desktop read loop decodes it as `Keepalive` and `EventSource` in a browser
+   drops it silently. A healthy server whose whole fleet is paused therefore
+   sends nothing a viewer can see for as long as the pause lasts, and "no
+   contact with dove:8787" would be a confident false statement about a link
+   that is fine — the founding hazard in three words. "No readings" is true
+   whether the fleet is quiet, the server is gone, or the network is, and it
+   still names the endpoint, which was the point of the sentence.
+   `the_warning_claims_no_more_than_the_viewer_can_observe`.
+
+   Found by asking why a `cargo-mutants`-style deletion of the server's
+   `.keep_alive(...)` survived: the answer is that nothing downstream can see a
+   keep-alive, which is also the answer to what the wording could honestly
+   claim.
 
    ### Reconnecting
 

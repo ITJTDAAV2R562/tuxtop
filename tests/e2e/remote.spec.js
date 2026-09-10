@@ -91,7 +91,7 @@ test('losing the server does not blank the grid', async ({ page }) => {
 
   const bar = page.locator('#remotebar');
   await expect(bar.locator('[data-chrome-age]'))
-    .toContainText('no contact with dove:8787 since', { timeout: 15_000 });
+    .toContainText('no readings from dove:8787 since', { timeout: 15_000 });
   // The time is a wall clock, which is what someone can compare against when
   // they last looked at the machine.
   await expect(bar.locator('[data-chrome-age]')).toContainText(/\d\d:\d\d:\d\d/);

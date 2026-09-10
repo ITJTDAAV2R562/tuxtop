@@ -82,22 +82,35 @@ test('the_clock_time_is_local_and_zero_padded', () => {
   assert.equal(R.clockTime('nope'), null);
 });
 
-test('losing_the_server_says_it_is_the_link_not_the_fleet', () => {
+test('losing_the_server_names_the_endpoint_not_the_fleet', () => {
   // One dead link takes out all nineteen cards at once, which local mode has
   // never done. Nineteen cards captioned "offline" reads as a dead fleet - the
-  // generic-offline failure the hard rules forbid - so the warning names the
-  // endpoint.
+  // generic-offline failure the hard rules forbid - so the endpoint is the
+  // subject of the sentence.
   const t = new Date(2026, 8, 10, 14, 3, 11).getTime();
   const note = R.staleNote('dove:8787', t);
-  assert.equal(note, 'no contact with dove:8787 since 14:03:11');
-  assert.match(note, /dove:8787/, 'the warning must name the link that died');
+  assert.equal(note, 'no readings from dove:8787 since 14:03:11');
+  assert.match(note, /dove:8787/, 'the warning must name the link, not a host');
+});
+
+test('the_warning_claims_no_more_than_the_viewer_can_observe', () => {
+  // The spec asked for "no contact with <endpoint>", and neither viewer can
+  // observe contact: an SSE keep-alive is a comment, a comment dispatches no
+  // event, and EventSource drops it silently. So a healthy server whose whole
+  // fleet is paused sends nothing visible for minutes, and "no contact" would
+  // be a confident false statement about a link that is fine - this project's
+  // founding hazard in one word.
+  const note = R.staleNote('dove:8787', Date.now());
+  assert.match(note, /^no readings from /, note);
+  assert.ok(!note.includes('contact'), `claims more than it knows: ${note}`);
+  assert.ok(!note.includes('offline'), `the banned generic: ${note}`);
 });
 
 test('a_connection_that_never_succeeded_invents_no_timestamp', () => {
   // A typo'd endpoint has no last-seen instant, and `since 00:00:00` would be
   // a fabricated fact about a machine nobody ever reached.
-  assert.equal(R.staleNote('dove:8787', null), 'no contact with dove:8787');
-  assert.equal(R.staleNote('dove:8787', undefined), 'no contact with dove:8787');
+  assert.equal(R.staleNote('dove:8787', null), 'no readings from dove:8787 yet');
+  assert.equal(R.staleNote('dove:8787', undefined), 'no readings from dove:8787 yet');
   // Sampling locally has no link to lose; per-host faults cover a dead host.
   assert.equal(R.staleNote(null, Date.now()), null);
 });

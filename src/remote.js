@@ -102,14 +102,25 @@
   }
 
   /**
-   * What to say when the server has gone quiet.
+   * What to say when nothing is arriving.
    *
    * **It names the endpoint, not the hosts.** Losing one server takes out all
    * nineteen cards at once, which is a failure local mode has never had.
    * Nineteen cards each captioned "offline" reads as a dead fleet rather than a
    * dead link - the generic-offline failure the hard rules already forbid - so
-   * the grid keeps its last readings, marked stale, and the link says it is the
-   * link.
+   * the grid keeps its last readings, marked stale, and the endpoint is the
+   * subject of the sentence.
+   *
+   * **"no readings", not "no contact", and that is a correction rather than a
+   * preference.** The spec asked for *no contact with `<endpoint>`*, which is a
+   * claim about the link - and neither viewer can observe the link. A server's
+   * SSE keep-alive is a comment, and a comment dispatches no event: the desktop
+   * read loop decodes it as `Keepalive` and `EventSource` in a browser drops it
+   * silently. So a healthy server whose whole fleet is paused sends nothing an
+   * viewer can see for minutes, and "no contact" would be a confident false
+   * statement about a link that is fine. What is actually known is that no
+   * readings have arrived, which is true whether the fleet is quiet, the server
+   * is gone, or the network is.
    *
    * With no `lastSeen` at all the time is left off rather than invented: that
    * is a connection that never succeeded, and "since 00:00:00" would be a
@@ -122,7 +133,7 @@
   function staleNote(label, lastSeenMs) {
     if (!label) return null;
     const t = clockTime(lastSeenMs);
-    return t ? `no contact with ${label} since ${t}` : `no contact with ${label}`;
+    return t ? `no readings from ${label} since ${t}` : `no readings from ${label} yet`;
   }
 
   /**

@@ -578,6 +578,172 @@ mod tests {
         }
     }
 
+    /// Read from a socket until `f` is satisfied, or give up.
+    ///
+    /// A bare `read` loop with no bound turns a wire regression into a hung
+    /// test, which in CI is a twenty-minute job that says nothing.
+    async fn read_until<F: FnMut(&[u8]) -> bool>(
+        sock: &mut tokio::net::TcpStream,
+        mut f: F,
+    ) -> Vec<u8> {
+        use tokio::io::AsyncReadExt;
+        let mut got = Vec::new();
+        let mut buf = [0u8; 4096];
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while std::time::Instant::now() < deadline {
+            let n = match tokio::time::timeout(
+                std::time::Duration::from_millis(250),
+                sock.read(&mut buf),
+            )
+            .await
+            {
+                Ok(Ok(0)) => break,
+                Ok(Ok(n)) => n,
+                Ok(Err(e)) => panic!("read failed: {e}"),
+                Err(_) => continue,
+            };
+            got.extend_from_slice(&buf[..n]);
+            if f(&got) {
+                break;
+            }
+        }
+        got
+    }
+
+    #[tokio::test]
+    async fn a_live_server_still_frames_events_the_way_the_fixture_says() {
+        // `tuxtop-core`'s captured fixture pins the wire as it was on
+        // 2026-09-09, fed to the parser one byte at a time. This pins it as it
+        // is *now*, against the running server, over a real socket - so an axum
+        // upgrade that changed the chunking, or a route that stopped answering,
+        // fails here rather than in `src-tauri` on Windows, which is the most
+        // expensive place in this project to discover anything.
+        //
+        // It also covers the shape of `src-tauri/src/remote.rs`, which nothing
+        // in this workspace compiles: the same four core calls in the same
+        // order, over a socket, with the same `content-length` handling for a
+        // command response. Not the loop itself - that stays untested by
+        // design (ADR-018 decision 3) - but everything the loop depends on.
+        use tokio::io::AsyncWriteExt;
+        use tuxtop_core::remote as wire;
+
+        let (dir, base) = web_root("live");
+        let st = state(&dir, false);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let feed = st.events.clone();
+        let app = router(st.clone());
+        let server = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let ep = wire::parse_endpoint(&format!("http://{addr}")).expect("our own address parses");
+
+        // ---- GET /api/events ------------------------------------------
+        let mut sock = tokio::net::TcpStream::connect(ep.authority())
+            .await
+            .unwrap();
+        sock.write_all(wire::events_request(&ep).as_bytes())
+            .await
+            .unwrap();
+
+        // An event sent before the handler has subscribed reaches nobody, and
+        // the test would then be measuring a race rather than the wire.
+        for _ in 0..200 {
+            if feed.receiver_count() > 0 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(feed.receiver_count() > 0, "the stream never subscribed");
+
+        let sent = Event::Sample(Box::new(tuxtop_core::Sample {
+            host: "dove".into(),
+            cpu: 42.5,
+            cores: vec![1.0, 2.0, 3.0],
+            mem_total_kb: 64,
+            mem_used_kb: 8,
+            ..Default::default()
+        }));
+        feed.send(encode_event(&sent).unwrap()).unwrap();
+
+        let raw = read_until(&mut sock, |got| {
+            wire::split_head(got)
+                .ok()
+                .flatten()
+                .is_some_and(|(_, used)| got.len() > used + 8)
+        })
+        .await;
+
+        let (head, used) = wire::split_head(&raw)
+            .expect("a live response head parses")
+            .expect("and it arrived");
+        assert_eq!(head.status, 200);
+        assert!(
+            head.chunked,
+            "the live stream is no longer chunked - the fixture and the \
+             de-chunker both assume it is: {head:?}"
+        );
+        assert_eq!(head.content_length, None, "a stream declares no length");
+
+        let body = wire::dechunk(&raw[used..]).expect("the live body de-chunks");
+        let (frames, _) = wire::split_sse_frames(&body.data);
+        let mut hosts = Vec::new();
+        for f in frames {
+            match wire::decode_event(f).expect("every live frame decodes") {
+                wire::Decoded::Keepalive => {}
+                wire::Decoded::Event(Event::Sample(s)) => hosts.push(s.host.clone()),
+                other => panic!("unexpected {other:?}"),
+            }
+        }
+        assert_eq!(
+            hosts,
+            vec!["dove".to_string()],
+            "the sample did not survive the round trip over a real socket"
+        );
+
+        // ---- POST /api/capabilities -----------------------------------
+        // The other request in ADR-018 decision 2, and the one the fleet-read
+        // proxy makes. A command answer is length-delimited rather than
+        // chunked, which is the branch `remote::fetch` takes.
+        let mut sock = tokio::net::TcpStream::connect(ep.authority())
+            .await
+            .unwrap();
+        sock.write_all(
+            wire::command_request(&ep, "capabilities", "{}")
+                .unwrap()
+                .as_bytes(),
+        )
+        .await
+        .unwrap();
+        let raw = read_until(&mut sock, |got| {
+            wire::split_head(got)
+                .ok()
+                .flatten()
+                .and_then(|(h, used)| h.content_length.map(|len| got.len() >= used + len))
+                .unwrap_or(false)
+        })
+        .await;
+        let (head, used) = wire::split_head(&raw).unwrap().expect("a head arrived");
+        assert_eq!(head.status, StatusCode::OK.as_u16());
+        let len = head
+            .content_length
+            .expect("a command answer declares its length, which is what the proxy reads to");
+        let caps: wire::Capabilities =
+            serde_json::from_slice(&raw[used..used + len]).expect("capabilities decodes");
+        assert!(
+            !caps.writable,
+            "this server was started read-only and said otherwise"
+        );
+        assert!(
+            caps.stale_after_ms > 0,
+            "the freshness threshold must travel"
+        );
+
+        server.abort();
+        let _ = std::fs::remove_dir_all(base);
+    }
+
     #[tokio::test]
     async fn events_reach_the_browser_under_the_names_the_desktop_app_uses() {
         // The browser shim and the Tauri app subscribe to the same topics. An

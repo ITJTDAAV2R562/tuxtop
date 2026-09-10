@@ -25,7 +25,12 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
 # SSH is handled by tuxtop-core, which shells out to the system ssh (ADR-007).
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+# `net` and `io-util` are for remote mode's own socket (ADR-018 decision 3):
+# the hand-rolled client reads the event stream with async I/O rather than
+# blocking a runtime worker. Neither feature costs a crate - both are already
+# enabled in this graph through reqwest and hyper, and features are not
+# recorded in Cargo.lock, so this changes no lockfile.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "net", "io-util"] }
 # The only dependency that reaches the network on the app's own behalf. It is
 # also the reason a minisign keypair exists: the updater downloads and runs an
 # installer, so an unverified one would be remote code execution by design.
