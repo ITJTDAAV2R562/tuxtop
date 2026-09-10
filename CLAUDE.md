@@ -488,17 +488,26 @@ four full heat renders, measured at 24 s alone — and carries its own
 `test.setTimeout(60_000)` with that measurement written down. That is the
 exception, not a pattern to copy.
 
-**A blur aimed at the input you just filled is aimed at a node that may be
-gone.** Playwright's `fill` fires `input` and **not** `change`, so on a table
-that commits on `change` the blur *is* the commit — and any table redrawn from
-the backend's answer replaces that input as it commits. Move focus to something
-outside the table instead (the add-row box, a heading): it is what a person
-does, and it lands on a node nothing re-renders. This presented as one
-`toHaveValue` failure in five full-suite runs, which is the frequency that
-reads as "someone else's flake". The same instinct applies to `page.evaluate`
-on a control whose state is in the markup — `#epWrap` is `open` in `index.html`
-so no test has to ask whether it is, and the version that asked timed out under
-the parallel suite.
+**Commit a filled input with a keystroke on that same input, not by touching a
+second element.** Playwright's `fill` fires `input` and **not** `change`, so on
+a table that commits on `change` something has to move focus and *that* is the
+commit. `press('Tab')` needs no second locator: it re-resolves at the moment of
+the press, and until something commits the row is still exactly what it was.
+
+Three versions of that line were written before this one, and the two tidier
+ones each **hung on a locator Playwright had already resolved** — a
+`page.evaluate` reading a `<details>`'s `open`, and a `focus()` on an input
+outside the table. Both only under the parallel suite; both are the shape this
+file already says to simplify rather than investigate, and simplifying meant
+one fewer element in the step each time. (The first version blurred the input
+it had just filled and failed once in five full runs on `toHaveValue` —
+different mechanism, same lesson.) 32 repeats at four workers and three full
+suites hold. When a spec starts collecting timeouts on resolved elements, take
+elements *out* of the step.
+
+Put a control's state in the markup so no test has to ask for it: `#epWrap` is
+`open` in `index.html`, which is both the simpler test and the more
+discoverable list.
 
 **CSS generated content is invisible to a test.** `toContainText` reads
 `textContent`, which does not include `::before`/`::after`, so a label drawn

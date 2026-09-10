@@ -63,22 +63,23 @@ test('an endpoint that already existed can be renamed and repointed', async ({ p
   // operation so a server that moves and is renamed never passes through a
   // state on disk that is neither - and this is the browser's half of it.
   //
-  // `commit` moves focus *off the table* rather than blurring the input it just
-  // filled. `fill` fires `input` and not `change` - measured, by removing the
-  // blur and watching this fail every time - so the blur is the commit, and a
-  // blur aimed at a row input is aimed at a node the redraw is about to
-  // replace. Focusing the add-row box instead is what a person does and lands
-  // on something that never re-renders. One run in five failed on `toHaveValue`
-  // before this.
-  const commit = () => page.locator('#ep-name').focus();
-
+  // **Tab, on the input that was just filled.** `fill` fires `input` and not
+  // `change` - measured, by removing this and watching the test fail every
+  // time - so something has to move focus, and that blur is the commit.
+  //
+  // Two tidier-looking versions of that hung under the parallel suite, each on
+  // a *resolved* locator: a `page.evaluate` reading the `<details>` state, and
+  // a `focus()` on the add-row box. Both are the shape CLAUDE.md says to
+  // simplify rather than investigate. A keystroke needs no second element -
+  // the locator re-resolves at the moment of the press, and until something
+  // commits, `[data-ep-name="lab"]` is still exactly what it was.
   await page.locator('[data-ep-name="lab"]').fill('lab fleet');
-  await commit();
+  await page.locator('[data-ep-name="lab"]').press('Tab');
   await expect(page.locator('[data-ep-name="lab fleet"]')).toHaveValue('lab fleet');
   await expect(page.locator('[data-ep-name="lab"]')).toHaveCount(0);
 
   await page.locator('[data-ep-url="lab fleet"]').fill('coot:9100');
-  await commit();
+  await page.locator('[data-ep-url="lab fleet"]').press('Tab');
   await expect(page.locator('[data-ep-url="lab fleet"]')).toHaveValue('coot:9100');
 
   // The half that matters: close the dialog and ask again. A test that edits
