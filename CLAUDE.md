@@ -590,9 +590,25 @@ construction, state registration or the runtime, run the smoke test.
 **Run `verify.sh` before pushing.** It
 runs the same gates, including `cargo clippy --all-targets -- -D warnings`
 (stricter than a bare `cargo clippy`) — and it builds `src-tauri` through the
-Windows toolchain at `/mnt/c`, which is the one gate a Linux box cannot
-otherwise close. It skips loudly rather than passing quietly when something is
-unavailable.
+Windows toolchain at `/mnt/c`. It skips loudly rather than passing quietly when
+something is unavailable.
+
+**For an inner loop, cross-compile it here instead — `src-tauri` does compile
+on Linux.** `cargo-xwin` is installed:
+
+```sh
+cargo xwin build  --manifest-path src-tauri/Cargo.toml --target x86_64-pc-windows-msvc
+cargo xwin clippy --manifest-path src-tauri/Cargo.toml --target x86_64-pc-windows-msvc \
+                  --all-targets -- -D warnings
+```
+
+About 30 s warm, against a commit-push-pull cycle for every typo — the Windows
+checkout is a separate clone and can only build what you have pushed to it. So
+what the `/mnt/c` gate uniquely closes is not *compiling*: it is **launching**,
+which is the half that matters, since two startup panics have shipped past a
+green build and neither is visible to a compiler. Use `cargo xwin` while
+writing and `verify.sh` before pushing; a clean cross-compile is not a smoke
+test.
 
 **That Windows build is a separate clone, and the script now refuses a stale
 one.** The Windows checkout — `TUXTOP_WIN_REPO`, defaulting to
