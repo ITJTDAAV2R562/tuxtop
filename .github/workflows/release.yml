@@ -280,8 +280,10 @@ jobs:
           ./tuxtop-serve --hosts hosts.toml --port 8787
           \`\`\`
 
-          Loopback only, no authentication, read-only unless \`--writable\`.
-          Front it with \`tailscale serve\`.
+          **No authentication at any address**, and read-only unless
+          \`--writable\`. It binds 127.0.0.1 unless \`--bind\` says otherwise;
+          put something in front of it that terminates TLS and establishes
+          identity — \`tailscale serve\`, an \`ssh -L\` tunnel, nginx, a VPN.
 
           Neither needs anything installed on a monitored host — SSH and a
           POSIX shell is the whole requirement.

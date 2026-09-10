@@ -175,15 +175,21 @@ is never touched by a workspace `cargo build`, so **any change to
 with `--locked`, which does not update a lock, it refuses: *"cannot update the
 lock file … because --locked was passed"*. Releasing says this about version
 bumps; it is the same mechanism for adding or removing a dependency, and it has
-now caught both, plus every Dependabot cargo PR. Refresh it in the same commit,
-and mind which command: for a **version bump** `cargo update -p tuxtop -p
-tuxtop-core --manifest-path src-tauri/Cargo.toml --offline` is right, because
-nothing else can move. For a **dependency change** it re-resolves too widely —
-doing it for a `toml` bump moved `windows-sys` across three unrelated packages,
-eleven unreviewed lines in a commit meant to fix a lock. Use a plain resolve
-there: `cargo metadata --manifest-path src-tauri/Cargo.toml --format-version 1
->/dev/null`, which writes the lock without compiling and changes only what had
-to change. `scripts/check-locks.py` catches the stale state either way, on
+now caught both, plus every Dependabot cargo PR. Refresh it in the same commit, with a plain
+resolve: `cargo metadata --manifest-path src-tauri/Cargo.toml --format-version
+1 >/dev/null`, which writes the lock without compiling and changes only what
+had to change.
+
+~~For a **version bump** `cargo update -p tuxtop -p tuxtop-core --offline` is
+right, because nothing else can move; the plain resolve is for a **dependency
+change**, where the update command re-resolves too widely.~~ **Half of that was
+wrong, and it was measured at the v0.8.0 bump.** The `update` command moved
+`windows-sys` across *ten* packages — 0.59 to 0.60, 0.59 to 0.52, 0.61 to 0.60,
+in both directions — 24 lines in a lock where two had to change, in a release
+commit. `--offline` is why: it re-resolves the whole graph against whatever the
+local cache happens to hold, and "nothing else can move" was never true, only
+unobserved. The plain resolve changed exactly the two version strings. Use it
+for both cases; the distinction does not exist. `scripts/check-locks.py` catches the stale state either way, on
 Linux, in about a second. Nothing else on the dev box notices, because nothing
 here builds that crate.
 
@@ -670,8 +676,11 @@ a workspace `cargo build` never touches, so bumping the four obvious files
 leaves it behind and the release job dies at `cargo xwin build --locked` with
 "cannot update the lock file". That sank the first v0.5.0 tag, after the
 four-file check had said OK. Refresh it with
-`cargo update -p tuxtop -p tuxtop-core --manifest-path src-tauri/Cargo.toml --offline`. It runs in CI on every push, and
-again in the release guard *with the tag*, before any build minutes are spent.
+`cargo metadata --manifest-path src-tauri/Cargo.toml --format-version 1 >/dev/null` —
+**not** `cargo update --offline`, which re-resolves against the local cache and
+moved `windows-sys` across ten packages at this bump; see the note above. It
+runs in CI on every push, and again in the release guard *with the tag*, before
+any build minutes are spent.
 A release whose binaries report a different version than the tag is worse than
 no release: the tag is what anyone quotes in a bug report.
 
