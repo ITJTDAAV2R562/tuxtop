@@ -202,6 +202,30 @@
       <p class="hint" data-cap-hint></p>
     </div>
 
+    <!-- The endpoint, and the only door to switching one.
+         A *viewer* setting (ADR-018 decision 4), so it sits with the other two
+         rather than above with the interval and the history limit: those
+         describe the machine doing the sampling and belong to whoever is doing
+         it, while this one is what decides which machine that is.
+
+         It stays editable in remote mode - that is how you switch away, or
+         back - and is disabled only in a browser tab, which has no local
+         hosts.toml to point anywhere and would be re-pointing the server for
+         everybody else watching it. -->
+    <div class="field">
+      <label for="s-server">Server</label>
+      <input type="text" id="s-server" autocomplete="off" spellcheck="false"
+             placeholder="empty &mdash; watch this machine's own fleet"
+             aria-describedby="s-server-hint">
+      <p class="hint" id="s-server-hint">Watch a <code>tuxtop-serve</code>
+        elsewhere instead of sampling from here &mdash; one sampler, many
+        viewers, so a fleet is not connected to twice.
+        <code>dove:8787</code> or <code>http://dove:8787</code>; plain HTTP
+        only, over <code>ssh -L</code> or a tailnet address. Clear it to go
+        back to this machine's own hosts. Charts start again either way:
+        history is per window and two fleets' numbers are never blended.</p>
+    </div>
+
     <label class="checkfield">
       <input type="checkbox" id="s-ontop">
       <span>

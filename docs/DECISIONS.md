@@ -1071,7 +1071,10 @@ Windows. Confirm on first install of the next release.
 ## ADR-017 — One sampler, many viewers; the endpoint is the mode
 
 **Date:** 2026-09-04 · **Status:** accepted · part 3 (`--bind`) shipped
-2026-09-05; parts 1, 2 and 4 are Phase 14 steps 2–4 and not built yet
+2026-09-05, parts 1–2 (remote mode in the desktop app) 2026-09-10, part 4
+(switching endpoints) 2026-09-10 — **from Settings; there is no command-line
+form**, and the "or the command line" in part 4 stays unbuilt rather than
+quietly claimed. Saved endpoints are Phase 14 step 4 and not built yet
 
 ### Context
 
@@ -1455,6 +1458,16 @@ in this project to discover anything.
   cancels it until endpoints can be switched. Retrofitting cancellation onto a
   running loop is how a switch ends up with two readers feeding one window, and
   the shell is where the `JoinHandle` has to live because the socket does.
+  **Its caller arrived 2026-09-10**, and both halves turned out to be needed:
+  `start` aborts the old reader before installing the new one, and `stop` — the
+  one that shipped `#[allow(dead_code)]` — covers the switch *back to local*,
+  which is the only path that ends with no reader at all and so the only one
+  `start` cannot. A loop left running there paints the server's fleet over the
+  local one that has just been restarted, with no error anywhere, because both
+  are answering correctly. The same sentence explains why the invariant cannot
+  be a test here: the type is in `src-tauri`, so a test of it would be one no
+  runner in this repository ever executes — it is measured against a real
+  server instead, in `docs/ROADMAP.md` Phase 14 step 3.
 - **`capabilities` is re-read, not read once.** Switching endpoints changes
   every field of it. The frontend re-invokes it on `tuxtop://settings-changed`,
   which costs a line now and saves the switching phase a frontend change.

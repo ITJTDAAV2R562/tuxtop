@@ -115,6 +115,25 @@ test('a_connection_that_never_succeeded_invents_no_timestamp', () => {
   assert.equal(R.staleNote(null, Date.now()), null);
 });
 
+test('an_empty_field_means_the_local_fleet_not_a_server_named_nothing', () => {
+  // Clearing the field is how you switch back, so the difference between "" and
+  // null is one of this feature's two directions - and `use_endpoint` treats
+  // them the same way at the other end, deliberately, because a switch that
+  // depended on which of the two arrived would be a switch with a second door.
+  assert.equal(R.endpointInput(''), null);
+  assert.equal(R.endpointInput('   '), null);
+  assert.equal(R.endpointInput(null), null);
+  assert.equal(R.endpointInput(undefined), null);
+
+  // What was typed, trimmed, and otherwise untouched: `https://`, a path and a
+  // bad port are refused by tuxtop_core::remote::parse_endpoint, which is where
+  // that rule lives. A second copy here would be a second thing to drift.
+  assert.equal(R.endpointInput('  dove:8787 '), 'dove:8787');
+  assert.equal(R.endpointInput('http://dove:8787'), 'http://dove:8787');
+  assert.equal(R.endpointInput('https://dove:8787'), 'https://dove:8787',
+    'the refusal belongs to the backend, and it names the fix');
+});
+
 test('the_fleet_half_of_settings_needs_a_writable_backend', () => {
   // A read-only server drew a live interval field and a live history limit and
   // returned 403 on Save - two controls that could only fail, before remote

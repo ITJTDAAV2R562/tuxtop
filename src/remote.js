@@ -137,6 +137,27 @@
   }
 
   /**
+   * What a Settings field's text means as an endpoint.
+   *
+   * **Empty is `null`, not `""`.** Clearing the field is how you switch back to
+   * the local fleet, so the difference between the two is the whole of one of
+   * this feature's two directions - and a server named `""` is not a thing that
+   * could be reached, so there is nothing else it could sensibly mean.
+   *
+   * Whitespace is trimmed and nothing else is: `https://`, a path, a port that
+   * is not a number are all refused by `tuxtop_core::remote::parse_endpoint`,
+   * which is where that rule lives and where its reasons are written down. A
+   * second copy here would be a second thing to drift.
+   *
+   * @param {unknown} text
+   * @returns {string|null}
+   */
+  function endpointInput(text) {
+    if (typeof text !== 'string') return null;
+    return text.trim() || null;
+  }
+
+  /**
    * Which halves of the Settings dialog can actually be saved.
    *
    * Two questions, not one, because `Settings` is two halves that answer to
@@ -189,5 +210,6 @@
       + (n ? ` · ${n} host${n === 1 ? '' : 's'} at its own rate` : '');
   }
 
-  return { LOCAL, originLabel, identity, isStale, clockTime, staleNote, editable, modeLine };
+  return { LOCAL, originLabel, identity, isStale, clockTime, staleNote,
+           endpointInput, editable, modeLine };
 }));

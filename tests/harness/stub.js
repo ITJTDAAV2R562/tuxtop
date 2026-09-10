@@ -9,12 +9,34 @@
     { name: 'dove', group: 'physical', cores: 32, virt: 'none' },
     { name: 'heron', group: 'VM', cores: 4, virt: 'kvm' },
   ];
-  const CORES = Object.fromEntries(FLEET.map(h => [h.name, h.cores]));
-  const VIRT = Object.fromEntries(FLEET.map(h => [h.name, h]));
-  let hosts = FLEET.map(h => ({
+  /// The fleet a *server* is watching.
+  ///
+  /// Another fleet, not this one: several fleets - or several customers - is
+  /// what switching endpoints is for (ADR-017 part 4). Nineteen again, so a
+  /// layout measured on both sides of a switch compares like with like, and
+  /// `dove` deliberately shared, because two fleets each with a host of the
+  /// same name is exactly the blend that discarding history on a switch exists
+  /// to prevent.
+  const REMOTE_FLEET = FLEET.map(h => (
+    h.name === 'dove' ? { ...h } : { ...h, name: `c2-${h.name}` }
+  ));
+
+  const CORES = Object.fromEntries([...FLEET, ...REMOTE_FLEET].map(h => [h.name, h.cores]));
+  const VIRT = Object.fromEntries([...FLEET, ...REMOTE_FLEET].map(h => [h.name, h]));
+
+  const asConfig = fleet => fleet.map(h => ({
     name: h.name, addr: h.name, user: '', port: 22, beszel_url: null,
     group: h.group || null, os: h.os || '', paused: false,
   }));
+
+  /// Which fleet is on screen follows the endpoint, exactly as it does in the
+  /// app: `list_hosts` is a fleet read, and in remote mode the fleet is the
+  /// server's. Read at load as well as switched at runtime, so a spec can start
+  /// from an endpoint that was already set when the page opened - the state the
+  /// "clearing it" test has to begin in, because the path that gets forgotten
+  /// is always the entity that was already there.
+  let endpoint = window.__stubEndpoint ?? null;
+  let hosts = asConfig(endpoint ? REMOTE_FLEET : FLEET);
 
   /// Filesystems per host, where they differ from a single root.
   ///
@@ -244,8 +266,29 @@
         // that wants a read-only server or a remote viewer sets them before
         // loading the page, and everything else keeps the local-desktop
         // answer it has always had.
+        // The one door to switching. Mirrors Service::use_endpoint and the
+        // shell's half of it: refuse `https://` *before* anything is torn down,
+        // stop sampling the fleet being left, discard its history, persist the
+        // endpoint and announce the change.
+        //
+        // It announces `settings-changed` and **not** `hosts-changed`, which is
+        // what the real backend does: the new fleet reaches the grid because
+        // the frontend re-seeds it from `list_hosts`, and a stub that pushed
+        // the list would leave that re-seed untested while looking green.
+        if (cmd === 'use_endpoint') {
+          const want = (args.endpoint || '').trim() || null;
+          if (want && /^https:/i.test(want)) {
+            throw `${want}: this viewer speaks plain HTTP. Reach the server `
+                + `over ssh -L or a tailnet address, or use http://`;
+          }
+          if (want !== endpoint) {
+            endpoint = want;
+            hosts = asConfig(endpoint ? REMOTE_FLEET : FLEET);
+            emit('tuxtop://settings-changed', { ...settings });
+          }
+          return { ...settings };
+        }
         if (cmd === 'capabilities') {
-          const endpoint = window.__stubEndpoint ?? null;
           return {
             writable: !window.__stubReadonly && !endpoint,
             endpoint,

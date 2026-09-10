@@ -56,36 +56,55 @@ const MAX_BODY_BYTES: usize = 32 * 1024 * 1024;
 
 /// The one reader feeding this window, and the handle that can stop it.
 ///
-/// **Cancellable from the first commit, though nothing cancels it yet.**
-/// Switching endpoints is a later phase, and retrofitting cancellation onto a
-/// running loop is how a switch ends up with two readers feeding one window —
-/// each decoding a different fleet into the same cards. `start` aborts whatever
-/// was running before it installs a replacement, so "exactly one reader" is a
-/// property of this type rather than a rule its callers have to remember, which
-/// is the ADR-012 lesson applied one layer up.
-#[derive(Default)]
+/// **Exactly one reader is a property of this type, not a rule its callers have
+/// to remember** — the ADR-012 lesson applied one layer up. Two loops decoding
+/// two fleets into the same cards is what a switch produces when the old one is
+/// spawned and forgotten, and it is invisible: both fleets simply appear.
+/// `start` aborts whatever was running before it installs a replacement, and
+/// `stop` is the other half, for the switch that ends in local mode.
+///
+/// The channel and the store are held here rather than passed to `start`,
+/// because they are properties of *this window* and not of an endpoint: the
+/// switching command has neither in hand, and giving it either would be two
+/// more things to thread through a Tauri state bag correctly.
 pub struct ReadLoop {
+    tx: Sender<Event>,
+    history: Arc<HistoryStore>,
     task: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
 }
 
 impl ReadLoop {
+    /// The reader for one window: where its events go, and where its samples
+    /// are recorded.
+    pub fn new(tx: Sender<Event>, history: Arc<HistoryStore>) -> Self {
+        Self {
+            tx,
+            history,
+            task: Mutex::new(None),
+        }
+    }
+
     /// Point this window at `endpoint`, replacing any reader already running.
-    pub fn start(&self, endpoint: String, tx: Sender<Event>, history: Arc<HistoryStore>) {
+    pub fn start(&self, endpoint: String) {
         let mut slot = self.task.lock().expect("read loop lock");
         if let Some(old) = slot.take() {
             old.abort();
         }
-        *slot = Some(tauri::async_runtime::spawn(run(endpoint, tx, history)));
+        *slot = Some(tauri::async_runtime::spawn(run(
+            endpoint,
+            self.tx.clone(),
+            self.history.clone(),
+        )));
     }
 
     /// Stop reading.
     ///
-    /// Unused until endpoints can be switched at runtime, which is what it
-    /// exists for: `use_endpoint` stops the reader, clears the history and
-    /// announces the change, and the shell starts a new one. Shipped now
-    /// because the alternative is discovering on that day that the loop was
-    /// spawned and forgotten.
-    #[allow(dead_code)]
+    /// The half a caller forgets, and the reason it shipped unused: switching
+    /// *back to local* is the only path that ends with no reader at all, so it
+    /// is the only path `start` cannot cover. A loop left running there would
+    /// keep painting the server's fleet over the local one that has just been
+    /// restarted — with no error anywhere, because both are answering
+    /// correctly.
     pub fn stop(&self) {
         if let Some(old) = self.task.lock().expect("read loop lock").take() {
             old.abort();
@@ -131,13 +150,14 @@ async fn run(endpoint: String, tx: Sender<Event>, history: Arc<HistoryStore>) {
                 // Nothing was ever reached: this may be a typo rather than an
                 // outage, and only the person who typed it can tell.
                 //
-                // Logged rather than pushed to the window, because the chrome
-                // already says "no contact with <endpoint>" with no timestamp
-                // for exactly this state. The phase that lets an endpoint be
-                // typed at runtime is what has to carry the message into the
-                // UI — and it must, because a release build has no stderr
-                // (`windows_subsystem = "windows"`), so this line exists for a
-                // debug build and the smoke test.
+                // Logged here, and *reported* by `use_endpoint`, which is the
+                // path that can hand the failure back to the window
+                // synchronously. This line cannot be the report: a release
+                // build has no stderr (`windows_subsystem = "windows"`), so it
+                // exists for a debug build and the smoke test. It still runs on
+                // every retry of a first connect that keeps failing, which is
+                // where a launch-time endpoint that was never reachable shows
+                // up — nothing typed it, so nothing was waiting on an answer.
                 Next::Report => eprintln!("remote: nothing reached at {} — {e}", ep.authority()),
                 // An established connection dropped. The chrome states it.
                 Next::Quiet => {}

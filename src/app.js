@@ -3017,6 +3017,11 @@
     $('#s-cap').disabled = !can.fleet;
     $('#s-ontop').disabled = !can.viewer;
     $('#s-update').disabled = !can.viewer;
+    // The endpoint is this window's own, so it stays editable in remote mode -
+    // that is how you switch away, or back. A tab is the case that cannot: it
+    // has no local hosts.toml to point anywhere, and what it would be editing
+    // is the server's own, for everybody else watching it too.
+    $('#s-server').disabled = !can.viewer;
     // There is no updater behind a server, so this could only ever error.
     $('#updCheckNow').disabled = !can.viewer;
 
@@ -3045,6 +3050,11 @@
         $('#s-cap').value = String(s.history_cap_mb);
         $('#s-ontop').checked = !!s.always_on_top;
         $('#s-update').checked = !!s.update_check;
+        // From `capabilities`, never from `get_settings`. That call is a fleet
+        // read and is proxied in remote mode, so it answers with the *server's*
+        // settings - and a server describes itself as sampling locally, which
+        // is right and would show this field empty while the window watches it.
+        $('#s-server').value = (CAPS && CAPS.endpoint) || '';
         $('#updStatus').textContent = updateStatusText(s.update_check);
         const v = await getAppVersion();
         $('#updVersionLine').textContent = v ? `Running Tuxtop ${v}.` : '';
@@ -3069,6 +3079,48 @@
         settings: { ...s, always_on_top: e.target.checked },
       });
     } catch (err) { showError(String(err)); }
+  });
+
+  /// Switch this window to another fleet, or back to its own.
+  ///
+  /// **`use_endpoint`, not `set_settings`.** `set_settings` takes `server` from
+  /// disk and never from the request, because the two save paths in this file
+  /// disagree about whether they carry it - so a Settings form that posted the
+  /// endpoint through it would silently do nothing. That refusal is what makes
+  /// this the only door.
+  ///
+  /// On `change` rather than per keystroke: every commit tears down a fleet and
+  /// stands another one up, and doing that while somebody is still typing the
+  /// hostname would connect to `d`, then `do`, then `dov`.
+  ///
+  /// The switch is confirmed by asking rather than assumed from the call
+  /// returning: a *refused* endpoint changes nothing at all, while a first
+  /// connect that failed has still switched this window, and both arrive here
+  /// as a rejected promise. `capabilities` is what actually knows.
+  $('#s-server').addEventListener('change', async e => {
+    if (!LIVE) return;
+    const before = (CAPS && CAPS.endpoint) || null;
+    try {
+      await TAURI.core.invoke('use_endpoint',
+        { endpoint: TuxRemote.endpointInput(e.target.value) });
+    } catch (err) {
+      // Reported, not swallowed: a typo'd endpoint that retried in silence
+      // would look exactly like a server that is down, and only the person who
+      // typed it can tell which.
+      showError(String(err));
+    }
+    await refreshCapabilities();
+    const after = (CAPS && CAPS.endpoint) || null;
+    e.target.value = after || '';
+    if (after === before) return;
+    try {
+      await seedFleet(true);
+    } catch (err) {
+      showError(`Could not read the host list: ${err}`);
+    }
+    await refreshModeNote();
+    perHostRows();
+    refreshMeter();
   });
 
   $('#s-interval').addEventListener('change', refreshMeter);
@@ -3188,6 +3240,32 @@
     panel.style.setProperty('--mx', (e.clientX - r.left) + 'px');
     panel.style.setProperty('--my', (e.clientY - r.top) + 'px');
   }, { passive: true });
+
+  /// Draw the fleet this window is *now* watching.
+  ///
+  /// Cards are seeded from the host list rather than waited for, so they exist
+  /// before the first sample lands - otherwise the window is empty for a second
+  /// on every launch, and an unreachable host never appears at all.
+  ///
+  /// `fresh` drops every card first, which is what a switch needs and a launch
+  /// does not. The readings on screen were taken by the fleet we have just left,
+  /// and a host of the same name on the new one would silently inherit them -
+  /// ADR-017 rule 2's frontend half, where `use_endpoint` has already discarded
+  /// the history behind it. The freshness clock goes with them: it belongs to
+  /// the connection, and carrying it over would report the new endpoint as
+  /// current before anything had arrived from it.
+  async function seedFleet(fresh) {
+    if (fresh) { hosts = []; lastEventAt = null; }
+    for (const cfg of await TAURI.core.invoke('list_hosts')) {
+      let h = hosts.find(x => x.name === cfg.name);
+      if (!h) { h = mk(cfg.name, '', 0, 0, null, 0); hosts.push(h); }
+      h.intervalOverride = cfg.interval_ms ?? null;
+      h.group = cfg.group ?? null;
+      h.os = cfg.os ?? '';
+      setPaused(h, !!cfg.paused);
+    }
+    build(); paint(); tally();
+  }
 
   // ---------------------------------------------------------------- LIVE
   async function startLive() {
@@ -3327,23 +3405,15 @@
       build(); paint(); tally();
     });
 
-    // Seed cards from hosts.toml so they exist before the first sample
-    // lands -- otherwise the window is empty for a second on every launch.
+    // Whatever fleet this is - `list_hosts` is a fleet read, so in remote mode
+    // it is the server's list and not this machine's.
     try {
-      for (const cfg of await invoke('list_hosts')) {
-        const h = ensure(cfg.name, 0);
-        h.intervalOverride = cfg.interval_ms ?? null;
-        h.group = cfg.group ?? null;
-        h.os = cfg.os ?? '';
-        setPaused(h, !!cfg.paused);
-      }
+      await seedFleet(false);
     } catch (e) {
-      showError(`Could not read hosts.toml: ${e}`);
+      showError(`Could not read the host list: ${e}`);
       return;
     }
 
-
-    build(); paint(); tally();
     if (!hosts.length) showEmpty('No hosts yet. Add one to start watching.');
 
     $('#addForm').addEventListener('submit', async e => {

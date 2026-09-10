@@ -135,6 +135,47 @@ async fn capabilities(svc: Svc<'_>) -> Result<Capabilities, String> {
     Ok(caps)
 }
 
+/// Point this window at another Tuxtop's fleet, or back at its own.
+///
+/// **The only door.** `set_settings` takes `server` from disk and never from
+/// the request, deliberately — `app.js` has two save paths and one of them
+/// rebuilds the payload from four named fields without carrying it, so an
+/// unrelated settings save would otherwise switch this window back to local.
+///
+/// The switch itself is `Service::use_endpoint`: it stops the samplers,
+/// discards the history and persists the endpoint, in core where it is tested.
+/// What is left here is the half core cannot reach — the one reader — because
+/// the socket lives in this crate (ADR-018 decision 3).
+///
+/// **The first connect's failure is returned rather than only logged.** A
+/// typo'd endpoint that silently retries forever looks exactly like a server
+/// that is down, and only the person who typed it can tell which; the read
+/// loop's own `Next::Report` line goes to a stderr a release build does not
+/// have. So the switch is committed either way — the endpoint is persisted and
+/// the loop keeps retrying, because a server that comes back should be picked
+/// up without a relaunch — and the error says what happened rather than
+/// pretending it did not.
+#[tauri::command]
+async fn use_endpoint(
+    svc: Svc<'_>,
+    reader: tauri::State<'_, std::sync::Arc<remote::ReadLoop>>,
+    endpoint: Option<String>,
+) -> Result<Settings, String> {
+    let saved = svc.use_endpoint(endpoint)?;
+    let Some(ep) = saved.viewer.server.clone() else {
+        // Back to local. `use_endpoint` has already restarted the fleet, so
+        // leaving the reader running would paint the server's hosts over it -
+        // with no error anywhere, because both are answering correctly.
+        reader.stop();
+        return Ok(saved);
+    };
+    reader.start(ep.clone());
+    remote::post::<Capabilities>(&ep, "capabilities", no_args())
+        .await
+        .map_err(|e| format!("Now watching {ep}, but nothing answered there yet — {e}"))?;
+    Ok(saved)
+}
+
 #[tauri::command]
 fn add_host(svc: Svc<'_>, cfg: HostConfig) -> Result<Vec<HostConfig>, String> {
     svc.add_host(cfg)
@@ -265,6 +306,7 @@ fn main() {
             get_settings,
             set_settings,
             capabilities,
+            use_endpoint,
             set_host_interval,
             set_host_group,
             set_host_os,
@@ -297,19 +339,19 @@ fn main() {
                 tokio::runtime::Handle::current()
             });
             let sup = Supervisor::new(history.clone(), tx.clone(), rt);
-            // Kept before the service takes them: in remote mode the read loop
-            // feeds the same channel and the same store the samplers would.
-            let events = tx.clone();
-            let store = history.clone();
+            // One reader, holding the same channel and the same store the
+            // samplers would feed: in remote mode it produces the events
+            // instead of them, and the window cannot tell which.
+            //
+            // Built before the service takes ownership of those two, and
+            // managed as `Arc<ReadLoop>` because that is the type
+            // `use_endpoint` asks the state bag for — a lookup under a
+            // different one compiles perfectly and panics at launch.
+            let reader = std::sync::Arc::new(remote::ReadLoop::new(tx.clone(), history.clone()));
+            app.manage(reader.clone());
+
             let svc = std::sync::Arc::new(Service::new(config, sup, history, tx));
             app.manage(svc.clone());
-
-            // One reader, and a handle that can stop it. Nothing stops it in
-            // this phase; it is built this way because retrofitting
-            // cancellation onto a running loop is how switching endpoints ends
-            // up with two readers feeding one window.
-            let reader = std::sync::Arc::new(remote::ReadLoop::default());
-            app.manage(reader.clone());
 
             // The only thing in this process that knows the events end up in
             // a webview. A headless server subscribes to the same channel and
@@ -353,7 +395,7 @@ fn main() {
                     // point of swapping at the `Event` seam (ADR-018).
                     if let Some(endpoint) = settings.viewer.server.clone() {
                         eprintln!("watching {endpoint} rather than sampling locally");
-                        reader.start(endpoint, events, store);
+                        reader.start(endpoint);
                     }
                 }
                 Err(e) => {

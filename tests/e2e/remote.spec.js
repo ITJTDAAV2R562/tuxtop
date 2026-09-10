@@ -307,3 +307,89 @@ test('a remote viewer can still be pinned', async ({ page }) => {
   await expect(page.locator('#s-update')).toBeEnabled();
   await expect(page.locator('#setWhy')).toContainText('dove:8787');
 });
+
+// ---------------------------------------------------------------------------
+// Switching endpoints (Phase 14 step 3)
+// ---------------------------------------------------------------------------
+
+/// Type into the Settings field and commit it the way a person does.
+///
+/// `blur`, not Enter: this input lives inside `<form method="dialog">`, so
+/// Enter is an implicit submit as well as a change, and a test that used it
+/// would be exercising two paths and reporting on one.
+async function typeServer(page, text) {
+  await page.locator('#settingsBtn').click();
+  await expect(page.locator('#setDlg')).toBeVisible();
+  const field = page.locator('#s-server');
+  await expect(field, 'the endpoint has to be typeable somewhere').toBeEnabled();
+  await field.fill(text);
+  await field.blur();
+  // Out of the modal's way before anything about the grid is asserted.
+  await page.keyboard.press('Escape');
+  await expect(page.locator('#setDlg')).toBeHidden();
+}
+
+test('typing a server address switches the fleet without a restart', async ({ page }) => {
+  // ADR-017 part 4: switching endpoints is a supported act, from Settings or
+  // the command line. The step that built the backend for it shipped with no
+  // control at all, which is the third time a backend, a config key and a
+  // documented example have arrived with no way to reach them.
+  await load(page);
+  await expect(page.locator('.card[data-name="coot"]')).toBeVisible();
+  await expect(page.locator('#remotebar')).toBeHidden();
+
+  // Counted from here, so the page's own first load is not one of them: the
+  // point is that the window switches fleets while it is running. A relaunch
+  // would do this too, and would not be the feature.
+  let navigations = 0;
+  page.on('framenavigated', () => { navigations++; });
+
+  await typeServer(page, 'dove:8787');
+
+  // The grid is the *server's* fleet now - names that exist in no local config.
+  await expect(page.locator('.card[data-name="c2-coot"]')).toBeVisible();
+  await expect(page.locator('.card[data-name="coot"]'),
+    'a card from the fleet we left is still on screen').toHaveCount(0);
+  // And the chrome says whose readings these are, which is the half ADR-017
+  // rule 1 binds: a window that looked the same in both modes would be the
+  // founding wrong number.
+  await expect(page.locator('#remotebar')).toBeVisible();
+  await expect(page.locator('#remotebar [data-chrome-who]')).toHaveText('dove:8787');
+  await expect(page.locator('[data-mode-note]')).toContainText('via dove:8787');
+
+  expect(navigations, 'the window reloaded rather than switching').toBe(0);
+});
+
+test('clearing the server address returns to the local fleet', async ({ page }) => {
+  // The forgotten path, and the reason it gets its own test: switching back is
+  // the sixth member of the family that restarts the fleet as a side effect of
+  // something else, and it is the one most likely to quietly resume a machine
+  // somebody took down (`switching_back_to_local_does_not_resume_a_paused_host`
+  // is the half of that which lives in core).
+  //
+  // **It starts from an endpoint that was already set when the page loaded**,
+  // never one this test typed: an entity the test created is the case that
+  // works, and the hole is always the one that was already there.
+  await asRemoteViewer(page);
+  await expect(page.locator('.card[data-name="c2-coot"]')).toBeVisible();
+  await expect(page.locator('#remotebar')).toBeVisible();
+
+  await page.locator('#settingsBtn').click();
+  await expect(page.locator('#setDlg')).toBeVisible();
+  // Pre-filled from `capabilities`, not from `get_settings`: that call is a
+  // fleet read and is proxied, so it answers with the server's own settings -
+  // in which no server is named, because the server samples locally.
+  await expect(page.locator('#s-server'),
+    'the field cannot be cleared if it never showed what it holds')
+    .toHaveValue('http://dove:8787');
+  await page.keyboard.press('Escape');
+
+  await typeServer(page, '');
+
+  await expect(page.locator('.card[data-name="coot"]')).toBeVisible();
+  await expect(page.locator('.card[data-name="c2-coot"]'),
+    'the server\'s fleet is still on screen after switching back').toHaveCount(0);
+  await expect(page.locator('#remotebar'),
+    'the strip claims a server this window is no longer watching').toBeHidden();
+  await expect(page.locator('[data-mode-note]')).toContainText('over ssh');
+});

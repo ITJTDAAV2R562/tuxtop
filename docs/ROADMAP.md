@@ -1092,7 +1092,7 @@ fix is to fan in rather than out.
      it was still a token and still flipped. The alarming state is the one a
      hardcoded colour is most tempting in, and it is now asserted too.
 
-3. **Switching endpoints without a restart.** Needs `Supervisor::stop_all`,
+3. ~~**Switching endpoints without a restart.**~~ **Done, 2026-09-10.** Needs `Supervisor::stop_all`,
    which does not exist yet; the teardown belongs there rather than in the
    caller that switches. History is discarded across a switch, never appended.
 
@@ -1124,6 +1124,19 @@ fix is to fan in rather than out.
    cancellation onto a running loop is how a switch leaves two loops feeding
    one window.
    `switching_endpoints_leaves_exactly_one_reader`.
+
+   **`switching_endpoints_leaves_exactly_one_reader` has no home in this tree,
+   and that is a correction to the line above rather than a test that was
+   skipped (2026-09-10).** `ReadLoop` is in `src-tauri`, which is outside the
+   workspace (ADR-006): `cargo test` never compiles it and CI's `core` job
+   never sees it. A `#[cfg(test)]` there would compile under `cargo xwin` and
+   never execute — a test that cannot fail, which is the same trade ADR-018
+   decision 3 refuses for a parser. So the invariant is held **structurally**
+   and measured **on the real thing**: `start` aborts whatever was running
+   before it installs a replacement, `stop` is the local-mode half that `start`
+   cannot cover, and the count of established connections to the endpoint after
+   a switch is what says whether that worked. That measurement is in the
+   verification below, beside step 2's "one established connection, not two".
 
    ~~Nothing in the frontend changes: step 2 already re-reads `capabilities` on
    `tuxtop://settings-changed`.~~
@@ -1173,6 +1186,53 @@ fix is to fan in rather than out.
    `clearing the server address returns to the local fleet`, which must start
    from an endpoint that was already set when the page loaded rather than one
    the test typed itself.
+
+   ### What building it found
+
+   - **The grid had to be re-seeded, and nothing announced that it should be.**
+     `use_endpoint` emits `SettingsChanged` and not `HostsChanged` — correctly,
+     because in remote mode the host list is the server's and core has never
+     seen it — so the nineteen cards of the fleet you just left stay on screen
+     until something asks `list_hosts` again. The launch path already did that
+     inline in `startLive`; it is now `seedFleet(fresh)`, shared, and the switch
+     passes `fresh` so every card is dropped first. A host of the same name on
+     the new fleet would otherwise inherit the old one's readings and sparkline
+     — ADR-017 rule 2's frontend half, where the backend has already discarded
+     the history behind it. `lastEventAt` is reset with them: it belongs to the
+     connection, and carrying it over reports a new endpoint as current before
+     anything has arrived from it.
+
+     The stub deliberately does **not** emit `hosts-changed` either, for the
+     reason a stub gap has three times presented as an application bug: one that
+     pushed the list would leave the re-seed untested while looking green.
+
+   - **The switch is confirmed by asking, not by the call returning.** A
+     *refused* endpoint (`https://`) changes nothing at all, while a first
+     connect that failed has switched the window anyway — and both reach the
+     frontend as a rejected promise. So the handler re-reads `capabilities` and
+     compares the endpoint before and after; only a change re-seeds. Inferring
+     it from the rejection would tear down a perfectly good fleet on a typo the
+     backend had already refused.
+
+   - **The field's value comes from `capabilities`, never from
+     `get_settings`.** That call is a *fleet read* and is proxied in remote
+     mode, so it answers with the server's settings — in which no server is
+     named, because a server samples locally and is right to say so. Filling
+     the field from it shows an empty box on a window that is plainly watching
+     somebody. `the field cannot be cleared if it never showed what it holds`
+     is the assertion that catches it.
+
+   - **`use_endpoint` saves through `save_file`, not `save_fleet`.**
+     `refuse_if_remote` would refuse the one write that has to keep working:
+     switching *away* from a server. It is a viewer setting — this machine's,
+     not the fleet's (ADR-018 decision 4) — so it was never the write the
+     refusal is for, but the two are one line apart and the wrong one compiles.
+
+   - **The endpoint is refused before anything is torn down.** `https://` is a
+     verdict rather than a failure, and a switch that stopped the fleet on its
+     way to refusing would leave the window watching nothing — with the
+     samplers it had just killed not coming back until somebody noticed.
+     `a_refused_endpoint_leaves_the_window_where_it_was`.
 
 4. **Saved endpoints**, so several fleets — or several customers — are one
    selection rather than one edit.
