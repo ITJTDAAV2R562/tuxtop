@@ -610,7 +610,7 @@ What this cost, and what was learned:
 
 ---
 
-## Phase 14 — Remote mode: one sampler, many viewers — **step 1 of 4 done**
+## Phase 14 — Remote mode: one sampler, many viewers — **steps 1–2 of 4 done**
 
 Decided in
 [ADR-017](DECISIONS.md#adr-017--one-sampler-many-viewers-the-endpoint-is-the-mode),
@@ -993,10 +993,48 @@ fix is to fan in rather than out.
    1. ~~core: the wire — `remote.rs` and the captured-response fixture.~~ Done.
    2. ~~core: the settings split, `start_all`, `capabilities`, the write
       refusal.~~ Done.
-   3. `src-tauri`: the read loop, the dispatch point, the `capabilities`
-      command. **The one left.**
+   3. ~~`src-tauri`: the read loop, the dispatch point, the `capabilities`
+      command.~~ Done, third of the four to land.
    4. ~~frontend: the chrome, the stub, the Playwright spec, and the settings
       fields a read-only server should never have offered.~~ Done, before 3.
+
+   ### Verified against a real server, 2026-09-10
+
+   A green build is not a launch, and a launch in local mode is not remote
+   mode. `verify.sh` closed the Windows build and the smoke test — 16 ssh
+   sessions opened, gone within 0 s — but the live `hosts.toml` names no
+   server, so the smoke test exercised the path this step does not change.
+
+   So: a `tuxtop-serve` on the WSL box, `--bind 0.0.0.0`, read-only, watching
+   two hosts of its own (`coot` reachable, `wader` at `127.0.0.1:9` to produce
+   a real fault); the desktop app's `[settings] server` pointed at
+   `http://localhost:8788`; the config backed up first and restored afterwards,
+   sha256 confirmed identical. Windows reaches a WSL listener on `localhost`.
+
+   What it showed, in order:
+
+   - **`ssh.exe: 0`.** Remote mode started no samplers of its own, which is
+     `start_all_starts_nothing_when_an_endpoint_is_set` on the real thing.
+   - **One** established connection to 8788, not two.
+   - The grid was the **server's** fleet — `coot` and `wader`, names that exist
+     in no local config — with `wader`'s "Host unreachable: ssh: connect to
+     host 127.0.0.1 port 9: Connection refused" decoded off the wire, so a
+     fault reached the right card.
+   - The status line read `Tuxtop 0.7.0 · live · 1 s via localhost:8788`. **The
+     "1 s" is the proof**: the local file says `interval_ms = 2000` and the
+     server samples at 1000, so the interval on screen came through the
+     fleet-read proxy rather than off this machine's disk.
+   - Killing the server left the app up, logged `remote: localhost:8788 closed
+     the stream`, and said nothing further — `Next::Quiet`. The grid kept every
+     reading it had, and the strip turned amber: **`no readings from
+     localhost:8788 since 12:53:43`**.
+   - Restarting the server got the fleet back with no relaunch and no further
+     log line, on a new source port. It retries forever and does not back off.
+   - Restored: sha256 of `hosts.toml` identical to the backup, no `server` key,
+     no `ssh.exe` left behind, app and server both stopped.
+
+   Not covered, and worth knowing: nothing exercised a **write** refusal
+   through the UI, or a `version_note` (both builds were 0.7.0).
 
    Commit 3 is the one nothing here compiles. Build it through
    `scripts/verify.sh`, which drives the Windows toolchain at `/mnt/c` — and
