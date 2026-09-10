@@ -9,8 +9,8 @@
     "test:mutants": "stryker run"
   },
   "devDependencies": {
-    "@playwright/test": "^1.62.1",
-    "@stryker-mutator/core": "^9.2.0",
+    "@playwright/test": "^1.63.0",
+    "@stryker-mutator/core": "^10.0.0",
     "@tauri-apps/cli": "^2.11.4"
   },
   "overrides": {
