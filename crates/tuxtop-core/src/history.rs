@@ -381,6 +381,16 @@ impl History {
         self.series.retain(|(h, _), _| h != host);
     }
 
+    /// Drop everything.
+    ///
+    /// `forget_host` cannot do this job: switching endpoints leaves *the fleet
+    /// being left* behind, and that list is precisely what this window no
+    /// longer has. See `HistoryStore::clear` for why the switch discards at
+    /// all.
+    pub fn clear(&mut self) {
+        self.series.clear();
+    }
+
     /// Keep the store under `cap_bytes` by shedding resolution.
     ///
     /// Returns the finest interval still held anywhere, in seconds — 1 while

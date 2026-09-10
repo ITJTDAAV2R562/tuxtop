@@ -94,6 +94,80 @@ impl Service {
         Ok(self.config.load_settings()?.viewer.server)
     }
 
+    /// Point this window at `endpoint`, or back at its own fleet.
+    ///
+    /// **One switch method, not a check in each caller.** Five callers already
+    /// restart hosts as a side effect of something else — `start_all`,
+    /// `set_settings`, `set_host_interval`, `set_host_os`, `add_host` — and the
+    /// pause rule survives only because it lives in `Supervisor::start` and
+    /// nowhere else (ADR-012). Switching back to local restarts the fleet,
+    /// which makes it the sixth member of that family and the one most likely
+    /// to quietly resume a machine somebody took down. It does not, because it
+    /// asks `start` to watch each host and `start` decides what that means.
+    ///
+    /// **It cannot own the whole switch, and the seam is named rather than
+    /// discovered.** The socket lives in `src-tauri` (ADR-018 decision 3), so
+    /// core cannot reach the read loop: this stops the samplers, discards the
+    /// history, persists the endpoint and announces `SettingsChanged`, and the
+    /// shell restarts its one reader on that announcement.
+    ///
+    /// An empty or blank string means the same as `None` — a field cleared in
+    /// Settings is how you switch back, and a server named `""` is not a thing.
+    ///
+    /// # Errors
+    ///
+    /// A `https://` or unparseable endpoint is refused **before** anything is
+    /// torn down: it is a verdict rather than a failure (ADR-018 decision 2),
+    /// and a switch that stopped the fleet on its way to refusing would leave
+    /// the window watching nothing at all.
+    pub fn use_endpoint(&self, endpoint: Option<String>) -> Result<Settings, String> {
+        let want = endpoint
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        if let Some(text) = &want {
+            crate::remote::parse_endpoint(text).map_err(|e| e.to_string())?;
+        }
+
+        let mut f = self.config.load_file()?;
+        if f.settings.viewer.server == want {
+            // Nothing to do, and saying so matters: the alternative is a
+            // re-render of Settings tearing down a fleet that was sampling
+            // perfectly well.
+            return Ok(f.settings);
+        }
+
+        // Unconditional, and in that order. The samplers stop before the file
+        // says they should not be running, so a failed save cannot leave ssh
+        // connections open against a fleet this window has stopped showing.
+        self.sup.stop_all();
+        // ADR-017 rule 2: history is discarded on a switch, never appended.
+        // Two fleets each with a host called `db1` would otherwise blend
+        // charts, and one customer's spike on another's graph looks entirely
+        // fine.
+        self.history.clear();
+
+        f.settings.viewer.server = want.clone();
+        // `save_file`, not `save_fleet`: `refuse_if_remote` would refuse this
+        // one, and switching *away* from a server is precisely what has to keep
+        // working. It is a viewer setting — this machine's, not the fleet's
+        // (ADR-018 decision 4) — so it is not the write that refusal is for.
+        self.config.save_file(&f)?;
+
+        if want.is_none() {
+            // Back to local: the fleet this window came from is what it
+            // switches back *to*. Through `Supervisor::start`, so a host
+            // somebody paused stays paused.
+            for cfg in &f.hosts {
+                let iv = effective_interval_ms(cfg, &f.settings.fleet);
+                self.sup.start(cfg.clone(), iv);
+            }
+        }
+        let _ = self
+            .events
+            .try_send(Event::SettingsChanged(f.settings.clone()));
+        Ok(f.settings)
+    }
+
     /// What this window can actually do, and whose readings it is showing.
     ///
     /// Re-read rather than read once: switching endpoints changes every field
@@ -1029,6 +1103,124 @@ mod tests {
             s.capabilities().unwrap().stale_after_ms > c.stale_after_ms,
             "the threshold did not follow the interval it is measured against"
         );
+        let _ = std::fs::remove_file(p);
+    }
+
+    #[tokio::test]
+    async fn switching_back_to_local_does_not_resume_a_paused_host() {
+        // The sixth member of the family ADR-012 is about. Five callers already
+        // restart hosts as a side effect of something else, and switching back
+        // to local is the one most likely to quietly resume a machine somebody
+        // took down for maintenance - it restarts *the whole fleet*, and the
+        // paused host is in it.
+        //
+        // It cannot, because `use_endpoint` asks `Supervisor::start` to watch
+        // each host and `start` is where pause is decided. Deleting that check
+        // fails this test.
+        let (s, _rx, p) = svc("switch-paused");
+        s.add_host(host("dove")).unwrap();
+        s.add_host(host("heron")).unwrap();
+        s.set_host_paused("heron", true).unwrap();
+        assert!(s.sup.is_watching("dove") && !s.sup.is_watching("heron"));
+
+        s.use_endpoint(Some("http://elsewhere:8787".into()))
+            .unwrap();
+        assert!(
+            !s.sup.is_watching("dove") && !s.sup.is_watching("heron"),
+            "switching to a server left local samplers running - nineteen more \
+             sshd sessions on machines we promised only to observe"
+        );
+
+        s.use_endpoint(None).unwrap();
+        assert!(
+            s.sup.is_watching("dove"),
+            "coming back to local left the fleet stopped"
+        );
+        assert!(
+            !s.sup.is_watching("heron"),
+            "the switch back resumed a host somebody had paused"
+        );
+        // And the file still says so, so a relaunch agrees with the supervisor.
+        let stored = s.list_hosts().unwrap();
+        assert!(stored.iter().find(|h| h.name == "heron").unwrap().paused);
+        let _ = std::fs::remove_file(p);
+    }
+
+    #[tokio::test]
+    async fn history_is_discarded_across_a_switch_never_appended() {
+        // ADR-017 rule 2. History is in-memory per instance, so two fleets each
+        // with a host called `db1` would blend charts - and one customer's
+        // spike on another's graph looks entirely fine, which is this project's
+        // founding hazard with a different label on the axis.
+        //
+        // `forget_host` cannot do this job: the fleet being left is precisely
+        // the host list this window no longer has once the endpoint changed.
+        let (s, _rx, p) = svc("switch-history");
+        s.add_host(host("db1")).unwrap();
+        s.history().record(&crate::Sample {
+            host: "db1".into(),
+            cpu: 90.0,
+            ..Default::default()
+        });
+        assert!(s.history().usage().series > 0, "nothing was recorded");
+
+        s.use_endpoint(Some("http://elsewhere:8787".into()))
+            .unwrap();
+        assert_eq!(
+            s.history().usage().series,
+            0,
+            "the fleet we left is still on the charts"
+        );
+
+        // And the other direction, which is the one a `forget_host` loop over
+        // the local list would appear to handle: the server's `db1` must not
+        // survive into the local fleet's chart either.
+        s.history().record(&crate::Sample {
+            host: "db1".into(),
+            cpu: 10.0,
+            ..Default::default()
+        });
+        s.use_endpoint(None).unwrap();
+        assert_eq!(s.history().usage().series, 0);
+        let _ = std::fs::remove_file(p);
+    }
+
+    #[tokio::test]
+    async fn a_refused_endpoint_leaves_the_window_where_it_was() {
+        // `https://` and an unparseable URL are a verdict rather than a failure
+        // (ADR-018 decision 2), so they are refused *before* anything is torn
+        // down. A switch that stopped the fleet on its way to refusing would
+        // leave the window watching nothing at all - and the samplers it just
+        // killed would not come back until somebody noticed.
+        let (s, _rx, p) = svc("switch-refused");
+        s.add_host(host("dove")).unwrap();
+        s.history().record(&crate::Sample {
+            host: "dove".into(),
+            cpu: 50.0,
+            ..Default::default()
+        });
+
+        let err = s
+            .use_endpoint(Some("https://dove:8787".into()))
+            .expect_err("https was accepted");
+        assert!(
+            err.contains("http"),
+            "the refusal does not name the fix: {err}"
+        );
+        assert_eq!(s.endpoint().unwrap(), None, "a refused endpoint was stored");
+        assert!(
+            s.sup.is_watching("dove"),
+            "a refused switch stopped the fleet"
+        );
+        assert!(
+            s.history().usage().series > 0,
+            "a refused switch threw the charts away"
+        );
+
+        // An empty field is not a refusal - it is how you switch back - and it
+        // must not be stored as a server named "".
+        s.use_endpoint(Some("   ".into())).unwrap();
+        assert_eq!(s.endpoint().unwrap(), None);
         let _ = std::fs::remove_file(p);
     }
 

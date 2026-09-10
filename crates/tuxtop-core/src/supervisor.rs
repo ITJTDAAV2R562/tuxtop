@@ -145,6 +145,25 @@ impl Supervisor {
         }
     }
 
+    /// Stop watching everything, killing every ssh process.
+    ///
+    /// **The teardown lives here, not in the caller that switches endpoints**
+    /// (ADR-017 rule 3). Switching to a server is the sixth thing that stops or
+    /// restarts hosts as a side effect of doing something else, and the pause
+    /// rule survives only because it lives in `start` and nowhere else
+    /// (ADR-012); a teardown written into the switch would be the same shape of
+    /// bug one layer over.
+    ///
+    /// **Unconditional.** Stopping an already-stopped host is a no-op, and a
+    /// paused host is enforced on the way back in `start`, never on the way
+    /// out — so there is nothing here to remember and nothing to get wrong.
+    pub fn stop_all(&self) {
+        for (_, h) in self.tasks.lock().unwrap().drain() {
+            // Aborting drops the SshSampler, which is `kill_on_drop`.
+            h.abort();
+        }
+    }
+
     /// Whether a host currently has a sampling task.
     ///
     /// "Has one been started and not stopped", which is what pause and resume
@@ -488,6 +507,37 @@ mod tests {
         let weak = Arc::downgrade(&s);
         drop(s);
         assert!(weak.upgrade().is_none(), "supervisor leaked");
+    }
+
+    #[tokio::test]
+    async fn stop_all_leaves_nothing_watched() {
+        // ADR-017 rule 3: switching to a server tears down the local samplers,
+        // and the teardown lives here rather than in the caller that switches -
+        // the ADR-012 lesson one layer up. Asserted through `is_watching`
+        // because the alternative is waiting for samples that by definition
+        // never arrive.
+        let (s, _rx) = sup();
+        for name in ["dove", "heron"] {
+            s.start(
+                HostConfig {
+                    name: name.into(),
+                    addr: "127.0.0.1".into(),
+                    ..Default::default()
+                },
+                1_000,
+            );
+        }
+        assert!(s.is_watching("dove") && s.is_watching("heron"));
+
+        s.stop_all();
+        assert!(
+            !s.is_watching("dove") && !s.is_watching("heron"),
+            "a host kept its sampler across the teardown"
+        );
+        // Unconditional: stopping an already-stopped fleet is a no-op, which is
+        // what lets the switch call it without knowing what was running.
+        s.stop_all();
+        assert!(!s.is_watching("dove"));
     }
 
     #[tokio::test]

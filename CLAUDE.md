@@ -343,7 +343,7 @@ one is how a monitoring tool acquires its first remote code execution.
 ## Testing
 
 ```sh
-cargo test        # 311 tests, no GUI toolchain needed, runs anywhere
+cargo test        # 317 tests, no GUI toolchain needed, runs anywhere
 cargo clippy --all-targets
 cargo fmt
 node --test 'tests/*.test.js'           # pure logic: aggregation, scale, filters

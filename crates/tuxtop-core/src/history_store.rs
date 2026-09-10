@@ -169,6 +169,25 @@ impl HistoryStore {
     pub fn forget_host(&self, host: &str) {
         self.inner.lock().unwrap().forget_host(host);
     }
+
+    /// Discard every series.
+    ///
+    /// **History is discarded on a switch, never appended** (ADR-017 rule 2).
+    /// It is in-memory per instance, so two fleets each with a host called
+    /// `db1` would otherwise blend charts — and one customer's spike on
+    /// another's graph looks entirely fine, which is this project's founding
+    /// hazard with a different label on the axis.
+    ///
+    /// `forget_host` cannot stand in for it: the fleet being left is precisely
+    /// the host list this window no longer has once the endpoint has changed.
+    ///
+    /// `finest_secs` goes back to 1 with the data, because "the cap has shed
+    /// resolution" is a statement about series that are now gone; leaving it
+    /// coarse would have the settings panel report a degradation of nothing.
+    pub fn clear(&self) {
+        self.inner.lock().unwrap().clear();
+        self.finest_secs.store(1, Ordering::Relaxed);
+    }
 }
 
 #[derive(Debug, Clone, Copy, serde::Serialize)]
