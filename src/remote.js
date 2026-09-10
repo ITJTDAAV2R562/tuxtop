@@ -158,6 +158,29 @@
   }
 
   /**
+   * Do these two strings name the same server?
+   *
+   * `[settings] server` holds what was typed and a saved entry holds what was
+   * typed *then*, so `dove:8787` and `http://dove:8787` are one machine
+   * written two ways. Compared through `originLabel`, which is the same
+   * reduction the chrome shows, so the row marked "watching" is the row whose
+   * label matches the one on screen.
+   *
+   * Only for *marking*, never for deciding whether to switch: the backend
+   * parses properly, and this would call `dove:8787` and `dove:8787/` the same
+   * thing while `parse_endpoint` refuses one of them.
+   *
+   * @param {unknown} a
+   * @param {unknown} b
+   * @returns {boolean}
+   */
+  function sameEndpoint(a, b) {
+    const x = originLabel(a);
+    const y = originLabel(b);
+    return !!x && !!y && x.toLowerCase() === y.toLowerCase();
+  }
+
+  /**
    * Which halves of the Settings dialog can actually be saved.
    *
    * Two questions, not one, because `Settings` is two halves that answer to
@@ -211,5 +234,5 @@
   }
 
   return { LOCAL, originLabel, identity, isStale, clockTime, staleNote,
-           endpointInput, editable, modeLine };
+           endpointInput, sameEndpoint, editable, modeLine };
 }));

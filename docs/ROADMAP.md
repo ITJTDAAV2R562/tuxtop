@@ -610,7 +610,7 @@ What this cost, and what was learned:
 
 ---
 
-## Phase 14 — Remote mode: one sampler, many viewers — **steps 1–3 of 4 done**
+## Phase 14 — Remote mode: one sampler, many viewers — **done, 2026-09-10**
 
 Decided in
 [ADR-017](DECISIONS.md#adr-017--one-sampler-many-viewers-the-endpoint-is-the-mode),
@@ -621,6 +621,11 @@ Running Tuxtop on several boxes today duplicates the config, the keys, and —
 the part that matters — the sampling: each instance is another nineteen sshd
 sessions and nineteen shell loops on machines we promised only to observe. The
 fix is to fan in rather than out.
+
+All four steps landed on 2026-09-10 except `--bind`, which shipped on
+2026-09-05. What is *not* built, and is recorded rather than implied: ADR-017
+part 4 says switching is supported "from Settings or the command line", and
+only Settings exists.
 
 1. ~~**`--bind ADDR` on `tuxtop-serve`**, default `127.0.0.1`.~~ **Done,
    2026-09-05.** IP only — a hostname is refused rather than resolved at bind
@@ -681,7 +686,17 @@ fix is to fan in rather than out.
    | events | the SSE stream | from the server — this is the read loop |
    | fleet reads | `list_hosts`, `get_settings`, `capabilities`, `process_list`, `cgroup_list`, `traffic_stats` | **proxied** |
    | history reads | `query_history`, `query_history_many`, `query_history_fleet`, `history_usage` | answered **locally**, deliberately |
+   | viewer | `use_endpoint`, `list_endpoints`, `add_endpoint`, `update_endpoint`, `remove_endpoint`, the viewer half of `set_settings` | answered **locally and allowed** |
    | writes | `add_host`, `remove_host`, `reorder_hosts`, `set_host_*`, the fleet half of `set_settings` | **refused**, with a reason |
+
+   **The viewer row was added 2026-09-10, with steps 3 and 4.** It is not a
+   fourth idea; it is the row that was missing when the table was written,
+   because the only viewer command then was half of `set_settings` and it was
+   filed under the exception that splits `Settings`. The five commands that
+   switch belong to *this window* — which fleet it is looking at, and the
+   servers it has written down — so proxying them would answer with the
+   server's business and refusing them would strand a remote viewer with no way
+   back. ADR-018 decision 4 carries the same row.
 
    **History is not proxied, and that is a decision rather than a shortcut.**
    ADR-017 rule 2 says history is in-memory per instance and discarded on a
@@ -1300,8 +1315,8 @@ fix is to fan in rather than out.
    every click: the toolbar scrolls with the page, so a coordinate read off an
    older capture is a coordinate for a different page.
 
-4. **Saved endpoints**, so several fleets — or several customers — are one
-   selection rather than one edit.
+4. ~~**Saved endpoints**~~ **Done, 2026-09-10.** So several fleets — or several
+   customers — are one selection rather than one edit.
 
    **They live in the local `hosts.toml`**, which stays local in remote mode
    along with the local host list — that list is precisely what you switch back
@@ -1315,6 +1330,17 @@ fix is to fan in rather than out.
    `settings_are_written_before_the_host_array` already asserts half of this;
    extend it rather than adding a second test that checks the same rule from a
    different angle.
+
+   **Half of that was overstated, and it was measured rather than argued
+   (2026-09-10).** *"any other order"* is not the rule. `[[endpoints]]` and
+   `[[host]]` are both arrays-of-tables and TOML is happy with them in either
+   order: swapping the two fields was tried, and nothing fails. What is
+   load-bearing is that `settings` precedes them **both** — declaring it last
+   fails the test, at `render_file`, because `toml` refuses to emit a table
+   after an array-of-tables. So `endpoints` sits before `hosts` for
+   readability, and the field comment says so rather than repeating a rule that
+   is not there. The extended test now also parses what it wrote, which is the
+   assertion that actually fails when the struct is reordered.
 
    **Selecting a saved endpoint goes through the same `use_endpoint` as typing
    one.** A second path is a second teardown to forget, which is the ADR-012
@@ -1347,6 +1373,55 @@ fix is to fan in rather than out.
    Two things follow for the stub: `tests/harness/stub.js` needs the endpoint
    commands *and* a starting `[[endpoints]]` list, since a harness with none
    makes the test above unwritable rather than merely weak.
+
+   ### What building it found
+
+   - **It is a fourth command class, not a write.** The three-class table above
+     said every command falls in exactly one, and these fall in none: proxying
+     `list_endpoints` answers with the *server's* notes about where *it* can
+     point, and refusing the writes strands a remote viewer with no way to save
+     where it is or edit its way back. The taxonomy is extended in place, here
+     and in ADR-018 decision 4, rather than left saying something that stopped
+     being true — and `use_endpoint` from step 3 was already outside it, which
+     nobody noticed at the time.
+     `saved_endpoints_are_editable_while_watching_a_server` pins the half that
+     is one line from wrong: these go through `Config::save_file` and
+     deliberately not `Service::save_fleet`, where the refusal lives.
+
+   - **Forgetting an entry must not leave the fleet it names.** Tidying a list
+     is not a request to switch, and a window that went back to local because
+     somebody deleted the note it was reading would read as a crash. Asserted
+     twice, in core and in the browser, because it is the kind of convenience
+     a later session adds in one line.
+     `forgetting_a_saved_endpoint_does_not_leave_the_fleet_it_names`.
+
+   - **An address is validated where it is saved, not only where it is used.**
+     An entry refused every time it is clicked is a trap with a name on it, and
+     the person who typed it is long gone by then. `hostlist::check_url` calls
+     `remote::parse_endpoint` rather than restating it, so there is still one
+     rule.
+
+   - **`Config::save` was one `..Default::default()` from eating the list.** It
+     reads the file and replaces `hosts` in it, which is why a host edit keeps
+     the saved servers — but `hostlist::render` builds a fresh `HostsFile`, and
+     a field added later is exactly the kind of thing that gets filled in at a
+     call site by whoever is passing. `saving_a_host_does_not_drop_the_saved_endpoints`
+     is the guard; mutating `Config::save` to write a fresh file fails it.
+
+   - **`esc()` did not escape quotes.** Host names have gone into `value="…"`
+     for eleven phases with only `<` and `&` escaped; saved-server names are
+     typed by a person into a field whose whole purpose is naming things, so a
+     name containing a quote would have closed the attribute and turned the
+     rest of the row into markup. Fixed at the helper rather than at the new
+     call site, since the old ones have the same hole.
+
+   - **The two E2E edits are made one at a time, and that is not timidity.**
+     Every commit redraws the table from the backend's answer, so a second
+     `fill` issued before that lands on a detached input. The backend still
+     takes name and address *together* — one operation, so a server that moves
+     and is renamed never passes through a state on disk that is neither — and
+     `an_endpoint_that_is_saved_can_be_renamed_and_repointed` is where that is
+     asserted.
 
 ~~Worth doing on the way through: the `broadcast` buffer is 16 and that is
 tight once several clients are normal.~~ **Checked 2026-09-07: there is nothing

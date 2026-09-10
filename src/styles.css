@@ -1108,16 +1108,28 @@ body[data-bands="off"] .legend span:not(:last-child){display:none}
    provisional. */
 .chart.group-chart.short .chart-peak{color:var(--warn)}
 
-/* Per-host group entry in Settings. */
-.ph-group{
+/* Per-host group entry in Settings, and the saved-server name and address
+   beside it - one rule rather than two identical ones, since they are the same
+   control in two tables. */
+.ph-group,.ep-in{
   width:100%;min-width:96px;box-sizing:border-box;
   font-family:var(--font-mono);font-size:12px;
   padding:3px 6px;border-radius:5px;
   background:var(--surface-sunk);color:var(--text);
   border:1px solid var(--stroke);
 }
-.ph-group:focus{outline:2px solid var(--accent);outline-offset:-1px}
-.ph-group::placeholder{color:var(--text-3)}
+.ph-group:focus,.ep-in:focus{outline:2px solid var(--accent);outline-offset:-1px}
+.ph-group::placeholder,.ep-in::placeholder{color:var(--text-3)}
+.ep-in:disabled{opacity:.55}
+
+/* The row that saves a new server. Flex rather than a fourth table row: it is
+   an entry form, not an entry. */
+.epadd{display:flex;gap:6px;margin-top:8px;align-items:center}
+.epadd .ep-in{flex:1 1 0;min-width:0}
+.ep-act{display:flex;gap:6px;justify-content:flex-end}
+/* The one currently on screen, marked the way the meter marks the interval in
+   force - `tr.current` above already carries the colour. */
+.meter-table tr.current td:first-child::after{content:" \00b7 watching"}
 .perhost thead th{
   font-family:var(--font-ui);font-size:10px;font-weight:600;
   text-transform:uppercase;letter-spacing:.06em;color:var(--text-3);

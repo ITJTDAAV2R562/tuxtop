@@ -47,6 +47,40 @@ port = 22
 # addr = "wader"
 # paused = true
 
+# Watch another Tuxtop's fleet instead of sampling here: one sampler, many
+# viewers, so nineteen machines are not connected to twice (ADR-017). Absent
+# means this window samples its own hosts above, which is the default and the
+# only mode until you name a server.
+#
+# Plain HTTP only — `https://` is refused with the fix named, because the
+# viewer delegates encryption to the transport under it: reach the server over
+# `ssh -L` to loopback, or over a tailnet or VPN address it was `--bind`ed to
+# (ADR-018). The host list above stays local and untouched; it is what you
+# switch back *to*.
+#
+# Also settable from Settings in the window, which is the only door: clearing
+# the field there returns to the local fleet. History is per window and is
+# discarded on a switch, never blended between two fleets.
+#
+# [settings]
+# server = "dove:8787"
+#
+# Servers worth keeping, so several fleets - or several customers - are one
+# selection rather than one edit. Name them what you call them.
+#
+# These are *this viewer's* notes about where it can point, not part of any
+# fleet, so they stay editable while you are watching a server - saving the one
+# you are on is the commonest reason to reach for the list. Forgetting an entry
+# only forgets the address; it does not leave the fleet it names.
+#
+# [[endpoints]]
+# name = "a customer"
+# url = "http://dove:8787"
+#
+# [[endpoints]]
+# name = "lab"
+# url = "coot:9000"
+
 # Global settings. Everything here is also editable from Settings in the
 # window; this file is what a fresh install starts from.
 #

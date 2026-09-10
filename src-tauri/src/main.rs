@@ -31,7 +31,7 @@ struct FaultEvent {
 
 use tauri::{AppHandle, Emitter, Manager};
 use tuxtop_core::config::Config;
-use tuxtop_core::hostlist::Settings;
+use tuxtop_core::hostlist::{SavedEndpoint, Settings};
 use tuxtop_core::HostConfig;
 
 use tuxtop_core::history_store::{HistoryStore, HistoryUsage};
@@ -176,6 +176,42 @@ async fn use_endpoint(
     Ok(saved)
 }
 
+/// The servers this viewer has saved, by name.
+///
+/// **Deliberately not a fleet read**, so it does not go through `fleet_read`:
+/// the local `hosts.toml` stays local in remote mode, and proxying this would
+/// answer with the *server's* saved endpoints — that machine's notes about
+/// where *it* can point, reaching nothing this window can select.
+///
+/// The three writes beside it are not refused in remote mode either, for the
+/// reason `Service::add_endpoint` gives: writing down where you can point is
+/// not editing the fleet on screen, and the server you are watching right now
+/// is the commonest thing to want to save.
+#[tauri::command]
+fn list_endpoints(svc: Svc<'_>) -> Result<Vec<SavedEndpoint>, String> {
+    svc.list_endpoints()
+}
+
+#[tauri::command]
+fn add_endpoint(svc: Svc<'_>, name: String, url: String) -> Result<Vec<SavedEndpoint>, String> {
+    svc.add_endpoint(&name, &url)
+}
+
+#[tauri::command]
+fn update_endpoint(
+    svc: Svc<'_>,
+    current: String,
+    name: String,
+    url: String,
+) -> Result<Vec<SavedEndpoint>, String> {
+    svc.update_endpoint(&current, &name, &url)
+}
+
+#[tauri::command]
+fn remove_endpoint(svc: Svc<'_>, name: String) -> Result<Vec<SavedEndpoint>, String> {
+    svc.remove_endpoint(&name)
+}
+
 #[tauri::command]
 fn add_host(svc: Svc<'_>, cfg: HostConfig) -> Result<Vec<HostConfig>, String> {
     svc.add_host(cfg)
@@ -307,6 +343,10 @@ fn main() {
             set_settings,
             capabilities,
             use_endpoint,
+            list_endpoints,
+            add_endpoint,
+            update_endpoint,
+            remove_endpoint,
             set_host_interval,
             set_host_group,
             set_host_os,

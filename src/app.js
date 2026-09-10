@@ -3022,6 +3022,10 @@
     // has no local hosts.toml to point anywhere, and what it would be editing
     // is the server's own, for everybody else watching it too.
     $('#s-server').disabled = !can.viewer;
+    // The saved list is this machine's note of where it can point, so it
+    // follows the same half. The rows themselves are drawn disabled by
+    // `endpointRows`, which re-reads them anyway.
+    for (const id of ['#ep-name', '#ep-url', '#ep-add']) $(id).disabled = !can.viewer;
     // There is no updater behind a server, so this could only ever error.
     $('#updCheckNow').disabled = !can.viewer;
 
@@ -3063,6 +3067,7 @@
       applySettingsPermissions();
     }
     perHostRows();
+    await endpointRows();
     await refreshMeter();
     setDlg.showModal();
     // The meter is live while the dialog is open; measurements keep arriving.
@@ -3089,20 +3094,20 @@
   /// endpoint through it would silently do nothing. That refusal is what makes
   /// this the only door.
   ///
-  /// On `change` rather than per keystroke: every commit tears down a fleet and
-  /// stands another one up, and doing that while somebody is still typing the
-  /// hostname would connect to `d`, then `do`, then `dov`.
+  /// **One function, two controls.** Typing an address and picking a saved one
+  /// are the same act, so they are the same call: a second path would be a
+  /// second teardown to forget, which is ADR-012's lesson wearing different
+  /// clothes.
   ///
   /// The switch is confirmed by asking rather than assumed from the call
   /// returning: a *refused* endpoint changes nothing at all, while a first
   /// connect that failed has still switched this window, and both arrive here
   /// as a rejected promise. `capabilities` is what actually knows.
-  $('#s-server').addEventListener('change', async e => {
-    if (!LIVE) return;
+  async function switchEndpoint(text) {
     const before = (CAPS && CAPS.endpoint) || null;
     try {
       await TAURI.core.invoke('use_endpoint',
-        { endpoint: TuxRemote.endpointInput(e.target.value) });
+        { endpoint: TuxRemote.endpointInput(text) });
     } catch (err) {
       // Reported, not swallowed: a typo'd endpoint that retried in silence
       // would look exactly like a server that is down, and only the person who
@@ -3111,7 +3116,7 @@
     }
     await refreshCapabilities();
     const after = (CAPS && CAPS.endpoint) || null;
-    e.target.value = after || '';
+    $('#s-server').value = after || '';
     if (after === before) return;
     try {
       await seedFleet(true);
@@ -3120,7 +3125,102 @@
     }
     await refreshModeNote();
     perHostRows();
+    await endpointRows();
     refreshMeter();
+  }
+
+  /// On `change` rather than per keystroke: every commit tears down a fleet and
+  /// stands another one up, and doing that while somebody is still typing the
+  /// hostname would connect to `d`, then `do`, then `dov`.
+  $('#s-server').addEventListener('change', e => {
+    if (LIVE) switchEndpoint(e.target.value);
+  });
+
+  /// The servers this window has written down.
+  ///
+  /// Read from the backend rather than kept in step by hand: every write
+  /// returns the new list and this redraws from it, so there is one list and
+  /// the screen cannot disagree with the file.
+  let savedEndpoints = [];
+
+  async function endpointRows() {
+    if (!LIVE) return;
+    try {
+      savedEndpoints = await TAURI.core.invoke('list_endpoints');
+    } catch (e) {
+      showError(`Could not read the saved servers: ${e}`);
+      return;
+    }
+    const ro = editable(CAPS, SERVED_FROM).viewer ? '' : ' disabled';
+    const here = (CAPS && CAPS.endpoint) || null;
+    $('[data-endpoint-empty]').hidden = savedEndpoints.length > 0;
+    $('[data-endpoint-rows]').innerHTML = savedEndpoints.map(ep => `
+      <tr class="${TuxRemote.sameEndpoint(here, ep.url) ? 'current' : ''}">
+        <td><input class="ep-in" data-ep-name="${esc(ep.name)}"
+                   value="${esc(ep.name)}"${ro}
+                   aria-label="Name of the server saved as ${esc(ep.name)}"></td>
+        <td><input class="ep-in" data-ep-url="${esc(ep.name)}"
+                   value="${esc(ep.url)}"${ro} spellcheck="false"
+                   aria-label="Address of the server saved as ${esc(ep.name)}"></td>
+        <td class="ep-act">
+          <button class="btn ghost" type="button"
+                  data-ep-use="${esc(ep.name)}"${ro}>Watch</button>
+          <button class="btn ghost" type="button"
+                  data-ep-drop="${esc(ep.name)}"${ro}>Forget</button>
+        </td></tr>`).join('');
+  }
+
+  // Committed on blur or Enter, like the per-host table: the name and the
+  // address are one edit, so both are sent whichever of them changed - a
+  // server that moves and is renamed in the same breath must not pass through
+  // a state on disk that is neither.
+  $('[data-endpoint-rows]').addEventListener('change', async e => {
+    const input = e.target.closest('.ep-in');
+    if (!input || !LIVE) return;
+    const row = input.closest('tr');
+    const current = input.dataset.epName ?? input.dataset.epUrl;
+    try {
+      await TAURI.core.invoke('update_endpoint', {
+        current,
+        name: row.querySelector('[data-ep-name]').value,
+        url: row.querySelector('[data-ep-url]').value,
+      });
+    } catch (err) { showError(String(err)); }
+    // Redrawn on failure too: a refused edit left sitting in the box reads as
+    // one that took.
+    await endpointRows();
+  });
+
+  $('[data-endpoint-rows]').addEventListener('click', async e => {
+    if (!LIVE) return;
+    const use = e.target.closest('[data-ep-use]');
+    if (use) {
+      const ep = savedEndpoints.find(x => x.name === use.dataset.epUse);
+      // The same door as typing the address, deliberately.
+      if (ep) await switchEndpoint(ep.url);
+      return;
+    }
+    const drop = e.target.closest('[data-ep-drop]');
+    if (!drop) return;
+    try {
+      await TAURI.core.invoke('remove_endpoint', { name: drop.dataset.epDrop });
+    } catch (err) { showError(String(err)); }
+    await endpointRows();
+  });
+
+  // An empty address means the one in the box above, which is the commonest
+  // reason to reach for this: writing down the server you are already on.
+  $('#ep-add').addEventListener('click', async () => {
+    if (!LIVE) return;
+    try {
+      await TAURI.core.invoke('add_endpoint', {
+        name: $('#ep-name').value,
+        url: $('#ep-url').value.trim() || $('#s-server').value,
+      });
+      $('#ep-name').value = '';
+      $('#ep-url').value = '';
+    } catch (err) { showError(String(err)); }
+    await endpointRows();
   });
 
   $('#s-interval').addEventListener('change', refreshMeter);
@@ -3464,8 +3564,16 @@
     if (!grid.querySelector('.card')) grid.innerHTML = `<div class="empty">${esc(msg)}</div>`;
   }
 
+  /// Text safe to interpolate into markup, attribute values included.
+  ///
+  /// The quote is escaped as well as `<` and `&`, because saved-server names
+  /// are typed by a person and land in `value="..."` and `data-ep-name="..."`.
+  /// Without it a name containing a quote closes the attribute early and the
+  /// rest of the row becomes markup. In text content `&quot;` renders as the
+  /// quote it was, so this is safe in both places.
   function esc(s) {
-    return String(s).replace(/[<&]/g, c => ({ '<': '&lt;', '&': '&amp;' }[c]));
+    return String(s).replace(/[<&"]/g,
+      c => ({ '<': '&lt;', '&': '&amp;', '"': '&quot;' }[c]));
   }
 
   // Errors appear above the grid and leave existing cards alone. Previously an

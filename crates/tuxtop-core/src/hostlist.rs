@@ -54,6 +54,124 @@ pub fn remove(list: &mut Vec<HostConfig>, name: &str) -> bool {
     before != list.len()
 }
 
+// ---------------------------------------------------------------------------
+// Saved endpoints
+// ---------------------------------------------------------------------------
+
+/// A server this viewer can be pointed at, kept by name.
+///
+/// **Local, and it stays local in remote mode**, alongside the host list — that
+/// list is precisely what you switch back *to*, and this is the list of the
+/// other places you might go. So these are *viewer* state like `server` itself
+/// (ADR-018 decision 4), not something the fleet on screen owns, and they save
+/// whichever machine is doing the sampling.
+///
+/// `SavedEndpoint`, not `Endpoint`: [`crate::remote::Endpoint`] is a *parsed*
+/// host and port that has already passed the refusals, and confusing the two
+/// is how a `https://` string reaches a socket.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SavedEndpoint {
+    pub name: String,
+    pub url: String,
+}
+
+/// Why saving an endpoint was rejected.
+///
+/// A variant per reason rather than a formatted `String`, for the reason
+/// [`AddError`] and `remote::EndpointError` give: a test asserting "returns
+/// some error" is also satisfied by a typo elsewhere in the operation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EndpointError {
+    EmptyName,
+    Duplicate(String),
+    Missing(String),
+    /// The address would be refused the moment somebody selected it.
+    BadUrl(String),
+}
+
+impl std::fmt::Display for EndpointError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EndpointError::EmptyName => write!(f, "a saved server needs a name"),
+            EndpointError::Duplicate(n) => write!(f, "a saved server named {n} already exists"),
+            EndpointError::Missing(n) => write!(f, "no saved server named {n}"),
+            EndpointError::BadUrl(why) => write!(f, "{why}"),
+        }
+    }
+}
+
+/// Trim, and refuse an address that could never be selected.
+///
+/// Validated **here, where it is saved**, and not only at the moment of use:
+/// an entry that is refused every time it is clicked is a trap with a name on
+/// it, and the person who saved it is long gone by then. The rule itself is
+/// still `remote::parse_endpoint`'s and is not restated - this calls it.
+fn check_url(url: &str) -> Result<String, EndpointError> {
+    let url = url.trim().to_string();
+    crate::remote::parse_endpoint(&url).map_err(|e| EndpointError::BadUrl(e.to_string()))?;
+    Ok(url)
+}
+
+/// Save a new endpoint under `name`.
+pub fn add_endpoint(
+    list: &mut Vec<SavedEndpoint>,
+    name: &str,
+    url: &str,
+) -> Result<(), EndpointError> {
+    let name = name.trim().to_string();
+    let url = check_url(url)?;
+    if name.is_empty() {
+        return Err(EndpointError::EmptyName);
+    }
+    if list.iter().any(|e| e.name == name) {
+        return Err(EndpointError::Duplicate(name));
+    }
+    list.push(SavedEndpoint { name, url });
+    Ok(())
+}
+
+/// Rename and repoint the endpoint currently called `current`.
+///
+/// Both at once, because they are one edit in the table that offers them: a
+/// customer's server moves and gets renamed in the same breath, and two
+/// operations would mean an intermediate state on disk that is neither.
+pub fn update_endpoint(
+    list: &mut [SavedEndpoint],
+    current: &str,
+    name: &str,
+    url: &str,
+) -> Result<(), EndpointError> {
+    let name = name.trim().to_string();
+    let url = check_url(url)?;
+    if name.is_empty() {
+        return Err(EndpointError::EmptyName);
+    }
+    // A rename onto a name somebody else holds, checked before the write:
+    // renaming onto itself is not a duplicate.
+    if list.iter().any(|e| e.name == name && e.name != current) {
+        return Err(EndpointError::Duplicate(name));
+    }
+    let Some(e) = list.iter_mut().find(|e| e.name == current) else {
+        return Err(EndpointError::Missing(current.to_string()));
+    };
+    e.name = name;
+    e.url = url;
+    Ok(())
+}
+
+/// Forget a saved endpoint. Returns whether anything was removed.
+///
+/// It does **not** touch `[settings] server`: forgetting the address you wrote
+/// down is not the same as leaving the fleet you are watching, and a window
+/// that switched itself back to local because somebody tidied a list would be
+/// doing something nobody asked for. Switching is `use_endpoint` and stays
+/// the only door.
+pub fn remove_endpoint(list: &mut Vec<SavedEndpoint>, name: &str) -> bool {
+    let before = list.len();
+    list.retain(|e| e.name != name);
+    before != list.len()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -295,13 +413,23 @@ impl Default for ViewerSettings {
 /// The on-disk shape of `hosts.toml`.
 ///
 /// A wrapper struct is required because TOML has no bare root array.
-/// `settings` must be declared before `hosts`: TOML requires plain tables to
-/// precede arrays-of-tables in a document, so field order here is load-bearing
-/// rather than cosmetic.
+/// `settings` must be declared before `endpoints` and `hosts`: TOML requires
+/// plain tables to precede arrays-of-tables in a document, so field order here
+/// is load-bearing rather than cosmetic. A struct that declares them the other
+/// way round serialises perfectly and fails to parse.
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct HostsFile {
     #[serde(default)]
     pub settings: Settings,
+    /// The servers this viewer can be pointed at, by name.
+    ///
+    /// Before `hosts` for readability and **not** for correctness, which is
+    /// worth stating precisely because the rule above is easy to over-read:
+    /// both of these are arrays-of-tables, and TOML is happy with them in
+    /// either order. Measured by swapping them — nothing fails. What is
+    /// load-bearing is that `settings` precedes them **both**.
+    #[serde(default)]
+    pub endpoints: Vec<SavedEndpoint>,
     #[serde(default, rename = "host")]
     pub hosts: Vec<HostConfig>,
 }
@@ -353,11 +481,17 @@ pub fn parse_file(text: &str) -> Result<HostsFile, String> {
     toml::from_str(text).map_err(|e| e.to_string())
 }
 
-/// Render the list back to TOML.
+/// Render a bare host list back to TOML, with everything else at its default.
+///
+/// Only the host half: `Config::save` reads the file and replaces `hosts` in
+/// it, so nothing that writes to disk goes through here. `..Default::default()`
+/// rather than naming the other fields, because a field added later would
+/// otherwise fail to compile here and be filled in by whoever was passing —
+/// which is how a saved-endpoint list gets dropped by a host edit.
 pub fn render(hosts: &[HostConfig]) -> Result<String, String> {
     render_file(&HostsFile {
-        settings: Settings::default(),
         hosts: hosts.to_vec(),
+        ..Default::default()
     })
 }
 
@@ -708,6 +842,7 @@ mod settings_tests {
                     update_check: false,
                 },
             },
+            endpoints: Vec::new(),
             hosts: vec![host("dove", None), host("heron", Some(30))],
         };
         let text = render_file(&f).unwrap();
@@ -732,15 +867,157 @@ mod settings_tests {
     fn settings_are_written_before_the_host_array() {
         // TOML requires plain tables to precede arrays-of-tables. Getting this
         // backwards produces a file that serialises fine and fails to parse.
+        //
+        // Extended when `[[endpoints]]` arrived rather than joined by a second
+        // test: the rule is one rule, and a file with two arrays-of-tables has
+        // two ways to break it.
         let text = render_file(&HostsFile {
             settings: Settings::default(),
+            endpoints: vec![SavedEndpoint {
+                name: "prod".into(),
+                url: "http://dove:8787".into(),
+            }],
             hosts: vec![host("dove", None)],
         })
         .unwrap();
+        let settings = text.find("[settings]").unwrap();
+        let endpoints = text.find("[[endpoints]]").unwrap();
+        let hosts = text.find("[[host]]").unwrap();
         assert!(
-            text.find("[settings]").unwrap() < text.find("[[host]]").unwrap(),
+            settings < endpoints && settings < hosts,
             "settings must come first:\n{text}"
         );
+        // The proof that it is a real file and not merely an ordered string:
+        // this is the assertion that fails when the struct is reordered.
+        parse_file(&text).expect("what we wrote must parse back");
+    }
+
+    #[test]
+    fn a_saved_endpoint_survives_the_file() {
+        // The whole point of saving one. A `[[endpoints]]` entry written by
+        // this build has to come back as the same two strings, or the list is
+        // a session-long convenience wearing a config file's clothes.
+        let f = HostsFile {
+            settings: Settings::default(),
+            endpoints: vec![
+                SavedEndpoint {
+                    name: "prod".into(),
+                    url: "http://dove:8787".into(),
+                },
+                SavedEndpoint {
+                    name: "a customer".into(),
+                    url: "coot:9000".into(),
+                },
+            ],
+            hosts: vec![host("dove", None)],
+        };
+        let back = parse_file(&render_file(&f).unwrap()).unwrap();
+        assert_eq!(back.endpoints, f.endpoints);
+        assert_eq!(back.hosts.len(), 1, "the endpoints swallowed the hosts");
+    }
+
+    #[test]
+    fn a_file_with_no_endpoints_is_a_file_from_before_them() {
+        // Every hosts.toml in existence predates this list, so its absence has
+        // to read as "none saved" rather than as a parse error - the same way
+        // an absent `paused` reads as watching.
+        let back = parse_file(
+            "[settings]\ninterval_ms = 1000\n\n[[host]]\nname = \"dove\"\naddr = \"dove\"\n",
+        )
+        .expect("a pre-endpoints file must still load");
+        assert!(back.endpoints.is_empty());
+        assert_eq!(back.hosts.len(), 1);
+    }
+
+    #[test]
+    fn a_saved_endpoint_that_could_never_be_selected_is_refused_when_saved() {
+        // Validated where it is saved, not only where it is used: an entry
+        // refused every time it is clicked is a trap with a name on it, and the
+        // person who typed it is long gone by then. The rule is
+        // remote::parse_endpoint's, called rather than restated.
+        let mut list = Vec::new();
+        assert_eq!(
+            add_endpoint(&mut list, "prod", "https://dove:8787"),
+            Err(EndpointError::BadUrl(
+                crate::remote::parse_endpoint("https://dove:8787")
+                    .unwrap_err()
+                    .to_string()
+            )),
+            "https was accepted into the list"
+        );
+        assert!(list.is_empty(), "a refused endpoint was saved anyway");
+
+        assert_eq!(
+            add_endpoint(&mut list, "  ", "dove:8787"),
+            Err(EndpointError::EmptyName)
+        );
+        add_endpoint(&mut list, " prod ", " dove:8787 ").expect("trimmed and saved");
+        assert_eq!(list[0].name, "prod", "a trailing space made a second entry");
+        assert_eq!(list[0].url, "dove:8787");
+        assert_eq!(
+            add_endpoint(&mut list, "prod", "coot:8787"),
+            Err(EndpointError::Duplicate("prod".into())),
+            "two entries with one name is two things that look like one"
+        );
+    }
+
+    #[test]
+    fn an_endpoint_that_is_saved_can_be_renamed_and_repointed() {
+        // Both at once, because they are one edit in the table that offers
+        // them: a customer's server moves and gets renamed in the same breath.
+        let mut list = vec![
+            SavedEndpoint {
+                name: "prod".into(),
+                url: "http://dove:8787".into(),
+            },
+            SavedEndpoint {
+                name: "spare".into(),
+                url: "http://coot:8787".into(),
+            },
+        ];
+        update_endpoint(&mut list, "prod", "production", "http://heron:8788").unwrap();
+        assert_eq!(list[0].name, "production");
+        assert_eq!(list[0].url, "http://heron:8788");
+        assert_eq!(list[1].name, "spare", "the edit reached the wrong row");
+
+        // Renaming onto itself is not a duplicate; renaming onto somebody
+        // else's name is.
+        update_endpoint(&mut list, "production", "production", "http://heron:9").unwrap();
+        assert_eq!(
+            update_endpoint(&mut list, "production", "spare", "http://heron:8788"),
+            Err(EndpointError::Duplicate("spare".into()))
+        );
+        assert_eq!(
+            update_endpoint(&mut list, "gone", "x", "http://x:1"),
+            Err(EndpointError::Missing("gone".into()))
+        );
+        // And a repoint is refused the same way a save is.
+        assert!(matches!(
+            update_endpoint(&mut list, "production", "production", "https://heron:8788"),
+            Err(EndpointError::BadUrl(_))
+        ));
+        assert_eq!(
+            list[0].url, "http://heron:9",
+            "a refused repoint changed the row anyway"
+        );
+    }
+
+    #[test]
+    fn forgetting_a_saved_endpoint_leaves_the_others() {
+        let mut list = vec![
+            SavedEndpoint {
+                name: "prod".into(),
+                url: "http://dove:8787".into(),
+            },
+            SavedEndpoint {
+                name: "spare".into(),
+                url: "http://coot:8787".into(),
+            },
+        ];
+        assert!(remove_endpoint(&mut list, "prod"));
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].name, "spare");
+        assert!(!remove_endpoint(&mut list, "prod"), "removed twice");
     }
 
     #[test]

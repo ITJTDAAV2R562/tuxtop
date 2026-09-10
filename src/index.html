@@ -224,6 +224,34 @@
         only, over <code>ssh -L</code> or a tailnet address. Clear it to go
         back to this machine's own hosts. Charts start again either way:
         history is per window and two fleets' numbers are never blended.</p>
+
+      <!-- Several fleets - or several customers - as one selection rather
+           than one edit. Both paths are here on purpose: adding a server and
+           editing one that already exists are two places, and the second is
+           the one that gets forgotten. Host `os` shipped with a backend, a
+           hosts.toml entry and a documented example, reachable only from the
+           Add host dialog and so only for a host that did not exist yet. -->
+      <details class="perhost" id="epWrap">
+        <summary>Saved servers</summary>
+        <table class="meter-table">
+          <thead><tr><th>Name</th><th>Address</th><th></th></tr></thead>
+          <tbody data-endpoint-rows></tbody>
+        </table>
+        <p class="hint" data-endpoint-empty hidden>None saved yet. Give the
+          address above a name and it joins this list.</p>
+        <div class="epadd">
+          <input type="text" id="ep-name" placeholder="name"
+                 autocomplete="off" aria-label="Name for this server">
+          <input type="text" id="ep-url" placeholder="dove:8787"
+                 autocomplete="off" spellcheck="false"
+                 aria-label="Address of this server">
+          <button class="btn ghost" id="ep-add" type="button">Save</button>
+        </div>
+        <p class="hint">Selecting one switches this window the same way typing
+          the address does &mdash; the fleet is torn down and the charts start
+          again. Forgetting one is only that: it does not leave the fleet you
+          are watching.</p>
+      </details>
     </div>
 
     <label class="checkfield">

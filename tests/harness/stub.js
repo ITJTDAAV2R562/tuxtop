@@ -38,6 +38,19 @@
   let endpoint = window.__stubEndpoint ?? null;
   let hosts = asConfig(endpoint ? REMOTE_FLEET : FLEET);
 
+  /// Servers this viewer has written down, as a `hosts.toml` would already
+  /// hold them.
+  ///
+  /// **A starting list, not an empty one**, and that is the whole reason it is
+  /// here: the path that gets forgotten is editing an entity that was already
+  /// there when the page loaded, and a harness with nothing saved makes that
+  /// test unwritable rather than merely weak. Host `os` shipped reachable only
+  /// from the Add dialog for exactly this reason.
+  let endpoints = [
+    { name: 'a customer', url: 'http://dove:8787' },
+    { name: 'lab', url: 'coot:9000' },
+  ];
+
   /// Filesystems per host, where they differ from a single root.
   ///
   /// `df` runs on a slow cadence, so these arrive with every frame here where
@@ -73,6 +86,22 @@
   /// at an update banner in every unrelated test. A spec that wants the banner
   /// sets window.__stubUpdate before loading the page.
   const stubUpdate = () => (window.__stubUpdate ?? null);
+
+  /// The half of `remote::parse_endpoint` a saved entry can actually hit.
+  ///
+  /// Mirrored rather than invented, and deliberately only the refusal the UI
+  /// can produce: an address is validated where it is *saved*, not only where
+  /// it is used, so an entry that would be refused every time it is clicked
+  /// never enters the list.
+  const checkUrl = url => {
+    const t = String(url || '').trim();
+    if (!t) throw 'a server needs an address';
+    if (/^https:/i.test(t)) {
+      throw `${t}: this viewer speaks plain HTTP. Reach the server over `
+          + 'ssh -L or a tailnet address, or use http://';
+    }
+    return t;
+  };
   const emit = (ev, payload) => (listeners[ev] || []).forEach(f => f({ payload }));
 
   const sample = (name, nCores) => ({
@@ -287,6 +316,41 @@
             emit('tuxtop://settings-changed', { ...settings });
           }
           return { ...settings };
+        }
+        // Mirrors Service::list_endpoints and the three writes beside it.
+        // Local reads and local writes: they are *not* proxied and they are
+        // *not* refused in remote mode, because the saved list is this
+        // machine's note of where it can point rather than anything the fleet
+        // on screen owns.
+        if (cmd === 'list_endpoints') return structuredClone(endpoints);
+        if (cmd === 'add_endpoint') {
+          const name = String(args.name || '').trim();
+          const url = checkUrl(args.url);
+          if (!name) throw 'a saved server needs a name';
+          if (endpoints.some(e => e.name === name)) {
+            throw `a saved server named ${name} already exists`;
+          }
+          endpoints.push({ name, url });
+          return structuredClone(endpoints);
+        }
+        if (cmd === 'update_endpoint') {
+          const name = String(args.name || '').trim();
+          const url = checkUrl(args.url);
+          if (!name) throw 'a saved server needs a name';
+          if (endpoints.some(e => e.name === name && e.name !== args.current)) {
+            throw `a saved server named ${name} already exists`;
+          }
+          const e = endpoints.find(x => x.name === args.current);
+          if (!e) throw `no saved server named ${args.current}`;
+          e.name = name;
+          e.url = url;
+          return structuredClone(endpoints);
+        }
+        if (cmd === 'remove_endpoint') {
+          const before = endpoints.length;
+          endpoints = endpoints.filter(e => e.name !== args.name);
+          if (endpoints.length === before) throw `no saved server named ${args.name}`;
+          return structuredClone(endpoints);
         }
         if (cmd === 'capabilities') {
           return {

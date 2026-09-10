@@ -15,7 +15,7 @@ use crate::config::Config;
 use crate::history::Point;
 use crate::history_store::{now_secs, HistoryStore, HistoryUsage};
 use crate::hostlist::{
-    self, effective_interval_ms, FleetSettings, HostsFile, Settings, ViewerSettings,
+    self, effective_interval_ms, FleetSettings, HostsFile, SavedEndpoint, Settings, ViewerSettings,
     MAX_INTERVAL_MS, MIN_INTERVAL_MS,
 };
 use crate::procs::ProcInfo;
@@ -166,6 +166,65 @@ impl Service {
             .events
             .try_send(Event::SettingsChanged(f.settings.clone()));
         Ok(f.settings)
+    }
+
+    /// The servers this viewer has saved, by name.
+    ///
+    /// **A viewer read, never a fleet read.** The local `hosts.toml` stays
+    /// local in remote mode along with the host list — that list is what you
+    /// switch back *to*, and this is the list of the other places you might
+    /// go. Proxying it would answer with the *server's* saved endpoints, which
+    /// are that machine's business and reach nothing this window can select.
+    pub fn list_endpoints(&self) -> Result<Vec<SavedEndpoint>, String> {
+        Ok(self.config.load_file()?.endpoints)
+    }
+
+    /// Save `url` under `name`.
+    ///
+    /// **Not refused in remote mode**, and that is the same call `use_endpoint`
+    /// makes rather than an oversight: these are this machine's notes about
+    /// where it can point, so writing one down is not editing the fleet on
+    /// screen. Saving the server you are *currently* watching is in fact the
+    /// commonest reason to reach for it. So `save_file`, not `save_fleet` —
+    /// the two are one line apart and the wrong one compiles.
+    pub fn add_endpoint(&self, name: &str, url: &str) -> Result<Vec<SavedEndpoint>, String> {
+        let mut f = self.config.load_file()?;
+        hostlist::add_endpoint(&mut f.endpoints, name, url).map_err(|e| e.to_string())?;
+        self.config.save_file(&f)?;
+        Ok(f.endpoints)
+    }
+
+    /// Rename and repoint the endpoint currently called `current`.
+    ///
+    /// One operation, because they are one edit in the table that offers them,
+    /// and because two would leave an intermediate state on disk that is
+    /// neither the old entry nor the new one.
+    pub fn update_endpoint(
+        &self,
+        current: &str,
+        name: &str,
+        url: &str,
+    ) -> Result<Vec<SavedEndpoint>, String> {
+        let mut f = self.config.load_file()?;
+        hostlist::update_endpoint(&mut f.endpoints, current, name, url)
+            .map_err(|e| e.to_string())?;
+        self.config.save_file(&f)?;
+        Ok(f.endpoints)
+    }
+
+    /// Forget a saved endpoint.
+    ///
+    /// It does not touch `[settings] server`: forgetting the address you wrote
+    /// down is not leaving the fleet you are watching, and a window that
+    /// switched itself back to local because somebody tidied a list would be
+    /// doing something nobody asked for.
+    pub fn remove_endpoint(&self, name: &str) -> Result<Vec<SavedEndpoint>, String> {
+        let mut f = self.config.load_file()?;
+        if !hostlist::remove_endpoint(&mut f.endpoints, name) {
+            return Err(format!("no saved server named {name}"));
+        }
+        self.config.save_file(&f)?;
+        Ok(f.endpoints)
     }
 
     /// What this window can actually do, and whose readings it is showing.
@@ -1221,6 +1280,132 @@ mod tests {
         // must not be stored as a server named "".
         s.use_endpoint(Some("   ".into())).unwrap();
         assert_eq!(s.endpoint().unwrap(), None);
+        let _ = std::fs::remove_file(p);
+    }
+
+    #[tokio::test]
+    async fn a_saved_endpoint_switches_through_the_same_path_as_a_typed_one() {
+        // A second path is a second teardown to forget - the ADR-012 lesson in
+        // different clothes. Selecting a saved endpoint *is* `use_endpoint`
+        // with its url, so everything the typed path guarantees is guaranteed
+        // here by construction rather than by a parallel implementation.
+        //
+        // Asserted as the three facts that make a switch a switch, because
+        // "it calls the same function" is not something a test can see: the
+        // samplers stop, the history goes, and the endpoint is what is now on
+        // disk.
+        let (s, _rx, p) = svc("saved-switch");
+        s.add_host(host("dove")).unwrap();
+        s.history().record(&crate::Sample {
+            host: "dove".into(),
+            cpu: 50.0,
+            ..Default::default()
+        });
+        s.add_endpoint("a customer", "http://elsewhere:8787")
+            .unwrap();
+        assert!(s.sup.is_watching("dove"));
+
+        let saved = s.list_endpoints().unwrap();
+        s.use_endpoint(Some(saved[0].url.clone())).unwrap();
+
+        assert_eq!(
+            s.endpoint().unwrap().as_deref(),
+            Some("http://elsewhere:8787")
+        );
+        assert!(
+            !s.sup.is_watching("dove"),
+            "selecting one left the samplers up"
+        );
+        assert_eq!(
+            s.history().usage().series,
+            0,
+            "and kept the old fleet's charts"
+        );
+
+        // And the list itself survives the switch. It is *this machine's* note
+        // of where it can point, so a viewer that lost its saved servers on
+        // arriving at one of them could never get back.
+        assert_eq!(
+            s.list_endpoints().unwrap(),
+            saved,
+            "the saved list was discarded along with the fleet"
+        );
+        let _ = std::fs::remove_file(p);
+    }
+
+    #[tokio::test]
+    async fn saved_endpoints_are_editable_while_watching_a_server() {
+        // The exception `use_endpoint` already is, in the place it is easiest
+        // to get wrong: `save_fleet` refuses every write in remote mode, and
+        // these must not go through it. Saving the server you are *currently*
+        // watching is the commonest reason to reach for this list, and a
+        // remote viewer that could not write down where it is - or how to get
+        // back - would be absurd for the same reason one that could not be
+        // pinned is (ADR-018 decision 4).
+        let (s, _rx, p) = svc("saved-remote");
+        s.add_host(host("dove")).unwrap();
+        s.add_endpoint("home", "http://dove:8787").unwrap();
+        point_at(&p, "http://elsewhere:8787");
+
+        s.add_endpoint("where I am", "http://elsewhere:8787")
+            .expect("a remote viewer cannot write down where it is");
+        s.update_endpoint("home", "home fleet", "http://dove:9000")
+            .expect("a remote viewer cannot edit its way back");
+        s.remove_endpoint("where I am").expect("nor tidy the list");
+
+        let back = s.list_endpoints().unwrap();
+        assert_eq!(back.len(), 1);
+        assert_eq!(back[0].name, "home fleet");
+        assert_eq!(back[0].url, "http://dove:9000");
+        // And none of that touched the fleet write refusal beside it.
+        assert!(
+            s.add_host(host("heron")).is_err(),
+            "the endpoint list opened a door for host writes"
+        );
+        assert_eq!(
+            s.endpoint().unwrap().as_deref(),
+            Some("http://elsewhere:8787"),
+            "editing the list moved the window"
+        );
+        let _ = std::fs::remove_file(p);
+    }
+
+    #[tokio::test]
+    async fn forgetting_a_saved_endpoint_does_not_leave_the_fleet_it_names() {
+        // Tidying a list is not a request to switch. A window that went back to
+        // local because somebody deleted the note it was reading would be doing
+        // something nobody asked for, and it would look like a crash.
+        let (s, _rx, p) = svc("saved-forget");
+        s.add_endpoint("here", "http://elsewhere:8787").unwrap();
+        point_at(&p, "http://elsewhere:8787");
+
+        s.remove_endpoint("here").unwrap();
+        assert_eq!(
+            s.endpoint().unwrap().as_deref(),
+            Some("http://elsewhere:8787"),
+            "removing the entry switched the window away from that server"
+        );
+        assert!(s.list_endpoints().unwrap().is_empty());
+        assert!(s.remove_endpoint("here").is_err(), "removed twice");
+        let _ = std::fs::remove_file(p);
+    }
+
+    #[tokio::test]
+    async fn saving_a_host_does_not_drop_the_saved_endpoints() {
+        // `Config::save` replaces the host list in the file it read, so this
+        // holds by construction - and it is asserted because the construction
+        // is one `..Default::default()` away from writing a fresh file over
+        // the list. A host edit is the commonest write there is.
+        let (s, _rx, p) = svc("saved-hostwrite");
+        s.add_endpoint("prod", "http://dove:8787").unwrap();
+        s.add_host(host("heron")).unwrap();
+        s.set_host_group("heron", Some("VM")).unwrap();
+        s.remove_host("heron").unwrap();
+        assert_eq!(
+            s.list_endpoints().unwrap().len(),
+            1,
+            "a host write ate the list"
+        );
         let _ = std::fs::remove_file(p);
     }
 

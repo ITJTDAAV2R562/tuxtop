@@ -1072,9 +1072,9 @@ Windows. Confirm on first install of the next release.
 
 **Date:** 2026-09-04 · **Status:** accepted · part 3 (`--bind`) shipped
 2026-09-05, parts 1–2 (remote mode in the desktop app) 2026-09-10, part 4
-(switching endpoints) 2026-09-10 — **from Settings; there is no command-line
-form**, and the "or the command line" in part 4 stays unbuilt rather than
-quietly claimed. Saved endpoints are Phase 14 step 4 and not built yet
+(switching endpoints, and saved ones in `[[endpoints]]`) 2026-09-10 — **from
+Settings; there is no command-line form**, and the "or the command line" in
+part 4 stays unbuilt rather than quietly claimed
 
 ### Context
 
@@ -1373,6 +1373,24 @@ drawn beside them that appears to succeed and edits a different `dove`. That
 is ADR-010's aiming argument arriving through a door nobody had opened.
 
 Every command falls in exactly one class.
+
+**A fourth class arrived with the commands that switch (2026-09-10), and it is
+recorded here rather than left implicit**, because "every command falls in
+exactly one class" stops being true the moment one does not: `use_endpoint`,
+`list_endpoints`, `add_endpoint`, `update_endpoint` and `remove_endpoint` are
+neither proxied nor refused.
+
+- **Viewer commands** — the five above, and the viewer half of `set_settings` —
+  are answered **locally and allowed in both modes**. They describe *this
+  window*: which fleet it is looking at, the servers it has written down, and
+  whether it is pinned. Proxying `list_endpoints` would answer with the
+  *server's* notes about where *it* can point, reaching nothing this window can
+  select; refusing the writes would mean a remote viewer that could not save
+  the server it is watching, or edit its way back to its own fleet — the same
+  absurdity as one that cannot be pinned. They still write the local
+  `hosts.toml`, so they go through `Config::save_file` and deliberately not
+  through `Service::save_fleet`, which is where the refusal lives. Those two
+  are one line apart and the wrong one compiles.
 
 - **Fleet reads** — `list_hosts`, `get_settings`, `capabilities`,
   `process_list`, `cgroup_list`, `traffic_stats` — are **proxied**. They

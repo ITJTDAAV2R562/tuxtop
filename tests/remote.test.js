@@ -134,6 +134,22 @@ test('an_empty_field_means_the_local_fleet_not_a_server_named_nothing', () => {
     'the refusal belongs to the backend, and it names the fix');
 });
 
+test('one_server_written_two_ways_is_one_row_not_two', () => {
+  // `[settings] server` holds what was typed and a saved entry holds what was
+  // typed then, so the marker on the row currently being watched has to see
+  // through the scheme. Otherwise saving the endpoint you are on adds a row
+  // that looks like somewhere else.
+  assert.equal(R.sameEndpoint('dove:8787', 'http://dove:8787'), true);
+  assert.equal(R.sameEndpoint('http://DOVE:8787', 'dove:8787'), true);
+  // The port is not noise: two servers on one box differ only by it.
+  assert.equal(R.sameEndpoint('dove:8787', 'dove:8788'), false);
+  assert.equal(R.sameEndpoint('dove:8787', 'coot:8787'), false);
+  // Nothing is not a match for nothing - sampling locally is not "the same
+  // server" as sampling locally, it is no server at all.
+  assert.equal(R.sameEndpoint(null, null), false);
+  assert.equal(R.sameEndpoint('', 'dove:8787'), false);
+});
+
 test('the_fleet_half_of_settings_needs_a_writable_backend', () => {
   // A read-only server drew a live interval field and a live history limit and
   // returned 403 on Save - two controls that could only fail, before remote
