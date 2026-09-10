@@ -610,7 +610,7 @@ What this cost, and what was learned:
 
 ---
 
-## Phase 14 — Remote mode: one sampler, many viewers — **steps 1–2 of 4 done**
+## Phase 14 — Remote mode: one sampler, many viewers — **steps 1–3 of 4 done**
 
 Decided in
 [ADR-017](DECISIONS.md#adr-017--one-sampler-many-viewers-the-endpoint-is-the-mode),
