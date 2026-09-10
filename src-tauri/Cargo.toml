@@ -23,7 +23,7 @@ tuxtop-core = { path = "../crates/tuxtop-core" }
 tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-toml = "0.8"
+toml = "1.1"
 # SSH is handled by tuxtop-core, which shells out to the system ssh (ADR-007).
 # `net` and `io-util` are for remote mode's own socket (ADR-018 decision 3):
 # the hand-rolled client reads the event stream with async I/O rather than
@@ -44,4 +44,4 @@ tauri-plugin-updater = "2"
 tauri-plugin-opener = "2"
 
 [target.'cfg(target_os = "windows")'.dependencies]
-window-vibrancy = "0.6"
+window-vibrancy = "0.8"
