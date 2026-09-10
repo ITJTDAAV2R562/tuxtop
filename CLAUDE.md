@@ -240,6 +240,14 @@ paths: the Add host dialog for new hosts, and the per-host table in Settings
 for the ones that already exist. The second is the one that gets forgotten,
 and it is the one that matters for a fleet already running.
 
+**The test for it has to act on something it did not create.** A test that adds
+an entity and then edits it passes against exactly this bug, because the Add
+path is the one that works — the hole is the entity that was already there when
+the page loaded. `a host already in the fleet can be switched to Windows` takes
+its host from the harness fleet for that reason, and found that `set_host_os`
+was missing from `tests/harness/stub.js` altogether, so that control had been
+throwing in the harness since it shipped while working in the app.
+
 Two related habits:
 
 - **Prefer a measurement to an estimate whenever one exists.** This project was

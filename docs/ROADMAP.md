@@ -1100,6 +1100,26 @@ fix is to fan in rather than out.
    only for a host that did not exist yet.
    `check-commands-reachable.py` covers commands and cannot cover fields.
 
+   **So the forgotten path gets the named test** (added 2026-09-10; this
+   section previously named a test for the switch and none for the edit, which
+   left the one thing it warns about unguarded):
+   `an endpoint that already existed can be renamed and repointed`, in
+   `tests/e2e/endpoints.spec.js`.
+
+   **It must edit an endpoint it did not create, and that is the whole
+   assertion.** A test that adds one and then edits it would have passed
+   against the host-`os` bug too: the Add dialog worked, and the hole was
+   specifically the entity that was already there when the page loaded. So the
+   endpoint comes from the `hosts.toml` the harness starts with — the same
+   shape as `a host already in the fleet can be switched to Windows` in
+   `interval.spec.js`, which was written when `set_host_os` turned out to be
+   missing from the stub entirely, and which fails if that stub command is
+   removed again.
+
+   Two things follow for the stub: `tests/harness/stub.js` needs the endpoint
+   commands *and* a starting `[[endpoints]]` list, since a harness with none
+   makes the test above unwritable rather than merely weak.
+
 ~~Worth doing on the way through: the `broadcast` buffer is 16 and that is
 tight once several clients are normal.~~ **Checked 2026-09-07: there is nothing
 to do.** The buffer is `1024` and has been since the crate was written
