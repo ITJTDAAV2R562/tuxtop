@@ -83,6 +83,25 @@ upstream loosens. The argument for spending anything on a moderate finding in a
 tool that runs weekly on one machine is not the risk — it is that a Dependabot
 alert nobody can close teaches everyone to stop reading them.
 
+**`cargo audit` fails on vulnerabilities and not on warnings, which is where
+the one open Dependabot alert lives.** GHSA-wrw7-89jp-8q8g (RUSTSEC-2024-0429,
+moderate) is an unsoundness in `glib::VariantStrIter`, fixed in glib 0.20; we
+carry 0.18.5 in `src-tauri/Cargo.lock`. RustSec classes unsoundness as a
+warning, so `cargo audit` exits 0 on it; GitHub imports it as an advisory, so
+Dependabot raises it. Both are behaving correctly.
+
+**It reaches nothing we ship.** `cargo tree -i glib --target
+x86_64-pc-windows-msvc` finds no dependant at all — glib arrives only on Linux,
+through `tauri → muda/tao/gtk → atk`, and the Windows installer is the only
+thing built from that lockfile. The workspace `Cargo.lock`, which the
+`tuxtop-serve` tarball comes from, does not contain glib and has no advisories
+of any kind. Nor can it be fixed here: glib 0.20 needs the gtk-rs 0.9
+generation, and `tauri` pins 0.18 through `muda` and `tao`, so the alert closes
+when Tauri moves. The six `unmaintained` notices beside it in the same tree are
+the same story. Recorded because the alternative is the next session
+re-deriving it from a 403 — reading Dependabot alerts needs the
+`security_events` scope, which the usual `gh` token does not have.
+
 ## If a secret is ever committed
 
 Rotate it first, then remove it. The gitleaks job scans full history with
