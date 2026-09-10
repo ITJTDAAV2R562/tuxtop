@@ -282,6 +282,14 @@ background colour is unpredictable by definition. Use `--tile-halo`.
 **Check both themes before committing a visual change.** A change verified in
 dark only is unverified.
 
+**And check the *alarming* state, not the calm one beside it.** A test that
+asserts a component's normal ground differs between light and dark stays green
+against a hardcoded colour in its warning state, because the normal ground is
+still a token and still flips. The state a literal is most tempting in is the
+one with a fixed idea of what "red" looks like. `remote.spec.js` asserts both
+grounds and both marks for this reason; asserting only the calm pair left it
+passing against `rgba(180,105,14,.14)`.
+
 ---
 
 ## Two shells, one service
@@ -478,6 +486,18 @@ of eight" and "as many as fit" both answered 8, and it passed against a
 deliberately broken implementation. It now runs at a width where the two rules
 disagree, and asserts that they could have. When a test compares two rules,
 check the inputs actually distinguish them.
+
+**Playwright's default 1280 is the width where toolbar assertions are vacuous**,
+and the discriminating width depends on what is *drawn*, not only on the
+viewport. The toolbar fits one row at 1280 whether it wraps or not, so a
+clipping assertion made there passes against `flex-wrap:nowrap`. 1000 is where
+they disagree — 97px with all seven controls drawn, against 56px with one
+pushed out of the row entirely. The first attempt at that fix used 1100, which
+was *still* vacuous, because the baseline was a read-only backend and so had no
+"Add host" taking up ~100px. Measure at the state the test actually runs in;
+`bar.scrollWidth > bar.clientWidth` is the signal, and a hidden element's
+zero-width rect is inside every box, which makes a naive containment check
+quietly pass.
 
 **When a rule matters, check that breaking it fails the test.** A test written
 against already-correct code can pass for the wrong reason. Both aggregation
