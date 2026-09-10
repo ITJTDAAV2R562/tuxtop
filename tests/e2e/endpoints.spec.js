@@ -34,11 +34,15 @@ async function load(page) {
 }
 
 /// Settings, with the saved-server list disclosed.
+///
+/// No `evaluate` to check whether the `<details>` is open: it is `open` in the
+/// markup, like the per-host table beside it. The conditional version timed out
+/// under the parallel suite while the locator had plainly resolved — the shape
+/// CLAUDE.md says to simplify rather than investigate, and here the simpler
+/// test and the more discoverable control are the same change.
 async function openSaved(page) {
   await page.locator('#settingsBtn').click();
   await expect(page.locator('#setDlg')).toBeVisible();
-  const wrap = page.locator('#epWrap');
-  if (!(await wrap.evaluate(el => el.open))) await wrap.locator('summary').click();
   await expect(page.locator('[data-endpoint-rows] tr').first()).toBeVisible();
 }
 
@@ -58,13 +62,23 @@ test('an endpoint that already existed can be renamed and repointed', async ({ p
   // input. The backend takes both fields together - `update_endpoint` is one
   // operation so a server that moves and is renamed never passes through a
   // state on disk that is neither - and this is the browser's half of it.
+  //
+  // `commit` moves focus *off the table* rather than blurring the input it just
+  // filled. `fill` fires `input` and not `change` - measured, by removing the
+  // blur and watching this fail every time - so the blur is the commit, and a
+  // blur aimed at a row input is aimed at a node the redraw is about to
+  // replace. Focusing the add-row box instead is what a person does and lands
+  // on something that never re-renders. One run in five failed on `toHaveValue`
+  // before this.
+  const commit = () => page.locator('#ep-name').focus();
+
   await page.locator('[data-ep-name="lab"]').fill('lab fleet');
-  await page.locator('[data-ep-name="lab"]').blur();
+  await commit();
   await expect(page.locator('[data-ep-name="lab fleet"]')).toHaveValue('lab fleet');
   await expect(page.locator('[data-ep-name="lab"]')).toHaveCount(0);
 
   await page.locator('[data-ep-url="lab fleet"]').fill('coot:9100');
-  await page.locator('[data-ep-url="lab fleet"]').blur();
+  await commit();
   await expect(page.locator('[data-ep-url="lab fleet"]')).toHaveValue('coot:9100');
 
   // The half that matters: close the dialog and ask again. A test that edits

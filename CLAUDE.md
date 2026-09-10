@@ -482,6 +482,18 @@ four full heat renders, measured at 24 s alone — and carries its own
 `test.setTimeout(60_000)` with that measurement written down. That is the
 exception, not a pattern to copy.
 
+**A blur aimed at the input you just filled is aimed at a node that may be
+gone.** Playwright's `fill` fires `input` and **not** `change`, so on a table
+that commits on `change` the blur *is* the commit — and any table redrawn from
+the backend's answer replaces that input as it commits. Move focus to something
+outside the table instead (the add-row box, a heading): it is what a person
+does, and it lands on a node nothing re-renders. This presented as one
+`toHaveValue` failure in five full-suite runs, which is the frequency that
+reads as "someone else's flake". The same instinct applies to `page.evaluate`
+on a control whose state is in the markup — `#epWrap` is `open` in `index.html`
+so no test has to ask whether it is, and the version that asked timed out under
+the parallel suite.
+
 **Then check your own machine before blaming the suite.** The residual failures
 after that fix were self-inflicted - a `tuxtop-serve` and a desktop app running
 against nineteen hosts each, 45 ssh sessions on a 16-core box. With those

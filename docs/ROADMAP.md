@@ -1423,6 +1423,19 @@ only Settings exists.
      `an_endpoint_that_is_saved_can_be_renamed_and_repointed` is where that is
      asserted.
 
+   - **And the blur has to land somewhere that will still be there.** That test
+     failed once in five full-suite runs on `toHaveValue` — the frequency that
+     reads as somebody else's flake, in a test written the same hour. `fill`
+     fires `input` and **not** `change`, measured by removing the blur and
+     watching it fail every time, so the blur is the commit; a blur aimed at the
+     row input it just filled is aimed at the node the redraw replaces.
+     Focusing the add-row box instead is what a person does and cannot race.
+     Stable across 24 repeats at four workers and three full suites after.
+     A `page.evaluate` asking whether the `<details>` was open had already gone
+     the same way and was removed rather than investigated — the control is
+     `open` in the markup now, which is both the simpler test and the more
+     discoverable list. Both are in CLAUDE.md.
+
 ~~Worth doing on the way through: the `broadcast` buffer is 16 and that is
 tight once several clients are normal.~~ **Checked 2026-09-07: there is nothing
 to do.** The buffer is `1024` and has been since the crate was written
