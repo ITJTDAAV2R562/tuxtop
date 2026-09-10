@@ -1436,6 +1436,23 @@ only Settings exists.
      `open` in the markup now, which is both the simpler test and the more
      discoverable list. Both are in CLAUDE.md.
 
+   - **Launching it found what none of the tests could.** The row marking the
+     server on screen was a `::after` on `.meter-table` — a class *three* tables
+     wear — so it labelled the sample-interval meter **"2 s · watching"**: a
+     confident, well-formatted sentence about the wrong thing, in the settings
+     panel of an application built in response to exactly that. Every test was
+     green, because they assert the *class* and the class was right.
+
+     Worse, the assertion written to catch it passed against it too:
+     `toContainText` reads `textContent`, and CSS generated content is not in
+     it, so there was nothing to read and nothing to fail. The word is real
+     text written by `endpointRows` now, which cannot leak into another table
+     and which a test can actually see — mutating the marker on and off fails
+     the test in both directions.
+
+     The screenshot is what caught it, five minutes after `verify.sh` went
+     green on everything. That is the argument for looking at the window.
+
 ~~Worth doing on the way through: the `broadcast` buffer is 16 and that is
 tight once several clients are normal.~~ **Checked 2026-09-07: there is nothing
 to do.** The buffer is `1024` and has been since the crate was written

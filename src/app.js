@@ -3154,11 +3154,19 @@
     const ro = editable(CAPS, SERVED_FROM).viewer ? '' : ' disabled';
     const here = (CAPS && CAPS.endpoint) || null;
     $('[data-endpoint-empty]').hidden = savedEndpoints.length > 0;
-    $('[data-endpoint-rows]').innerHTML = savedEndpoints.map(ep => `
-      <tr class="${TuxRemote.sameEndpoint(here, ep.url) ? 'current' : ''}">
+    $('[data-endpoint-rows]').innerHTML = savedEndpoints.map(ep => {
+      // Written into the row, not drawn by a `::after` in the stylesheet. The
+      // CSS version was scoped to `.meter-table`, which three tables wear, and
+      // labelled the sample-interval meter "2 s - watching" - a confident
+      // sentence about the wrong thing. Generated content is also invisible to
+      // `textContent`, so the test written to catch that passed against it.
+      const now = TuxRemote.sameEndpoint(here, ep.url);
+      return `
+      <tr class="${now ? 'current' : ''}">
         <td><input class="ep-in" data-ep-name="${esc(ep.name)}"
                    value="${esc(ep.name)}"${ro}
-                   aria-label="Name of the server saved as ${esc(ep.name)}"></td>
+                   aria-label="Name of the server saved as ${esc(ep.name)}"
+                   >${now ? ' <span class="ep-now">watching</span>' : ''}</td>
         <td><input class="ep-in" data-ep-url="${esc(ep.name)}"
                    value="${esc(ep.url)}"${ro} spellcheck="false"
                    aria-label="Address of the server saved as ${esc(ep.name)}"></td>
@@ -3167,7 +3175,8 @@
                   data-ep-use="${esc(ep.name)}"${ro}>Watch</button>
           <button class="btn ghost" type="button"
                   data-ep-drop="${esc(ep.name)}"${ro}>Forget</button>
-        </td></tr>`).join('');
+        </td></tr>`;
+    }).join('');
   }
 
   // Committed on blur or Enter, like the per-host table: the name and the

@@ -494,6 +494,14 @@ on a control whose state is in the markup — `#epWrap` is `open` in `index.html
 so no test has to ask whether it is, and the version that asked timed out under
 the parallel suite.
 
+**CSS generated content is invisible to a test.** `toContainText` reads
+`textContent`, which does not include `::before`/`::after`, so a label drawn
+from a stylesheet cannot be asserted and an assertion written against one
+passes whatever it says. A `::after` on `.meter-table` — a class three tables
+wear — labelled the sample-interval meter "2 s · watching" while every test
+stayed green, including the one added to catch it. If a word means something,
+write it into the DOM where a test and a screen reader can both find it.
+
 **Then check your own machine before blaming the suite.** The residual failures
 after that fix were self-inflicted - a `tuxtop-serve` and a desktop app running
 against nineteen hosts each, 45 ssh sessions on a 16-core box. With those

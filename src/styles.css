@@ -1127,9 +1127,15 @@ body[data-bands="off"] .legend span:not(:last-child){display:none}
 .epadd{display:flex;gap:6px;margin-top:8px;align-items:center}
 .epadd .ep-in{flex:1 1 0;min-width:0}
 .ep-act{display:flex;gap:6px;justify-content:flex-end}
-/* The one currently on screen, marked the way the meter marks the interval in
-   force - `tr.current` above already carries the colour. */
-.meter-table tr.current td:first-child::after{content:" \00b7 watching"}
+/* The one currently on screen. `tr.current` above already carries the colour;
+   the word beside it is written into the row by `endpointRows` rather than by
+   a `::after` here, and that is a correction rather than a preference. As a
+   rule on `.meter-table` - which three tables wear - it labelled the
+   sample-interval meter "2 s - watching", a confident sentence about the wrong
+   thing, and the test written to catch that passed anyway because generated
+   content is not in `textContent`. Real text cannot leak into another table
+   and can be asserted by a test that means what it says. */
+.ep-now{color:var(--accent-ink);font-weight:600}
 .perhost thead th{
   font-family:var(--font-ui);font-size:10px;font-weight:600;
   text-transform:uppercase;letter-spacing:.06em;color:var(--text-3);

@@ -110,6 +110,20 @@ test('a saved server switches the fleet the same way typing one does', async ({ 
   await expect(row(page, 'lab'), 'every row claims to be the one being watched')
     .not.toHaveClass(/current/);
 
+  // The word belongs to this table and to no other. It was a `::after` on
+  // `.meter-table` first - a class three tables wear - and it labelled the
+  // sample-interval meter "2 s - watching", a confident sentence about the
+  // wrong thing, which is this project's founding failure in a stylesheet.
+  //
+  // The first version of *this* assertion passed against that bug, because
+  // generated content is not in `textContent` and there was nothing to read.
+  // It is real text in the row now, which is what makes the next two lines
+  // mean anything.
+  await expect(row(page, 'a customer')).toContainText('watching');
+  await expect(page.locator('[data-meter-rows] tr.current'),
+    'the sample-interval meter says which server is being watched')
+    .not.toContainText('watching');
+
   await page.keyboard.press('Escape');
   await expect(page.locator('#remotebar')).toBeVisible();
   await expect(page.locator('#remotebar [data-chrome-who]')).toHaveText('dove:8787');
