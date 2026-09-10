@@ -48,3 +48,33 @@ test('the cost meter reprices when the rate changes', async ({ page }) => {
   // before someone picks it for nineteen hosts.
   expect(atFourHz).not.toBe(atOneHz);
 });
+
+test('a host already in the fleet can be switched to Windows', async ({ page }) => {
+  // The per-host table is the *only* path to `os` for a host that already
+  // exists - the Add host dialog covers one that does not - and it has never
+  // been exercised, because `set_host_os` was missing from the harness stub
+  // entirely. So this control has been throwing in the harness for its whole
+  // life while working in the app, which is the third time a gap in the stub
+  // has presented as an application bug.
+  //
+  // It matters more than an OS label sounds: a Windows host created as a Linux
+  // one runs a POSIX shell command against cmd.exe and fails with "the system
+  // cannot find the path specified", an error that explains nothing.
+  await openSettings(page);
+  const sel = page.locator('[data-perhost-rows] select[data-host-os]').first();
+  await expect(sel).toHaveValue('');
+
+  const errors = [];
+  page.on('console', m => { if (m.type() === 'error') errors.push(m.text()); });
+  await sel.selectOption('windows');
+
+  // It reached the backend and came back, rather than raising the error bar -
+  // which is exactly what a missing backend command produced.
+  await expect(sel).toHaveValue('windows');
+  await expect(page.locator('#errBar')).toHaveCount(0);
+  expect(errors, 'the OS change failed in the console').toEqual([]);
+
+  // And it is what the backend now holds, not just what the select shows.
+  const stored = await page.evaluate(() => window.__STUB__.hosts()[0].os);
+  expect(stored).toBe('windows');
+});

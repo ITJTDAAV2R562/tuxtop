@@ -39,6 +39,17 @@
     };
   }
 
+  /// Where this tab's readings come from.
+  ///
+  /// A tab served by `tuxtop-serve` is a remote viewer by definition (ADR-017
+  /// rule 1), and this file is the only place that knows it is one: app.js
+  /// takes `__TAURI__` and deliberately never asks which implementation it
+  /// got, and the server describes itself as sampling locally - correctly,
+  /// from where it sits. So the origin is published here for the chrome to
+  /// read, rather than guessed at from `location` by code that cannot tell a
+  /// desktop webview from a browser.
+  globalThis.__TUXTOP_ENDPOINT__ = location.origin;
+
   window.__TAURI__ = {
     core: {
       async invoke(cmd, args) {

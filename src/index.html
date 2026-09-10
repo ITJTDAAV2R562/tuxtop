@@ -40,6 +40,29 @@
     </div>
   </div>
 
+  <!-- Whose readings these are, and how old.
+       ADR-017 rule 1: the mode is visible at all times, with freshness, in
+       the chrome rather than in Settings - a window that looks identical in
+       both modes while showing stale remote data *is* the confident wrong
+       number this application is a reaction to.
+
+       Its own strip rather than a corner of the toolbar. The toolbar was
+       already within ~70px of clipping "Add host" at nineteen hosts, and a
+       dead link deserves a line of its own rather than a caption beside three
+       buttons. Hidden entirely when this window does its own sampling, so
+       local mode is unchanged: the strip appearing at all is the first signal.
+
+       Not the titlebar, though `#tbsub` looked like the obvious home for it:
+       app.js removes `.titlebar` wholesale in startLive(), because Windows
+       draws the real one - so that element exists only in the simulator, and
+       has never been written to in fourteen phases. -->
+  <div class="remotebar" id="remotebar" hidden>
+    <span class="rb-mark" aria-hidden="true"></span>
+    <span class="rb-who" data-chrome-who></span>
+    <span class="rb-age" data-chrome-age hidden></span>
+    <span class="rb-note" data-chrome-note hidden></span>
+  </div>
+
   <div class="toolbar">
     <span class="tally"><b id="nhosts">4</b> hosts &middot; <b id="ncores">52</b> cores &middot; <b id="nup">4</b> up<span id="npausedWrap" hidden> &middot; <b id="npaused">0</b> paused</span></span>
     <div class="seg" role="group" aria-label="View">
@@ -137,6 +160,8 @@
 <dialog id="setDlg">
   <form method="dialog" class="dlg-body" id="setForm">
     <h2>Settings</h2>
+
+    <p class="hint" id="setWhy" hidden></p>
 
     <div class="field">
       <label for="s-interval">Sample interval</label>
@@ -275,6 +300,7 @@
 <script src="agg.js" charset="utf-8"></script>
 <script src="heat.js" charset="utf-8"></script>
 <script src="version.js" charset="utf-8"></script>
+<script src="remote.js" charset="utf-8"></script>
 <!-- Installs a fetch/SSE backend only when neither Tauri nor the test stub has. -->
 <script src="http.js" charset="utf-8"></script>
 <script src="app.js" charset="utf-8"></script>

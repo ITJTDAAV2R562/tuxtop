@@ -206,6 +206,37 @@ body{
 .winbtns button:last-child:hover{background:var(--crit);color:var(--on-accent)}
 .winbtns button:hover{background:var(--surface-sunk)}
 
+/* ============ remote bar ============ */
+/* Only drawn when the readings on screen were taken by another machine. Every
+   colour is a token, so it survives the theme switch in both directions - the
+   bug that has landed twice here. */
+.remotebar{
+  display:flex;align-items:center;gap:8px;
+  padding:7px 14px;
+  border-bottom:1px solid var(--stroke);
+  background:var(--surface-sunk);
+  font-size:11.5px;font-family:var(--font-mono);color:var(--text-2);
+}
+.rb-mark{
+  width:7px;height:7px;border-radius:50%;flex:none;
+  background:var(--accent);
+  box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 20%,transparent);
+}
+.rb-who{color:var(--text)}
+.rb-note{color:var(--text-3)}
+/* The stale state. The text already says what happened - "no contact with
+   dove:8787 since 14:03:11" - so the colour is redundant rather than the only
+   signal, which is what keeps this readable without it. */
+body[data-stale="yes"] .remotebar{
+  background:color-mix(in srgb,var(--warn) 14%,transparent);
+  border-bottom-color:color-mix(in srgb,var(--warn) 45%,transparent);
+}
+body[data-stale="yes"] .rb-mark{
+  background:var(--warn);
+  box-shadow:0 0 0 3px color-mix(in srgb,var(--warn) 22%,transparent);
+}
+body[data-stale="yes"] .rb-age{color:var(--warn);font-weight:600}
+
 /* ============ toolbar ============ */
 .toolbar{
   display:flex;align-items:center;gap:10px;

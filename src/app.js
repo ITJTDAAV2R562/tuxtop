@@ -17,6 +17,7 @@
   const { matchesHost, matchesProcess } = TuxFilter;
   const { heatRow, coverage, heatOrder, groupBreaks, ramp, mixHex } = TuxHeat;
   const { shouldNotify } = TuxVersion;
+  const { identity, isStale, staleNote, editable, modeLine } = TuxRemote;
 
   const $ = s => document.querySelector(s);
   const grid = $('#grid');
@@ -44,6 +45,21 @@
   // as the design mockup it started life as.
   const TAURI = globalThis.__TAURI__;
   const LIVE = !!TAURI;
+
+  /// This tab's own origin, set by `http.js` when it installs itself, and
+  /// absent under the desktop app and the test stub. It is the only way to
+  /// tell a browser tab from a desktop window without asking `__TAURI__` which
+  /// implementation it is - which app.js deliberately does not do.
+  const SERVED_FROM = globalThis.__TUXTOP_ENDPOINT__ || null;
+
+  /// What the backend says this window can do and whose readings it shows.
+  ///
+  /// Re-read on `tuxtop://settings-changed` rather than once at startup:
+  /// switching endpoints changes every field of it, which is why the switching
+  /// phase needs no frontend change of its own.
+  let CAPS = null;
+  /// When an event last arrived, for the freshness the chrome states.
+  let lastEventAt = null;
 
   let hosts = LIVE ? [] : [
     mk('dove',   'Debian 13', 32, 31,  'RTX 3080', 3),
@@ -2984,6 +3000,43 @@
   const setDlg = $('#setDlg');
   let meterTimer = null;
 
+  /// Disable the fields this backend would refuse, and say why.
+  ///
+  /// A read-only server hid Add host, Remove, Pause and the drag grip, and
+  /// left the interval, the history limit and the update check live - three
+  /// controls whose Save returned 403. That is the failure `capabilities`
+  /// exists to prevent, arriving in the one dialog nobody had checked.
+  ///
+  /// Disabled with a reason rather than hidden: the values are worth reading on
+  /// a fleet you cannot change - it is where you find out what interval is
+  /// actually in force - and a greyed-out control with no explanation is its
+  /// own small puzzle.
+  function applySettingsPermissions() {
+    const can = editable(CAPS, SERVED_FROM);
+    $('#s-interval').disabled = !can.fleet;
+    $('#s-cap').disabled = !can.fleet;
+    $('#s-ontop').disabled = !can.viewer;
+    $('#s-update').disabled = !can.viewer;
+    // There is no updater behind a server, so this could only ever error.
+    $('#updCheckNow').disabled = !can.viewer;
+
+    const why = $('#setWhy');
+    const label = identity(CAPS, SERVED_FROM);
+    let text = '';
+    if (!can.fleet && label && label !== TuxRemote.LOCAL) {
+      text = `The sample interval and history limit belong to ${label}, `
+        + 'which is doing the sampling. This window sets only its own options.';
+    } else if (!can.fleet) {
+      text = 'This server is read-only, so nothing here can be saved. '
+        + 'It was started without --writable.';
+    } else if (!can.viewer) {
+      text = 'Always on top and the update check belong to a desktop window, '
+        + 'and this is a browser tab.';
+    }
+    why.textContent = text;
+    why.hidden = !text;
+  }
+
   $('#settingsBtn').addEventListener('click', async () => {
     if (LIVE) {
       try {
@@ -2997,6 +3050,7 @@
         $('#updVersionLine').textContent = v ? `Running Tuxtop ${v}.` : '';
         $('#updNotesNow').hidden = !v;
       } catch (e) { showError(String(e)); }
+      applySettingsPermissions();
     }
     perHostRows();
     await refreshMeter();
@@ -3138,7 +3192,14 @@
   // ---------------------------------------------------------------- LIVE
   async function startLive() {
     const { invoke } = TAURI.core;
-    const { listen } = TAURI.event;
+    // Every arriving event stamps the clock the chrome's freshness is measured
+    // against - any event, because what is being measured is contact with the
+    // server, not samples specifically. Wrapped once rather than added to each
+    // of the five handlers below, which is how one comes to be forgotten.
+    const listen = (topic, cb) => TAURI.event.listen(topic, ev => {
+      lastEventAt = Date.now();
+      cb(ev);
+    });
 
     // The cadence toggle was a mockup device for showing why the fast plane
     // exists. Against a real backend it has nothing to switch, so it goes.
@@ -3150,10 +3211,19 @@
     // Windows draws the real titlebar (decorations: true), so the mockup's
     // painted one would be a second, fake title bar stacked under it.
     document.querySelector('.titlebar')?.remove();
+    // Before the status line, which quotes it: the line names the machine that
+    // is sampling, and painting it first got "over ssh" onto a remote viewer
+    // for the life of the session, because nothing re-ran it afterwards. Found
+    // by the E2E test rather than by reading, which is the argument for having
+    // built the chrome for both backends.
+    await refreshCapabilities();
     // The status line used to read "live · 1 Hz over ssh" as a string literal,
     // whatever the interval actually was, and never said which Tuxtop you were
     // running. Both are now read from the app rather than asserted.
     await refreshModeNote();
+    // Freshness is repainted on a timer as well as on each event, because the
+    // case it exists for is the one where nothing is arriving at all.
+    setInterval(paintChrome, 1000);
 
     const ensure = (name, nCores) => {
       let h = hosts.find(x => x.name === name);
@@ -3226,6 +3296,15 @@
       paint(); tally();
     });
 
+    await listen('tuxtop://settings-changed', async () => {
+      // Re-read rather than read once: switching endpoints changes every field
+      // of `capabilities`, so this one line is why the switching phase needs no
+      // frontend change of its own. It also means an `always_on_top` or
+      // interval changed in another window reaches this one.
+      await refreshCapabilities();
+      await refreshModeNote();
+    });
+
     await listen('tuxtop://hosts-changed', ({ payload: list }) => {
       // Remember each host's interval override so the meter can honour it,
       // and its group so the fleet view can arrange by it.
@@ -3263,15 +3342,6 @@
       return;
     }
 
-    // A read-only server will refuse configuration changes, so the controls
-    // that make them are hidden rather than left to fail. Absent on the
-    // desktop app, where everything is allowed.
-    try {
-      const caps = await invoke('capabilities');
-      if (caps && caps.writable === false) {
-        document.body.dataset.readonly = 'yes';
-      }
-    } catch { /* no capabilities command: the desktop app, which can do it all */ }
 
     build(); paint(); tally();
     if (!hosts.length) showEmpty('No hosts yet. Add one to start watching.');
@@ -3496,6 +3566,86 @@
     return appVersion;
   }
 
+  /// Ask the backend what this window can do, and re-apply what depends on it.
+  ///
+  /// Both backends answer `capabilities`, so its absence is no longer a signal
+  /// about which one is running. A failure is reported rather than read as
+  /// permission: without an answer the chrome says nothing about whose fleet
+  /// this is, because `sampling locally` beside another machine's cards is the
+  /// confident wrong number this application is a reaction to.
+  async function refreshCapabilities() {
+    if (!LIVE) return;
+    try {
+      CAPS = await TAURI.core.invoke('capabilities');
+    } catch (e) {
+      CAPS = null;
+      showError(`Could not read what this window is allowed to do: ${e}`);
+    }
+    const can = editable(CAPS, SERVED_FROM);
+    // `data-readonly` already gates every fleet write: Add host, the cards'
+    // Remove and Pause, the drag grip and the per-host table.
+    if (can.fleet) delete document.body.dataset.readonly;
+    else document.body.dataset.readonly = 'yes';
+    // The viewer half is separate because it saves in remote mode - see
+    // TuxRemote.editable.
+    if (can.viewer) delete document.body.dataset.viewerReadonly;
+    else document.body.dataset.viewerReadonly = 'yes';
+    paintChrome();
+  }
+
+  /// Whose readings are on screen, and how old they are.
+  ///
+  /// ADR-017 rule 1: the mode is visible at all times, with freshness, in the
+  /// chrome rather than in Settings. A window that looks identical in both
+  /// modes while showing stale remote data *is* the confident wrong number.
+  ///
+  /// Called on a timer as well as on each event, because the case that matters
+  /// is the one where nothing is arriving.
+  function paintChrome() {
+    const bar = $('#remotebar');
+    if (!bar) return;
+    const who = bar.querySelector('[data-chrome-who]');
+    const age = bar.querySelector('[data-chrome-age]');
+    const note = bar.querySelector('[data-chrome-note]');
+
+    const label = identity(CAPS, SERVED_FROM);
+    // Hidden when this window is doing its own sampling, and hidden when
+    // there is no answer at all - `identity` returns null rather than
+    // guessing, and a strip that claimed anything here would be the guess.
+    if (!label || label === TuxRemote.LOCAL) {
+      bar.hidden = true;
+      delete document.body.dataset.stale;
+      return;
+    }
+    bar.hidden = false;
+
+    // Never contacted at all is stale by definition, and Infinity says so
+    // without inventing an age for it.
+    const ageMs = lastEventAt === null ? Infinity : Date.now() - lastEventAt;
+    const stale = isStale(ageMs, CAPS && CAPS.stale_after_ms);
+    document.body.dataset.stale = stale ? 'yes' : 'no';
+
+    // The grid keeps its last readings and only the link is marked. Nineteen
+    // cards each saying "offline" would read as a dead fleet rather than a
+    // dead link, which the hard rules forbid.
+    //
+    // One of the two, not both: the warning already names the endpoint, so
+    // showing the plain label beside it would say the same thing twice on the
+    // one line where space is worth something.
+    who.textContent = label;
+    who.hidden = stale;
+    age.textContent = stale ? staleNote(label, lastEventAt) : '';
+    age.hidden = !stale;
+
+    // Stated whether or not anything has gone quiet: a viewer one release
+    // ahead of its server reads a renamed field as absent and draws a
+    // plausible wrong number, and the honest response is to say the builds
+    // differ rather than to work out whether it matters.
+    const mismatch = (CAPS && CAPS.version_note) || '';
+    note.textContent = mismatch;
+    note.hidden = !mismatch;
+  }
+
   /// Rewrite the status line under the grid: which build, sampling how often.
   ///
   /// Called at startup and again whenever the interval changes, because the
@@ -3513,9 +3663,15 @@
     // Per-host overrides mean the global figure is not the whole story, and
     // silently showing it as though it were is the same lie in miniature.
     const overridden = hosts.filter(h => h.intervalOverride).length;
-    note.textContent =
-      `${v ? `Tuxtop ${v} \u00b7 ` : ''}live \u00b7 ${rate} over ssh` +
-      (overridden ? ` \u00b7 ${overridden} host${overridden === 1 ? '' : 's'} at its own rate` : '');
+    const label = identity(CAPS, SERVED_FROM);
+    note.textContent = modeLine({
+      version: v,
+      rate,
+      overridden,
+      // `over ssh` is a claim about *this* machine's connections, and in
+      // remote mode this machine has none.
+      label: label === TuxRemote.LOCAL ? null : label,
+    });
   }
 
   /// What to say in Settings about the last check.

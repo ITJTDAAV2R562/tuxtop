@@ -327,7 +327,7 @@ one is how a monitoring tool acquires its first remote code execution.
 ## Testing
 
 ```sh
-cargo test        # 269 tests, no GUI toolchain needed, runs anywhere
+cargo test        # 311 tests, no GUI toolchain needed, runs anywhere
 cargo clippy --all-targets
 cargo fmt
 node --test 'tests/*.test.js'           # pure logic: aggregation, scale, filters
@@ -401,6 +401,7 @@ the DOM; everything that decides a *value* lives in a UMD module and is tested:
 | `src/agg.js` | how a group combines (ADR-008) |
 | `src/heat.js` | how a span of time becomes one cell (ADR-011) |
 | `src/version.js` | whether a release is newer than what is running (ADR-015) |
+| `src/remote.js` | whose readings are on screen, how old, what may be saved (ADR-017) |
 
 Load order in `index.html` matters: the modules come first and `app.js` binds
 them at the top of its IIFE. Adding logic to `app.js` that could be in a module

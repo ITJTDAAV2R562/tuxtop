@@ -885,10 +885,31 @@ fix is to fan in rather than out.
 
    **`#tbsub` is a mockup string that shipped.** The titlebar subtitle reads
    `— dove.example.ts.net` in `index.html`, and no code has ever written to
-   it: a hardcoded hostname belonging to nobody's fleet, in the chrome of
-   every released build, for fourteen phases. It is also precisely the element
-   this step needs. It becomes the endpoint identity — *sampling locally*, or
-   the server's origin — with freshness beside it.
+   it: a hardcoded hostname belonging to nobody's fleet, for fourteen phases.
+   ~~It is also precisely the element this step needs.~~
+
+   **Wrong, and corrected 2026-09-10 while implementing commit 4.** It is not
+   in the chrome of any released build either: `startLive()` does
+   `document.querySelector('.titlebar')?.remove()` unconditionally, because
+   Windows draws the real titlebar (`decorations: true`). `startLive` runs
+   whenever `__TAURI__` is present — the desktop app, a browser tab through the
+   `http.js` shim, **and** the Playwright harness through the stub — so
+   `#tbsub` exists only in the simulator, `index.html` opened with no backend
+   at all. That is also why nothing has ever written to it. A chrome built
+   there would be invisible in exactly the three modes that need it.
+
+   So the other sentence in this section is the operative one, and the layout
+   decision was taken rather than inherited: **the endpoint and its freshness
+   are their own row above the toolbar** (`#remotebar`), hidden entirely when
+   this window does its own sampling. Rejected: a corner of the toolbar, which
+   is what "not a spare corner" was already warning against — though the
+   ~70px figure is out of date, since `.toolbar` has had `flex-wrap:wrap`
+   since the History select first clipped "Add host", so an extra element
+   wraps rather than clips.
+
+   `#tbsub` stays a mockup string in the simulator. Removing it is a Phase 2
+   line item ("drop this in favour of the real OS titlebar") and not this
+   step's to spend.
 
    Its strings are pure and go in `src/remote.js` with the other modules, not
    into `app.js`; the frontend went 2,792 lines with zero coverage that way.
@@ -951,12 +972,13 @@ fix is to fan in rather than out.
 
    ### Commits
 
-   1. core: the wire — `remote.rs` and the captured-response fixture.
-   2. core: the settings split, `start_all`, `capabilities`, the write refusal.
+   1. ~~core: the wire — `remote.rs` and the captured-response fixture.~~ Done.
+   2. ~~core: the settings split, `start_all`, `capabilities`, the write
+      refusal.~~ Done.
    3. `src-tauri`: the read loop, the dispatch point, the `capabilities`
-      command.
-   4. frontend: the chrome, the stub, the Playwright spec, and the settings
-      fields a read-only server should never have offered.
+      command. **The one left.**
+   4. ~~frontend: the chrome, the stub, the Playwright spec, and the settings
+      fields a read-only server should never have offered.~~ Done, before 3.
 
    Commit 3 is the one nothing here compiles. Build it through
    `scripts/verify.sh`, which drives the Windows toolchain at `/mnt/c` — and
@@ -978,6 +1000,41 @@ fix is to fan in rather than out.
      half back untouched (that is what `{...s, always_on_top}` does in
      `app.js`), and refusing it would be a window that cannot be pinned — the
      thing the split exists to prevent.
+
+   **Commit 4 landed 2026-09-10**, out of order: commit 3 is `src-tauri` and
+   needs the Windows toolchain and a launch, while the chrome is specced as
+   shared frontend work driven by data both backends already supply, so all of
+   it is reachable from the Playwright harness on the dev box. Between the two
+   commits the desktop window reads *sampling locally* unconditionally, which
+   is true during that window rather than a wrong number.
+
+   Four things found by building it that the spec did not say:
+
+   - **`refreshCapabilities` has to run before `refreshModeNote`.** The status
+     line quotes the machine that is sampling, and painting it first left
+     `over ssh` on a remote viewer for the life of the session, because nothing
+     re-ran it. Caught by the E2E test, not by reading — which is the argument
+     for having built the chrome for both backends rather than only the
+     desktop.
+   - **`set_host_os` was missing from `tests/harness/stub.js` entirely**, so
+     the per-host OS dropdown has thrown in the harness since it shipped while
+     working in the app. That is the *only* path to `os` for a host that
+     already exists, and the third time a gap in the stub has presented as an
+     application bug. Added, with
+     `a_host_already_in_the_fleet_can_be_switched_to_windows` in
+     `interval.spec.js` — which fails when the stub command is removed again.
+   - **Two E2E assertions were vacuous at Playwright's default width.** The
+     toolbar fits one row at 1280 whether it wraps or not, so a clipping
+     assertion made there passes against `flex-wrap:nowrap`. It runs at 1000
+     against a read-only backend now, where wrapping gives 97px with all seven
+     controls drawn and `nowrap` gives 56px with one pushed out of the row
+     entirely. The first fix, 1100, was still vacuous — the read-only baseline
+     has no "Add host" taking up ~100px.
+   - **A both-themes test can check the wrong state.** Asserting that the
+     *calm* ground differs between light and dark stayed green against a stale
+     ground written as `rgba(180,105,14,.14)`, because the calm ground beside
+     it was still a token and still flipped. The alarming state is the one a
+     hardcoded colour is most tempting in, and it is now asserted too.
 
 3. **Switching endpoints without a restart.** Needs `Supervisor::stop_all`,
    which does not exist yet; the teardown belongs there rather than in the

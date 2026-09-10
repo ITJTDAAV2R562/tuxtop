@@ -190,7 +190,14 @@
         // The settings dialog reads these on open; without them the whole
         // dialog errored in the harness while working fine in the app.
         if (cmd === 'get_settings') return { ...settings };
-        if (cmd === 'set_settings') { Object.assign(settings, args.settings); return { ...settings }; }
+        if (cmd === 'set_settings') {
+          Object.assign(settings, args.settings);
+          // The backend announces this (Service::set_settings), and the
+          // frontend re-reads `capabilities` on it. A stub that stayed silent
+          // would leave that path unexercised by every test there is.
+          emit('tuxtop://settings-changed', { ...settings });
+          return { ...settings };
+        }
         if (cmd === 'set_host_interval') {
           const h = hosts.find(x => x.name === args.name);
           if (h) h.interval_ms = args.intervalMs ?? null;
@@ -216,6 +223,41 @@
           h.group = (args.group || '').trim() || null;
           emit('tuxtop://hosts-changed', structuredClone(hosts));
           return structuredClone(hosts);
+        }
+        // Was missing entirely, so the OS dropdown in the per-host table threw
+        // in the harness while working in the app - the third time a gap here
+        // has presented as an application bug. Mirrors Service::set_host_os,
+        // which normalises rather than storing what was typed.
+        if (cmd === 'set_host_os') {
+          const h = hosts.find(x => x.name === args.name);
+          if (!h) throw `no host named ${args.name}`;
+          h.os = String(args.os || '').toLowerCase() === 'windows' ? 'windows' : '';
+          emit('tuxtop://hosts-changed', structuredClone(hosts));
+          return structuredClone(hosts);
+        }
+        // What this backend will let the caller do, and whose readings these
+        // are. Mirrors Service::capabilities. Absent before now, which meant
+        // app.js took the throw as "the desktop app, which can do it all" and
+        // the read-only and remote paths were unreachable from any test.
+        //
+        // The three window.__stub* hooks follow window.__stubUpdate: a spec
+        // that wants a read-only server or a remote viewer sets them before
+        // loading the page, and everything else keeps the local-desktop
+        // answer it has always had.
+        if (cmd === 'capabilities') {
+          const endpoint = window.__stubEndpoint ?? null;
+          return {
+            writable: !window.__stubReadonly && !endpoint,
+            endpoint,
+            // The rule is tuxtop_core::remote::stale_after_ms: three intervals
+            // or 3 s, whichever is larger. Mirrored rather than invented so
+            // the harness cannot disagree with the backend about what stale
+            // means.
+            stale_after_ms: window.__stubStaleAfterMs
+              ?? Math.max(settings.interval_ms * 3, 3000),
+            version: window.__stubVersion ?? '0.0.0-harness',
+            version_note: window.__stubVersionNote ?? null,
+          };
         }
         if (cmd === 'cgroup_list') {
           // Derived from the same process names the process list reports, so
@@ -309,7 +351,19 @@
 
   // dove is pinned so the group aggregate and its worst member disagree - the
   // case the whole feature exists to render correctly.
+  //
+  // `window.__stubQuietAfterMs` stops the stream, which is how a spec gets a
+  // genuinely silent connection rather than a rigged threshold: the chrome's
+  // stale state is then reached the way it is reached in life, by nothing
+  // arriving. Read from a variable set before load, so no spec has to call
+  // page.evaluate() into a page with live timers.
+  const startedAt = Date.now();
+  const quiet = () => {
+    const after = window.__stubQuietAfterMs;
+    return Number.isFinite(after) && Date.now() - startedAt > after;
+  };
   setInterval(() => {
+    if (quiet()) return;
     for (const h of hosts) {
       // Mirrors `Supervisor::start`: a paused host has no sampler, so it
       // emits nothing. Without this the stub would keep feeding a card the

@@ -1170,6 +1170,17 @@ misreading.
    `tuxtop-serve` is pointed at a server by definition, so it has been a remote
    viewer with no freshness on screen since that shipped. The rule is about
    viewers, not about the desktop shell.
+   **How "at all times" is met, recorded 2026-09-10 so a hidden element does
+   not read as a violation.** Two things carry it, and only one is always
+   drawn. The status line under the grid states the mode on every launch —
+   `live · 1 s over ssh` locally, `live · 1 s via dove:8787` remotely — and
+   that is the "at all times" half. The `#remotebar` strip above the toolbar
+   carries endpoint identity and freshness, and is **hidden when this window
+   samples its own fleet**: a strip reading *sampling locally* on every desktop
+   launch is a line people stop seeing by the second day, so the strip
+   *appearing at all* is made the first signal. Local mode is therefore
+   unchanged pixel for pixel, which is also what keeps the change cheap to
+   verify.
 2. **History is discarded on a switch, never appended.** History is in-memory
    per instance. Two fleets each with a host called `db1` would otherwise blend
    charts, and one customer's spike on another's graph looks entirely fine.
