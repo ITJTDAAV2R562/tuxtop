@@ -1125,8 +1125,54 @@ fix is to fan in rather than out.
    one window.
    `switching_endpoints_leaves_exactly_one_reader`.
 
-   Nothing in the frontend changes: step 2 already re-reads `capabilities` on
-   `tuxtop://settings-changed`.
+   ~~Nothing in the frontend changes: step 2 already re-reads `capabilities` on
+   `tuxtop://settings-changed`.~~
+
+   **Half true, and corrected 2026-09-10 before anyone starts.** The *chrome*
+   needs no change — that much holds, and it is why step 2 spent a line on
+   re-reading `capabilities`. But the endpoint has to be **typeable
+   somewhere**, and as written this step ships a switch nobody can reach:
+   ADR-017 part 4 says switching is a supported act "from Settings or the
+   command line", and neither exists after step 2.
+
+   It will not even build. `scripts/check-commands-reachable.py` parses
+   `generate_handler![…]` and requires every command to be invoked from
+   `src/app.js`; `use_endpoint` with no caller fails that gate in `verify.sh`
+   and in CI's `core` job. So this is a stop, not a nicety — and it is the
+   third instance of the shape CLAUDE.md now has a rule for: a backend, a
+   config key and a documented example, with no control.
+
+   ### What step 3 owes the frontend
+
+   - **A field in Settings, beside "Always on top" and the update check.**
+     `server` is a *viewer* setting (ADR-018 decision 4), so it sits with the
+     other two and is gated by `TuxRemote.editable(...).viewer` — which means
+     it stays editable in remote mode, since that is how you switch away or
+     back to local.
+   - **It must call `use_endpoint`, not `set_settings`.** `set_settings` takes
+     `server` from disk and never from the request, deliberately: `app.js` has
+     two save paths and one drops the field. That refusal is what makes
+     `use_endpoint` the only door, so a Settings form that posted `server`
+     through `set_settings` would silently do nothing.
+   - **Clearing the field switches back to local**, which is the sixth member
+     of the family `switching_back_to_local_does_not_resume_a_paused_host`
+     guards.
+   - **The first connect's failure has to reach the window.** The read loop
+     logs a `Next::Report` failure to stderr, and a release build has no
+     stderr (`windows_subsystem = "windows"`), so the log line exists for a
+     debug build and the smoke test. `use_endpoint` is the path that can
+     return the error synchronously to the caller, and it must — otherwise a
+     typo'd endpoint is indistinguishable from a server that is down, which is
+     the distinction `next_after_failure` was built to preserve.
+   - **`ReadLoop::stop`'s `#[allow(dead_code)]` comes off here.** It was
+     shipped unused on purpose; this is its caller.
+
+   Two E2E tests, named for the invariants rather than the feature:
+   `typing a server address switches the fleet without a restart`, and — for
+   the path the new CLAUDE.md rule says gets forgotten —
+   `clearing the server address returns to the local fleet`, which must start
+   from an endpoint that was already set when the page loaded rather than one
+   the test typed itself.
 
 4. **Saved endpoints**, so several fleets — or several customers — are one
    selection rather than one edit.
