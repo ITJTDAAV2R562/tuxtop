@@ -1,8 +1,10 @@
 # gitleaks configuration.
 #
-# The default ruleset, plus exactly one allowance. Everything else is left
-# alone deliberately: this scan is a merge gate, and a config that accumulates
-# broad exclusions stops being one.
+# The default ruleset, plus two allowances. Everything else is left alone
+# deliberately: this scan is a merge gate, and a config that accumulates broad
+# exclusions stops being one. Each allowance below says what it exempts, why
+# that cannot hide a secret, and how it was checked - by planting a token where
+# the allowance applies and where it does not.
 [extend]
 useDefault = true
 
@@ -29,3 +31,51 @@ secret by default. Both were found by planting a token beside the key and
 checking the scan still failed.
 """
 regexes = ['''E32AB9E4173865DF''']
+
+[[allowlists]]
+description = """
+Build output and installed dependencies: derived, never authored, never
+committed.
+
+`gitleaks dir` walks the filesystem rather than the index, so `.gitignore` does
+not exclude these - and the working-tree scan has to keep walking ignored
+files, because `hosts.toml` is ignored precisely for holding real addresses and
+"ignored" is not "absent". The distinction that matters is therefore not
+tracked versus ignored. It is **authored versus derived**: a person puts a
+secret in `hosts.toml`, and nobody puts one in an rmeta.
+
+What went wrong without this. Four `generic-api-key` hits inside cross-compiled
+`libmuda-*.rmeta` - artefacts of a third-party crate, nothing anyone wrote -
+made `scripts/verify.sh` end in "something failed" on a clean tree, in the one
+script CLAUDE.md says to run before pushing and whose whole job is to be
+believed. A gate that is red for a reason nobody caused is a gate people learn
+to read past. It also cost 49 s of the run, walking 2.95 GB.
+
+Rejected: a `.gitleaksignore` listing those four fingerprints. They are
+per-artefact, so the list goes stale on the next rebuild and the trap resets -
+demonstrated within the hour, when a `cargo xwin` build for a second target
+took the count from four to six. It would also have left `node_modules/` to
+spring the same trap on the next `npm install`.
+
+**The history scan loses nothing, and that is checked rather than assumed.**
+`git log --all -- <path>` reports zero commits for all three, so no commit has
+ever contained a byte under them. `test-results/` is deliberately absent from
+this list: it has two commits in history, so exempting it would genuinely
+narrow the history scan, and it produces no findings anyway.
+
+Verified by planting a `ghp_` token: under each path here the scan stays clean,
+and in `hosts.toml`, in a tracked source file and in an untracked file at the
+repository root it still fails. The patterns match paths as `gitleaks dir .`
+reports them - relative to the target, with no leading `./`.
+
+Level-agnostic on purpose, mirroring `.gitignore`'s `**/target` and
+`node_modules/`. Anchored at the root they missed a nested
+`crates/tuxtop-core/target/`, which the workspace never produces but a
+standalone `cargo build` in a crate directory would - the same trap, reset by
+a command nobody thinks of as unusual. There is no authored directory called
+either name in this tree, so nothing else falls under them.
+"""
+paths = [
+  '''(^|/)target/''',
+  '''(^|/)node_modules/''',
+]

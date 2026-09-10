@@ -140,9 +140,27 @@ Two details worth knowing:
   the repository is published, and needs no edit to do so. If GitHub's
   **default setup** for code scanning is enabled it conflicts with this
   workflow; pick one, not both.
-- **`.gitleaks.toml` holds exactly one allowance**, for the updater's minisign
-  *public* key. Worth knowing how it is written, because two obvious spellings
-  do not work: listing the file under `paths` exempts every finding in that
+- **`.gitleaks.toml` holds two allowances**, and both are checked by planting a
+  `ghp_` token where they apply and where they must not.
+
+  The second exempts **build output and installed dependencies** — `target/`
+  and `node_modules/` at any depth, mirroring `.gitignore`. `gitleaks dir`
+  walks the filesystem rather than the index, so `.gitignore` does not exclude
+  them, and the working-tree scan has to keep walking ignored files because
+  `hosts.toml` is ignored precisely for holding real addresses. The line is
+  therefore not tracked-versus-ignored but **authored-versus-derived**: a
+  person puts a secret in `hosts.toml` and nobody puts one in an rmeta. Without
+  it, six `generic-api-key` hits inside third-party `libmuda-*.rmeta` made
+  `scripts/verify.sh` end in "something failed" on a clean tree, and cost 49 s
+  of the run walking 3.95 GB; with it the working-tree scan is 138 ms over
+  1.85 MB and `verify.sh --quick` is 12 s rather than 75. A fingerprint list
+  was rejected because the fingerprints are per-artefact — the count went from
+  four to six inside an hour, on one extra cross-compile. `test-results/` is
+  deliberately *not* exempt: unlike the other paths it has commits in history,
+  so exempting it would narrow the history scan.
+
+  The first is for the updater's minisign *public* key. Worth knowing how it is
+  written, because two obvious spellings do not work: listing the file under `paths` exempts every finding in that
   file rather than the one string, and an allowlist regex is matched against
   the captured secret rather than the source line. Also, gitleaks decodes the
   base64 `pubkey` and reports the key id from inside it — so the thing to
