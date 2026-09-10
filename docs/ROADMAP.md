@@ -1234,6 +1234,72 @@ fix is to fan in rather than out.
      samplers it had just killed not coming back until somebody noticed.
      `a_refused_endpoint_leaves_the_window_where_it_was`.
 
+   ### Verified against a real server, 2026-09-10
+
+   The E2E suite drives the stub, and the stub is the one thing that cannot
+   show this: it has no samplers to stop and no socket to hold open, which is
+   most of what a switch *is*. So: a `tuxtop-serve --bind 0.0.0.0 --port 8788`
+   on the WSL box, read-only, watching two hosts of its own — one reachable,
+   one at `127.0.0.1:9` for a real fault — against the desktop app on Windows
+   watching its own nineteen. The live `hosts.toml` was backed up first and its
+   sha256 confirmed identical afterwards.
+
+   Measured, in order:
+
+   - **Local before the switch: 16 `ssh.exe`, 0 connections to 8788.** 19 hosts,
+     17 up, 2 paused, status line `Tuxtop 0.7.0 · live · 2 s over ssh`.
+   - **After typing `localhost:8788` into Settings → `ssh.exe` **16 → 0**.**
+     `Supervisor::stop_all` on the real thing: switching to a server tore down
+     every local sampler rather than leaving nineteen sshd sessions on machines
+     we promised only to observe.
+   - **Exactly one established connection to 8788, and this is where
+     `switching_endpoints_leaves_exactly_one_reader` is actually checked** —
+     the assertion that has no home in the workspace, taken here as a
+     measurement instead.
+   - The grid became the **server's** fleet — `pipit` and `snipe`, names in no
+     local config — with `snipe` carrying "Host unreachable: ssh: connect to
+     host 127.0.0.1 port 9: Connection refused". The strip read
+     `● localhost:8788`, "Add host" was gone, and the charts started from
+     nothing rather than continuing the local fleet's.
+   - **The status line read `live · 1 s via localhost:8788` while the local
+     file said `interval_ms = 2000`** — the same proof step 2 used, and it
+     still holds after a *runtime* switch rather than a launch.
+   - Settings in remote mode: the interval showed **1 second** and the history
+     limit **64 MB** — the server's, not this machine's 2 s and 256 MB — both
+     disabled, with *"The sample interval and history limit belong to
+     localhost:8788, which is doing the sampling."* Server, Always on top and
+     the update check stayed enabled, and the per-host table listed the
+     server's two hosts.
+   - **Clearing the field: `ssh.exe` 0 → 17, connections to 8788 → 0.** The
+     fleet came back, the reader stopped (`ReadLoop::stop`, the half that
+     shipped unused), and the `server` key left `[settings]`.
+   - **17, not 19.** The two paused hosts stayed paused through both switches —
+     `switching_back_to_local_does_not_resume_a_paused_host` on the real fleet,
+     which is the assertion that matters most here because the switch back
+     restarts *everything*.
+   - Restored: sha256 identical to the backup, no `server` key, no `ssh.exe`
+     left behind, app and server both stopped.
+
+   **Noticed and left, with the reason.** During the switch the settings
+   meter can render one mixed frame — the new fleet's traffic rows beside the
+   old fleet's paused count ("1 reporting host, with 2 paused" when the new
+   fleet has none) — because the meter's own 2 s timer can start before the
+   switch and finish after it. It corrects itself on the next tick, which was
+   confirmed rather than assumed. Fixing it properly means a generation counter
+   on an async render, which is more machinery than a ≤2 s transient in an open
+   dialog is worth; recorded here so the next session knows it was seen and
+   priced rather than missed.
+
+   **Driving the app from WSL cost more than the feature did**, and the lesson
+   is in the `verifying-remote-mode-from-wsl` memory: a cursor teleported with
+   `SetCursorPos` and clicked *focuses* the element under it and dispatches no
+   click, because Chromium takes its hit-target from mouse movement — so a nudge
+   and a settle are needed before the button events. Two clicks were lost to
+   that before it was diagnosed, and one of them landed somewhere unintended and
+   resumed a paused host, which the restore undid. Screenshot immediately before
+   every click: the toolbar scrolls with the page, so a coordinate read off an
+   older capture is a coordinate for a different page.
+
 4. **Saved endpoints**, so several fleets — or several customers — are one
    selection rather than one edit.
 
