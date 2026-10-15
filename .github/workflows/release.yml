@@ -154,7 +154,7 @@ jobs:
             '{0}  {1:N1} MB' -f $_.Name, ($_.Length / 1MB)
           }
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: windows
           path: dist/
@@ -201,7 +201,7 @@ jobs:
           tar czf "$d.tar.gz" "$d"
           sha256sum "$d.tar.gz"
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: linux
           path: tuxtop-serve-*.tar.gz
